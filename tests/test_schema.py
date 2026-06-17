@@ -1,23 +1,23 @@
 from datetime import datetime
 import pytest
-from schema.training import Training
+from schema.training import TrainingLog
 from schema.diet import Diet
 
-def test_should_create_training_successfully():
-    training = Training(
+def test_should_create_traininglog_successfully():
+    training = TrainingLog(
         date=datetime.now().date(),
-        name="kettbell snatch",
-        log="24kg, 5 otm x 25, 125 reps, 3000 kg. This is the heaviest session this week."
+        practice_name="kettbell snatch",
+        note="24kg, 5 otm x 25, 125 reps, 3000 kg. This is the heaviest session this week."
     )
     assert training.date is not None
-    assert training.name == "kettbell snatch"
-    assert "3000" in training.log
+    assert training.practice_name == "kettbell snatch"
+    assert "3000" in training.note
 
 def test_should_failed_to_create_training_without_date():
     with pytest.raises(ValueError) as err:
-        Training(
-            name="kettbell snatch",
-            log="24kg, 5 otm x 25, 125 reps, 3000 kg. This is the heaviest session this week."
+        TrainingLog(
+            practice_name="kettbell snatch",
+            note="24kg, 5 otm x 25, 125 reps, 3000 kg. This is the heaviest session this week."
         )
     assert "type=missing" in str(err)
 
