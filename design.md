@@ -7,6 +7,11 @@ To manage a complex LangGraph Multi-Agent project and avoid circular dependencie
 ```text
 ChatFit/
 ├── main.py                     # Entry point: Initializes Graph and Memory, starts the run loop
+├── schemas/
+│   ├── __init__.py
+│   ├── training.py             # Define WorkoutRecord, Exercise pydantic models here
+│   ├── diet.py                 # Define MealRecord, MacroNutrients pydantic models here
+│   └── user.py                 # (Optional) Move UserProfile here
 ├── llm_factory/                
 │   └── llm_factory.py          # Unified LLM initialization (Vendor-agnostic)
 ├── agent/
