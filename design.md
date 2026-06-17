@@ -13,9 +13,9 @@ ChatFit/
 │   ├── __init__.py
 │   ├── state.py                # Global AgentState definition
 │   ├── graph.py                # Graph orchestration (Nodes + Edges)
-│   ├── memory/
+│   ├── storage/
 │   │   ├── __init__.py
-│   │   └── database.py         # SQLite connection & table setup
+│   │   └── db.py               # SQLite connection & table setup to save diet and training records
 │   ├── tools/
 │   │   ├── __init__.py
 │   │   ├── workout_tools.py    # @tool definitions for workouts

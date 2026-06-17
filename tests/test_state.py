@@ -19,3 +19,27 @@ def test_should_not_create_invalid_user_profile():
             interests=["reading"]
         )
     assert "interests" in str(err)
+
+def test_should_create_agent_state():
+    agent_state = AgentState(
+        messages=["hello", "world"], 
+        user_profile=UserProfile(
+            username="hello user",
+            diet_preference=["chocolate"],
+            training_preference=["running"]
+
+    ))
+    assert "hello" in agent_state.messages
+    assert agent_state.user_profile.username == "hello user"
+
+def test_should_not_create_invalid_user_profile():
+    with pytest.raises(ValueError) as err:
+        AgentState(
+            messages="hello", 
+            user_profile=UserProfile(
+                username="hello user",
+                diet_preference=["chocolate"],
+                training_preference=["running"]
+
+        ))
+    assert "list" in str(err)

@@ -12,15 +12,5 @@ class UserProfile(BaseModel):
     training_preference: Optional[List[str]] = Field(description="User's training preference")
 
 class AgentState(BaseModel):
-    message: list
+    messages: list
     user_profile: UserProfile
-
-
-"""
-class FitnessAgent:
-    def __init__(self, llm_config: LLMConfig):
-        self.llm = create_chat_model(llm_config)
-
-    def chat(self, user_input):
-        return self.llm.invoke([HumanMessage(content=user_input)])
-"""
