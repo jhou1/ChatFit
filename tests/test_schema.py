@@ -1,10 +1,10 @@
 from datetime import datetime
 import pytest
-from schema.training import TrainingLog
-from schema.diet import Diet
+from schema.training import TrainingSession
+from schema.meal import MealRecord
 
-def test_should_create_traininglog_successfully():
-    training = TrainingLog(
+def test_should_create_training_session_successfully():
+    training = TrainingSession(
         date=datetime.now().date(),
         practice_name="kettbell snatch",
         note="24kg, 5 otm x 25, 125 reps, 3000 kg. This is the heaviest session this week."
@@ -15,16 +15,24 @@ def test_should_create_traininglog_successfully():
 
 def test_should_failed_to_create_training_without_date():
     with pytest.raises(ValueError) as err:
-        TrainingLog(
+        TrainingSession(
             practice_name="kettbell snatch",
             note="24kg, 5 otm x 25, 125 reps, 3000 kg. This is the heaviest session this week."
         )
     assert "type=missing" in str(err)
 
-def test_should_create_diet_successfully():
-    diet = Diet(
+def test_should_create_meal_record_successfully():
+    meal = MealRecord(
         date=datetime.now().date(),
-        note="breakfast: egg, milk. lunch: rice, fish. dinner: beef, vegetables."
+        meal_type="breakfast",
+        items="egg and milk",
+        note="breakfast: egg, milk."
     )
-    assert diet.date is not None
-    assert "lunch" in diet.note
+    assert meal.date is not None
+    assert "egg" in meal.note
+
+    meal = MealRecord(
+        date=datetime.now().date(),
+        note="lunch: rice."
+    )
+    assert "rice" in meal.note
