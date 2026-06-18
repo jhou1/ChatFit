@@ -24,7 +24,7 @@ def test_should_failed_to_create_training_without_date():
 def test_should_create_diet_successfully():
     diet = Diet(
         date=datetime.now().date(),
-        log="breakfast: egg, milk. lunch: rice, fish. dinner: beef, vegetables."
+        note="breakfast: egg, milk. lunch: rice, fish. dinner: beef, vegetables."
     )
     assert diet.date is not None
-    assert "lunch" in diet.log
+    assert "lunch" in diet.note
