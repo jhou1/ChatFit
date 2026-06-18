@@ -1,5 +1,6 @@
 import sqlite3
-from schema.training import TrainingLog
+from schema.meal import MealRecord
+from schema.training import TrainingSession
 
 def init_db(db_path):
     """Initialize the database tables."""
@@ -7,10 +8,9 @@ def init_db(db_path):
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
 
-        # Create training log and diet log tables
         cursor.execute(
             """
-            CREATE TABLE training_log (
+            CREATE TABLE training_sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 date TEXT NOT NULL,
                 practice_name TEXT NOT NULL,
@@ -29,8 +29,10 @@ def init_db(db_path):
 
         cursor.execute(
             """
-            CREATE TABLE diet_log (
+            CREATE TABLE meal_records (
                date TEXT NOT NULL,
+               meal_type TEXT,
+               items TEXT,
                note TEXT NOT NULL,
                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -39,8 +41,8 @@ def init_db(db_path):
 
         conn.commit()
 
-def add_training_log(log: TrainingLog, db_path: str) -> int:
-    """Save the TrainingLog Pydantic model
+def add_training_session(session: TrainingSession, db_path: str) -> int:
+    """Save the TrainingSession Pydantic model
     return the ID of the newly inserted row.
     """
 
@@ -48,22 +50,45 @@ def add_training_log(log: TrainingLog, db_path: str) -> int:
         cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT INTO training_log (
+            INSERT INTO training_sessions (
                 date, practice_name, warm_up, cool_down, reps, sets, distance, duration, rpe, note
             ) 
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                log.date.isoformat(),  # Convert datetime.date to string for SQLite
-                log.practice_name,
-                log.warm_up,
-                log.cool_down,
-                log.reps,
-                log.sets,
-                log.distance,
-                log.duraiton, # Assuming you haven't fixed the typo yet! Change to .duration if you do.
-                log.rpe,
-                log.note
+                session.date.isoformat(),
+                session.practice_name,
+                session.warm_up,
+                session.cool_down,
+                session.reps,
+                session.sets,
+                session.distance,
+                session.duration,
+                session.rpe,
+                session.note
+            )
+        )
+        conn.commit()
+        return cursor.lastrowid
+
+def add_meal_record(meal: MealRecord, db_path: str) -> int:
+    """Add the MealRecord pydantic model
+    return the ID of the newly inserted row.
+    """
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO meal_records (
+                date, meal_type, items, note
+            ) 
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                meal.date.isoformat(),
+                meal.meal_type,
+                meal.items,
+                meal.note
             )
         )
         conn.commit()
