@@ -1,6 +1,5 @@
-# the trianing agent
-from schema.training import TrainingLog
-from storage.db import add_training_log
+from schema.training import TrainingSession
+from storage.db import add_training_session
 from llm_factory.llm_factory import create_chat_model, LLMConfig
 
 from datetime import datetime
@@ -26,10 +25,11 @@ When the user describes a training/workout session, analyze their input semantic
 - note: The user's full input as a descriptive note, capturing the overall vibe and any gear used.
 
 CRITICAL INSTRUCTIONS:
-1. You have access to the `save_training_log` tool. You MUST use this tool to save the data once you have extracted it.
+1. You have access to the `save_training_session` tool. You MUST use this tool to save the data once you have extracted it.
 2. If the user does not provide the `practice_name`, you must politely ask them what exercise they did BEFORE calling the tool.
 3. If optional fields (like rpe, distance, etc.) are missing, leave them null. Do not guess them.
-4. After successfully calling the tool, briefly congratulate the user on their workout.
+4. If user trained multiple exercise, record each item respectively.
+5. After successfully calling the tool, briefly congratulate the user on their workout.
 """
 
 # TODO
@@ -41,21 +41,21 @@ class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
 
 # factory function to inject dependencies (llm_config, db_path)
-def make_training_log_subgraph(llm_config: LLMConfig, db_path: str):
+def make_training_subgraph(llm_config: LLMConfig, db_path: str):
 
     # Tools
-    @tool(args_schema=TrainingLog)
-    def save_training_log(**kwargs):
+    @tool(args_schema=TrainingSession)
+    def save_training_session(**kwargs):
         """Save the user training log to db."""
-        training_log = TrainingLog(**kwargs)
-        add_training_log(training_log, db_path)
+        training_session = TrainingSession(**kwargs)
+        add_training_session(training_session, db_path)
         return "Training log saved successfully!"
 
     # Nodes
 
     def log_training_node(state: AgentState):
         llm = create_chat_model(llm_config)
-        llm_with_tools = llm.bind_tools([save_training_log])
+        llm_with_tools = llm.bind_tools([save_training_session])
         formatted_system_prompt = SYSTEM_PROMPT.format(
             current_date=datetime.now().date().isoformat()
         )
@@ -67,7 +67,7 @@ def make_training_log_subgraph(llm_config: LLMConfig, db_path: str):
     builder = StateGraph(AgentState)
     builder.add_node("log_training_node", log_training_node)
 
-    tool_node = ToolNode(tools=[save_training_log])
+    tool_node = ToolNode(tools=[save_training_session])
     builder.add_node("tools", tool_node)
 
     builder.add_edge(START, "log_training_node")
