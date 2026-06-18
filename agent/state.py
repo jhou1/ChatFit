@@ -1,8 +1,7 @@
-from typing import Optional, List, Literal
+from typing import Annotated, Optional, List, TypedDict
 from pydantic import BaseModel, Field
-from llm_factory.llm_factory import LLMConfig, create_chat_model
 
-from langchain_core.messages import HumanMessage
+from langgraph.graph.message import add_messages
 
 class UserProfile(BaseModel):
     """User profile schema with typed fields"""
@@ -11,6 +10,7 @@ class UserProfile(BaseModel):
     diet_preference: Optional[List[str]] = Field(description="User's diet preference")
     training_preference: Optional[List[str]] = Field(description="User's training preference")
 
-class AgentState(BaseModel):
-    messages: list
+class AgentState(TypedDict):
+    messages: Annotated[list, add_messages]
+    next_agent: str
     user_profile: UserProfile
