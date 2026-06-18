@@ -16,7 +16,7 @@ SYSTEM_PROMPT = """You are an expert fitness and training recording assistant.
 Your primary goal is to extract workout details from the user's messages and save them to the database.
 
 When the user describes a training/workout session, analyze their input semantically and extract the following:
-- date: The date of the workout. If not specified, use `get_current_date` tool to get the date.
+- date: The date of the workout. If not specified, use {current_date}.
 - practice_name: The main exercise or activity (e.g., 'Running', 'Weightlifting').
 - warm_up / cool_down: Any specific warm up or cool down activities mentioned.
 - distance: Distance in km 
@@ -32,43 +32,46 @@ CRITICAL INSTRUCTIONS:
 4. After successfully calling the tool, briefly congratulate the user on their workout.
 """
 
-@tool
-def get_current_date():
-    """Get current date"""
-    return datetime.now().date()
-
-@tool(args_schema=TrainingLog)
-def save_training_log(log, db_path):
-    """Save the user training log to db."""
-    add_training_log(log, db_path)
-
 # TODO
 def expand_acronym():
     """ explain the acronym """
     pass
 
 class AgentState(TypedDict):
-    messages: Annotated[list: add_messages]
+    messages: Annotated[list, add_messages]
 
-def log_training_node(state: AgentState):
-    llm = create_chat_model(LLMConfig(
-        provider="google",
-        model_name="gemini-3.5-flash",
-        temperature=0,
-    ))
-    llm_with_tools = llm.bind_tools([save_training_log])
-    system_msg = SystemMessage(content=SYSTEM_PROMPT)
-    response = llm_with_tools.invoke([system_msg] + state["messages"])
+# factory function to inject dependencies (llm_config, db_path)
+def make_training_log_subgraph(llm_config: LLMConfig, db_path: str):
 
-    return {"messages": response}
+    # Tools
+    @tool(args_schema=TrainingLog)
+    def save_training_log(**kwargs):
+        """Save the user training log to db."""
+        training_log = TrainingLog(**kwargs)
+        add_training_log(training_log, db_path)
+        return "Training log saved successfully!"
 
-builder = StateGraph(AgentState)
-builder.add_node("log_training_node", log_training_node)
-tool_node = ToolNode(tools=[get_current_date, save_training_log])
-builder.add_node("tools", tool_node)
+    # Nodes
 
-builder.add_edge(START, "log_training_node")
-builder.add_conditional_edges("log_training_node", tools_condition)
-builder.add_edge("tools", "add_training_log")
+    def log_training_node(state: AgentState):
+        llm = create_chat_model(llm_config)
+        llm_with_tools = llm.bind_tools([save_training_log])
+        formatted_system_prompt = SYSTEM_PROMPT.format(
+            current_date=datetime.now().date().isoformat()
+        )
+        system_msg = SystemMessage(content=formatted_system_prompt)
+        response = llm_with_tools.invoke([system_msg] + state["messages"])
 
-app = builder.compile
+        return {"messages": [response]}
+
+    builder = StateGraph(AgentState)
+    builder.add_node("log_training_node", log_training_node)
+
+    tool_node = ToolNode(tools=[save_training_log])
+    builder.add_node("tools", tool_node)
+
+    builder.add_edge(START, "log_training_node")
+    builder.add_conditional_edges("log_training_node", tools_condition)
+    builder.add_edge("tools", "log_training_node")
+
+    return builder.compile()
