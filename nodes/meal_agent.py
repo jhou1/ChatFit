@@ -42,9 +42,11 @@ def make_meal_subgraph(llm_config: LLMConfig, db_path: str):
         add_meal_record(meal_record, db_path)
         return "Meal record saved successfully."
 
+    # LLM and its http client are created only once when subgraph is compiled
+    llm = create_chat_model(llm_config)
+    llm_with_tools = llm.bind_tools([save_meal_record])
+
     def log_meal_node(state: AgentState):
-        llm = create_chat_model(llm_config)
-        llm_with_tools = llm.bind_tools([save_meal_record])
         formatted_system_prompt = SYSTEM_PROMPT.format(
             current_date=datetime.now().date().isoformat()
         )

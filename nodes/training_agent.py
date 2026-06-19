@@ -53,11 +53,12 @@ def make_training_subgraph(llm_config: LLMConfig, db_path: str):
         add_training_session(training_session, db_path)
         return "Training log saved successfully!"
 
-    # Nodes
+    # LLM and its http client are created only once when subgraph is compiled
+    llm = create_chat_model(llm_config)
+    llm_with_tools = llm.bind_tools([save_training_session])
 
+    # Nodes
     def log_training_node(state: AgentState):
-        llm = create_chat_model(llm_config)
-        llm_with_tools = llm.bind_tools([save_training_session])
         formatted_system_prompt = SYSTEM_PROMPT.format(
             current_date=datetime.now().date().isoformat()
         )
