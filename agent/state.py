@@ -12,5 +12,5 @@ class UserProfile(BaseModel):
 
 class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
-    next_agent: str
+    next_agents: list[str]
     user_profile: UserProfile

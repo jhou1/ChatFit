@@ -11,31 +11,34 @@ from langchain_core.messages import SystemMessage
 from langgraph.graph import StateGraph, START, END
 
 
-SYSTEM_PROMPT="""You are a supervisor managing the following agents: 
-- training_session_agent: call this subagent if user tells you about their training/workout sessions and it has not been handled yet.
-- meal_record_agent: call this subagent if user tells you about their meals and it has not been handled yet.
+SYSTEM_PROMPT="""You are a helpful assistant to track the training/eating habits of the user. You manage the following agents: 
+- training_session_agent which is responsible for saving user training sessions to the database, invoke it when user tells you about their training/workout sessions.
+- meal_record_agent which is responsible for saving user meal details to the database, invoke it when user tells you about their meals.
 
-Do not invoke these subagents outside of the above conditions.
+Identify all relevant agents needed to process the user's message. If the user mentions both workouts and meals, return both agents."
 
-CRITICAL: If the last message in the conversation is from an AI assistant confirming that the meal or workout was successfully saved, the task is complete. You MUST route to FINISH.
-
-If the conversation is over, just general chatter, or the task is complete, route to FINISH.
+If the conversation is over, just general chatter, or the task is complete, return an empty list.
 """
 
 class RoutingDecision(BaseModel):
-    """Decides the subagent to route work to, if no subagent needed, route to FINISH"""
-    next_agent: Literal["training_session_agent", "meal_record_agent", "FINISH"]
+    """Decides the subagent to route work to"""
+    next_agents: list[Literal["training_session_agent", "meal_record_agent"]]
+
+def route_agents(state):
+    agents = state.get("next_agents", [])
+    if not agents:
+        return [END]
+    return agents
 
 def make_supervisor_agent(llm_config: LLMConfig, db_path: str, checkpointer=None):
-    def supervisor_node(state):
-        llm = create_chat_model(llm_config)
+    llm = create_chat_model(llm_config)
+    supervisor_chain = llm.with_structured_output(RoutingDecision)
 
+    def supervisor_node(state):
         system_prompt = SystemMessage(content=SYSTEM_PROMPT)
         system_msg = SystemMessage(content="Given the conversation above, who should act next?")
-        supervisor_chain = llm.with_structured_output(RoutingDecision)
         decision = supervisor_chain.invoke([system_prompt] + state["messages"] + [system_msg])
-
-        return {"next_agent": decision.next_agent}
+        return {"next_agents": decision.next_agents}
 
     training_session_node = make_training_subgraph(llm_config, db_path)
     meal_record_node = make_meal_subgraph(llm_config, db_path)
@@ -49,14 +52,14 @@ def make_supervisor_agent(llm_config: LLMConfig, db_path: str, checkpointer=None
     builder.add_edge(START, "supervisor_agent")
     builder.add_conditional_edges(
         "supervisor_agent",
-        lambda state: state["next_agent"], 
+        route_agents,
         {
             "training_session_agent": "training_session_agent",
             "meal_record_agent": "meal_record_agent",
-            "FINISH": END
+            END: END
         }
     )
-    builder.add_edge("training_session_agent", "supervisor_agent")
-    builder.add_edge("meal_record_agent", "supervisor_agent")
+    builder.add_edge("training_session_agent", END)
+    builder.add_edge("meal_record_agent", END)
 
     return builder.compile(checkpointer=checkpointer)
