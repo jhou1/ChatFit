@@ -5,9 +5,9 @@ from agent.state import AgentState
 from nodes.meal_agent import make_meal_subgraph
 from nodes.training_agent import make_training_subgraph
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage
 from langgraph.graph import StateGraph, START, END
 
 
@@ -18,11 +18,14 @@ SYSTEM_PROMPT="""You are a helpful assistant to track the training/eating habits
 Identify all relevant agents needed to process the user's message. If the user mentions both workouts and meals, return both agents."
 
 If the conversation is over, just general chatter, or the task is complete, return an empty list.
+
+ALWAYS speak short with brevity, use simple words, avoid adverb as much as possible.
 """
 
 class RoutingDecision(BaseModel):
     """Decides the subagent to route work to"""
     next_agents: list[Literal["training_session_agent", "meal_record_agent"]]
+    response: str = Field(description="A conversational response to the user") # not necessary, for chatting purpose
 
 def route_agents(state):
     agents = state.get("next_agents", [])
@@ -38,7 +41,10 @@ def make_supervisor_agent(llm_config: LLMConfig, db_path: str, checkpointer=None
         system_prompt = SystemMessage(content=SYSTEM_PROMPT)
         system_msg = SystemMessage(content="Given the conversation above, who should act next?")
         decision = supervisor_chain.invoke([system_prompt] + state["messages"] + [system_msg])
-        return {"next_agents": decision.next_agents}
+        return {
+            "next_agents": decision.next_agents, 
+            "messages": [AIMessage(content=decision.response)]
+        }
 
     training_session_node = make_training_subgraph(llm_config, db_path)
     meal_record_node = make_meal_subgraph(llm_config, db_path)
