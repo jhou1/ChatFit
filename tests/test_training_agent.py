@@ -19,6 +19,8 @@ def llm_config():
     return LLMConfig(
         provider="google",
         model_name="gemini-3.5-flash",
+        # required config in my test env
+        kwargs={"client_args": {"proxy": "socks5://127.0.0.1:8990"}},
         temperature=0
     )
 
