@@ -14,6 +14,7 @@ class LLMConfig(BaseModel):
     api_key: Optional[str] = None
     temperature: float = 0.5
     max_tokens: int = 2048
+    kwargs: dict = {}
 
 def create_chat_model(config: LLMConfig):
     provider = config.provider.lower()
@@ -23,21 +24,24 @@ def create_chat_model(config: LLMConfig):
             model=config.model_name,
             api_key=os.getenv("OPENAI_API_KEY") or config.api_key,
             temperature=config.temperature,
-            max_tokens=config.max_tokens
+            max_tokens=config.max_tokens,
+            **config.kwargs
         )
     elif provider == "google":
         return ChatGoogleGenerativeAI(
             model=config.model_name,
             api_key=os.getenv("GOOGLE_API_KEY") or config.api_key,
             temperature=config.temperature,
-            max_tokens=config.max_tokens
+            max_tokens=config.max_tokens,
+            **config.kwargs
         )
     elif provider == "anthropic":
         return ChatAnthropic(
             model=config.model_name,
             api_key=os.getenv("ANTHROPIC_API_KEY") or config.api_key,
             temperature=config.temperature,
-            max_tokens=config.max_tokens
+            max_tokens=config.max_tokens,
+            **config.kwargs
         )
     elif provider == "local":
         # for Ollama, llama.cpp, LM Studio, MLX, use OpenAI compatiable api
@@ -49,5 +53,6 @@ def create_chat_model(config: LLMConfig):
             base_url=config.base_url,
             api_key=config.api_key,
             temperature=config.temperature,
-            max_tokens=config.max_tokens
+            max_tokens=config.max_tokens,
+            **config.kwargs
         )
