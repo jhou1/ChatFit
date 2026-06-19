@@ -3,7 +3,6 @@ import uuid
 
 from llm_factory.llm_factory import LLMConfig
 from storage.db import init_db 
-from agent.state import AgentState
 from nodes.supervisor_agent import make_supervisor_agent
 
 from langchain_core.messages import HumanMessage
@@ -16,7 +15,8 @@ def main():
         provider="google",
         model_name="gemini-3.5-flash",
         temperature=0.5,
-        max_tokens=2048
+        max_tokens=2048,
+        kwargs={"client_args": {"proxy": "socks5://127.0.0.1:8990"}}
     )
 
     # db configuraiton
