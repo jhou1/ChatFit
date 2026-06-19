@@ -7,12 +7,12 @@ from typing import TypedDict, Annotated
 
 from langchain_core.tools import tool
 from langchain_core.messages import SystemMessage
-from langgraph.graph import StateGraph, START, END
+from langgraph.graph import StateGraph, START
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
-SYSTEM_PROMPT = """You are an expert fitness and training recording assistant. 
-Your primary goal is to extract workout details from the user's messages and save them to the database.
+SYSTEM_PROMPT = """You are an fitness and training recording assistant. 
+Your goal is to extract training/workout details from the user's messages and save them to the database.
 
 When the user describes a training/workout session, analyze their input semantically and extract the following:
 - date: The date of the workout. If not specified, use {current_date}.
@@ -23,6 +23,8 @@ When the user describes a training/workout session, analyze their input semantic
 - reps / sets / weight: For strength training.
 - rpe: Rate of Perceived Exertion (1-10 scale).
 - note: The user's full input as a descriptive note, capturing the overall vibe and any gear used.
+
+Call the `save_training_session` tool to save the training sessions to db.
 
 CRITICAL INSTRUCTIONS:
 1. You have access to the `save_training_session` tool. You MUST use this tool to save the data once you have extracted it.

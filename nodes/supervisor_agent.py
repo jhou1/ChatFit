@@ -12,12 +12,10 @@ from langgraph.graph import StateGraph, START, END
 
 
 SYSTEM_PROMPT="""You are a supervisor managing the following agents: 
-- training_session_agent
-- meal_record_agent
+- training_session_agent: call this subagent if user tells you about their training/workout sessions and it has not been handled yet.
+- meal_record_agent: call this subagent if user tells you about their meals and it has not been handled yet.
 
-Examine the conversation history and decide who should act next. 
-- If the user's LATEST request is to log a workout, and it HAS NOT been handled yet, route to training_session_agent.
-- If the user's LATEST request is to log food, and it HAS NOT been handled yet, route to meal_record_agent.
+Do not invoke these subagents outside of the above conditions.
 
 CRITICAL: If the last message in the conversation is from an AI assistant confirming that the meal or workout was successfully saved, the task is complete. You MUST route to FINISH.
 
