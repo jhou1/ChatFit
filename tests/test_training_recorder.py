@@ -2,9 +2,9 @@ import sqlite3
 import pytest
 from datetime import datetime, timedelta
 
-from nodes.training_agent import make_training_subgraph
-from llm_factory.llm_factory import LLMConfig
-from storage.db import init_db
+from agents.training_recorder import make_record_training_graph
+from utils.llm_factory import LLMConfig
+from utils.db import init_db
 
 from langchain_core.messages import HumanMessage
 
@@ -25,16 +25,13 @@ def llm_config():
     )
 
 @pytest.mark.e2e
-def test_make_training_subgraph(llm_config, temp_db_path):
-    app = make_training_subgraph(llm_config, temp_db_path)
-
-    user_input = HumanMessage(content="I ran 5km in 30 minutes yesterday. RPE was around 5. Felt great!")
-    response = app.invoke({"messages": [user_input]})
-
-    messages = response["messages"]
-
-    # agent should have responded
-    assert len(messages) > 1
+def test_make_record_training_graph(llm_config, temp_db_path):
+    message = HumanMessage(content="I ran 5km in 30 minutes yesterday. RPE was around 5. Felt great!")
+    initial_state = {
+        "messages": [message]
+    }
+    app = make_record_training_graph(llm_config, temp_db_path)
+    app.invoke(initial_state)
 
     # agent should have inserted db records
     with sqlite3.connect(temp_db_path) as conn:
@@ -57,17 +54,12 @@ def test_make_training_subgraph(llm_config, temp_db_path):
         assert saved_session["date"] == (datetime.now() - timedelta(days=1)).date().isoformat()
 
 @pytest.mark.e2e
-def test_make_training_subgraph_with_double_sessions(llm_config, temp_db_path):
-    app = make_training_subgraph(llm_config, temp_db_path)
-
-    # intentionally specify 2 training sessions in user input
-    user_input = HumanMessage(content="I ran 10km in 30 minutes yesterday, then I snatched a 24kg kettlebell 150 times in 15 minutes. RPE was 10. Felt tired")
-    response = app.invoke({"messages": [user_input]})
-
-    messages = response["messages"]
-
-    # agent should have responded
-    assert len(messages) > 1
+def test_record_traiing_with_double_sessions(llm_config, temp_db_path):
+    initial_state = {
+        "messages": ["I ran 10km in 30 minutes yesterday, then I snatched a 24kg kettlebell 150 times in 15 minutes. RPE was 10. Felt tired"]
+    }
+    app = make_record_training_graph(llm_config, temp_db_path)
+    app.invoke(initial_state)
 
     # agent should have inserted db records
     with sqlite3.connect(temp_db_path) as conn:

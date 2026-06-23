@@ -1,8 +1,15 @@
 import datetime
-from typing import Optional
+from typing import Optional, Literal, TypedDict, Annotated
+from _pytest.monkeypatch import annotated_getattr
 from pydantic import BaseModel, Field
+from langgraph.graph.message import add_messages
 
-class TrainingSession(BaseModel):
+class MealInfo(BaseModel):
+    date: datetime.date = Field(description="Date of your training")
+    meal_type: Optional[Literal["breakfast", "lunch", "dinner", "snack", "extra"]] = Field(default=None, description="Type of the meal")
+    items: Optional[str] = Field(default=None, description="food eaten")
+    note: str = Field(description="Your diet, be descriptive, record your breakfast, lunch, dinner, extra meals, etc. Your future self will thank you.")
+class TrainingSessionInfo(BaseModel):
     """ Schema for extracting training information from user input """
 
     date: datetime.date = Field(description="Date of your training")
@@ -15,3 +22,9 @@ class TrainingSession(BaseModel):
     duration: Optional[float] = Field(None, description="Duration(min) of the training")
     rpe: Optional[int] = Field(None, description="Rate of perceived exertion (1-10)") 
     note: str = Field(description="The user's input as a whole, aka the training note. Let it be descriptive, record your warm up, weight, distance, duration, reps, sets, cool down, rest duration, RPE, gear, etc. Your future self will thank you.")
+
+class AgentState(TypedDict):
+    """The assistant to record meal and training info"""
+    
+    messages: Annotated[list, add_messages]
+    assistant_names: list[str]

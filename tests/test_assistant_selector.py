@@ -1,9 +1,10 @@
-import sqlite3
 import pytest
+import sqlite3
+from datetime import datetime, timedelta
 
-from nodes.supervisor_agent import make_supervisor_agent
-from llm_factory.llm_factory import LLMConfig
-from storage.db import init_db
+from agents.assistant_selector import route_assistant_on_relevance, make_agent_graph
+from utils.llm_factory import LLMConfig
+from utils.db import init_db
 
 from langchain_core.messages import HumanMessage
 
@@ -24,16 +25,43 @@ def llm_config():
     )
 
 @pytest.mark.e2e
-def test_make_supervisor_agent(llm_config, temp_db_path):
-    app = make_supervisor_agent(llm_config, temp_db_path)
+def test_routing_meal_assistant(llm_config):
+    message = "breakfast: 2 fried eggs and bread today"
+    result = route_assistant_on_relevance(llm_config, message)
 
-    user_input = HumanMessage(content="I ran 5km in 30 minutes yesterday. RPE was around 5. Then I had 2 burgers for lunch.")
-    response = app.invoke({"messages": [user_input]})
+    assert result == ["meal_agent"]
 
-    messages = response["messages"]
+@pytest.mark.e2e
+def test_routing_training_assistant(llm_config):
+    message = "I pressed 48kg kettlebell 1 time today."
+    result = route_assistant_on_relevance(llm_config, message)
 
-    # agent should have responded
-    assert len(messages) > 1
+    assert result == ["training_agent"]
+
+@pytest.mark.e2e
+def test_routing_multiple_assistants(llm_config):
+    message = "I ran 10km today, and then I eat 2 bananas."
+    result = route_assistant_on_relevance(llm_config, message)
+
+    assert "meal_agent" in result
+    assert "training_agent" in result
+
+@pytest.mark.e2e
+def test_routing_none(llm_config):
+    message = "the weather is fine today"
+    result = route_assistant_on_relevance(llm_config, message)
+
+    assert result == []
+
+@pytest.mark.e2e
+def test_make_agent_graph(llm_config: LLMConfig, temp_db_path: str):
+    app = make_agent_graph(llm_config, temp_db_path)
+
+    message = HumanMessage(content="I ran 5km in 30 minutes yesterday. RPE was around 5. Then I had 2 burgers for lunch.")
+    initial_state = {
+        "messages": [message]
+    }
+    response = app.invoke(initial_state)
 
     # agent should have inserted db records
     with sqlite3.connect(temp_db_path) as conn:

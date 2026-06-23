@@ -2,9 +2,9 @@ import sqlite3
 import pytest
 from datetime import datetime, timedelta
 
-from nodes.meal_agent import make_meal_subgraph
-from llm_factory.llm_factory import LLMConfig
-from storage.db import init_db
+from agents.meal_recorder import make_record_meal_graph
+from utils.llm_factory import LLMConfig
+from utils.db import init_db
 
 from langchain_core.messages import HumanMessage
 
@@ -26,15 +26,13 @@ def llm_config():
 
 @pytest.mark.e2e
 def test_make_meal_subgraph(llm_config, temp_db_path):
-    app = make_meal_subgraph(llm_config, temp_db_path)
+    message = HumanMessage(content="breakfast: 2 fried eggs and bread today")
+    initial_state = {
+        "messages": [message]
+    }
 
-    user_input = HumanMessage(content="breakfast: 2 fried eggs and bread today")
-    response = app.invoke({"messages": [user_input]})
-
-    messages = response["messages"]
-
-    # agent should have responded
-    assert len(messages) > 1
+    app = make_record_meal_graph(llm_config, temp_db_path)
+    app.invoke(initial_state)
 
     # agent should have inserted db records
     with sqlite3.connect(temp_db_path) as conn:
@@ -55,5 +53,3 @@ def test_make_meal_subgraph(llm_config, temp_db_path):
         assert saved_record["meal_type"] == "breakfast"
         assert "eggs" in saved_record["items"]
         assert "bread" in saved_record["items"]
-
-

@@ -1,4 +1,30 @@
-from llm_factory.llm_factory import LLMConfig, create_chat_model
+from datetime import datetime
+
+from models import MealInfo, TrainingSessionInfo
+from utils.db import init_db, add_training_session, add_meal_record
+from utils.llm_factory import LLMConfig, create_chat_model
+
+def test_add_training_session(tmp_path):
+    db_path = tmp_path / "training_session_test.db"
+    init_db(db_path)
+
+    training_session = TrainingSessionInfo(
+        date=datetime.now().date().isoformat(),
+        practice_name="test",
+        note="feel good practice."
+    )
+    row_id = add_training_session(training_session, db_path)
+    assert isinstance(row_id, int)
+
+def test_add_meal_record(tmp_path):
+    db_path = tmp_path / "meal_record_test.db"
+    init_db(db_path)
+    meal_record = MealInfo(
+        date=datetime.now().date().isoformat(),
+        note="breakfast: milk and egg, dinner: fish and rice"
+    )
+    row_id = add_meal_record(meal_record, db_path)
+    assert isinstance(row_id, int)
 
 def test_create_google_chat_client():
     llm_config = LLMConfig(

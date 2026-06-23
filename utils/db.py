@@ -1,6 +1,5 @@
 import sqlite3
-from schema.meal import MealRecord
-from schema.training import TrainingSession
+from models import MealInfo, TrainingSessionInfo
 
 def init_db(db_path):
     """Initialize the database tables."""
@@ -41,8 +40,8 @@ def init_db(db_path):
 
         conn.commit()
 
-def add_training_session(session: TrainingSession, db_path: str) -> int:
-    """Save the TrainingSession Pydantic model
+def add_training_session(session: TrainingSessionInfo, db_path: str) -> int:
+    """Save the TrainingSessionInfo Pydantic model
     return the ID of the newly inserted row.
     """
 
@@ -71,8 +70,8 @@ def add_training_session(session: TrainingSession, db_path: str) -> int:
         conn.commit()
         return cursor.lastrowid
 
-def add_meal_record(meal: MealRecord, db_path: str) -> int:
-    """Add the MealRecord pydantic model
+def add_meal_record(meal: MealInfo, db_path: str) -> int:
+    """Add the MealInfo pydantic model
     return the ID of the newly inserted row.
     """
     with sqlite3.connect(db_path) as conn:
