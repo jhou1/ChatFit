@@ -1,12 +1,13 @@
-from langchain_chroma import Chroma
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_core.documents import Document
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain_core.prompts.prompt import PromptTemplate
-from langchain_core.runnables import RunnablePassthrough
 
 import os
 import glob
+
+from langchain_core.documents import Document
+from langchain_core.prompts.prompt import PromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+from langchain_chroma import Chroma
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 from prompts import RECIPE_ADVISOR_INSTRUCTION
 
@@ -21,7 +22,7 @@ def get_or_create_vector_store(docs_directory: str, persist_directory: str = "ch
     pattern = f"{docs_directory}/**/*.md"
     documents = []
     for file_path in glob.glob(pattern, recursive=True):
-        with open(file_path, 'r') as file:
+        with open(file_path, 'r', encoding="utf-8") as file:
             content = file.read()
 
         doc = Document(
@@ -49,14 +50,14 @@ def get_or_create_vector_store(docs_directory: str, persist_directory: str = "ch
 def create_recipe_rag_chain(vector_store, chat_model):
     retriever = vector_store.as_retriever()
     prompt_template = PromptTemplate.from_template(RECIPE_ADVISOR_INSTRUCTION)
-    
+
     def format_docs(docs):
         return "\n\n".join(doc.page_content for doc in docs)
-        
+
     rag_chain = (
         {"context": retriever | format_docs, "question": RunnablePassthrough()}
         | prompt_template
         | chat_model
     )
-    
+
     return rag_chain

@@ -16,43 +16,31 @@ class LLMConfig(BaseModel):
     max_tokens: int = 2048
     kwargs: dict = {}
 
+provider_classes = {
+    "openai": ChatOpenAI,
+    "google": ChatGoogleGenerativeAI,
+    "anthropic": ChatAnthropic,
+    "local": ChatOpenAI
+}
+
 def create_chat_model(config: LLMConfig):
     provider = config.provider.lower()
+    provider_class = provider_classes.get(provider)
+    
+    if not provider_class:
+        raise ValueError(f"Unsupported provider: {provider}")
 
-    if provider == "openai":
-        return ChatOpenAI(
-            model=config.model_name,
-            api_key=os.getenv("OPENAI_API_KEY") or config.api_key,
-            temperature=config.temperature,
-            max_tokens=config.max_tokens,
-            **config.kwargs
-        )
-    elif provider == "google":
-        return ChatGoogleGenerativeAI(
-            model=config.model_name,
-            api_key=os.getenv("GOOGLE_API_KEY") or config.api_key,
-            temperature=config.temperature,
-            max_tokens=config.max_tokens,
-            **config.kwargs
-        )
-    elif provider == "anthropic":
-        return ChatAnthropic(
-            model=config.model_name,
-            api_key=os.getenv("ANTHROPIC_API_KEY") or config.api_key,
-            temperature=config.temperature,
-            max_tokens=config.max_tokens,
-            **config.kwargs
-        )
-    elif provider == "local":
-        # for Ollama, llama.cpp, LM Studio, MLX, use OpenAI compatiable api
-        if config.base_url is None:
-            raise ValueError("To use local LLM, provide a base url.")
+    provider_api_key_envvar = f"{provider.upper()}_API_KEY"
 
-        return ChatOpenAI(
-            model=config.model_name,
-            base_url=config.base_url,
-            api_key=config.api_key,
-            temperature=config.temperature,
-            max_tokens=config.max_tokens,
-            **config.kwargs
-        )
+    kwargs = {
+        "model": config.model_name,
+        "api_key": config.api_key or os.getenv(provider_api_key_envvar),
+        "temperature": config.temperature,
+        "max_tokens": config.max_tokens,
+        **config.kwargs
+    }
+
+    if config.base_url:
+        kwargs["base_url"] = config.base_url
+
+    return provider_class(**kwargs)
