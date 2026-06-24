@@ -1,10 +1,6 @@
 import os
 import uuid
 
-from utils.llm_factory import LLMConfig
-from utils.db import init_db 
-from agents.assistant_selector import make_agent_graph
-
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -12,6 +8,10 @@ from langgraph.checkpoint.memory import MemorySaver
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
+
+from utils.llm_factory import LLMConfig
+from utils.db import init_db
+from agents.assistant_selector import make_agent_graph
 
 console = Console()
 
@@ -29,8 +29,7 @@ def main():
         init_db(db_path)
 
     # init memory
-    memory = MemorySaver()
-    app = make_agent_graph(llm_config, db_path, checkpointer=memory)
+    app = make_agent_graph(llm_config, db_path, checkpointer=MemorySaver())
     thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
 
@@ -56,11 +55,11 @@ def main():
                         new_messages = node_output.get("messages", [])
                         if new_messages:
                             last_message = new_messages[-1]
-        
+
                             # Handle Gemini's list-based content (extract text parts)
                             if isinstance(last_message.content, list):
                                 text_content = "".join(
-                                    part.get("text", "") for part in last_message.content 
+                                    part.get("text", "") for part in last_message.content
                                     if isinstance(part, dict) and "text" in part
                                 )
                             else:
