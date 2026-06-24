@@ -65,3 +65,23 @@ def test_create_anthropic_chat_client():
         max_tokens=1020
     )
     create_chat_model(llm_config)
+
+def test_create_local_chat_client():
+    llm_config = LLMConfig(
+        provider="local",
+        model_name="llama3",
+        base_url="http://localhost:11434/v1",
+        api_key="not-needed"
+    )
+    model = create_chat_model(llm_config)
+    assert getattr(model, 'openai_api_base', None) == "http://localhost:11434/v1"
+
+def test_create_unsupported_chat_client():
+    import pytest
+    from pydantic import ValidationError
+    
+    with pytest.raises(ValidationError):
+        LLMConfig(
+            provider="unsupported_provider",
+            model_name="fake-model"
+        )
