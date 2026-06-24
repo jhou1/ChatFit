@@ -1,6 +1,5 @@
 import datetime
 from typing import Optional, Literal, TypedDict, Annotated
-from _pytest.monkeypatch import annotated_getattr
 from pydantic import BaseModel, Field
 from langgraph.graph.message import add_messages
 
@@ -20,11 +19,11 @@ class TrainingSessionInfo(BaseModel):
     sets: Optional[int] = Field(None, description="Number of sets")
     distance: Optional[float] = Field(None, description="Distance(km) accomplished")
     duration: Optional[float] = Field(None, description="Duration(min) of the training")
-    rpe: Optional[int] = Field(None, description="Rate of perceived exertion (1-10)") 
+    rpe: Optional[int] = Field(None, description="Rate of perceived exertion (1-10)")
     note: str = Field(description="The user's input as a whole, aka the training note. Let it be descriptive, record your warm up, weight, distance, duration, reps, sets, cool down, rest duration, RPE, gear, etc. Your future self will thank you.")
 
 class AgentState(TypedDict):
     """The assistant to record meal and training info"""
-    
+
     messages: Annotated[list, add_messages]
     assistant_names: list[str]
