@@ -27,3 +27,9 @@ addopts = "-m 'not e2e'"
 markers = [
     "e2e: marks tests as end-to-end, these tests are slow and are excluded by default"
 ]
+
+[tool.pylint.messages_control]
+disable = [
+    "line-too-long",
+    "missing-docstring"
+]
