@@ -30,7 +30,7 @@ def main():
         init_db(db_path)
 
     with console.status("[bold yellow]Loading Cookbook ...[/]", spinner="dots"):
-        vector_store = get_or_create_vector_store("~/Documents/LifeOS/下厨房/", "./chroma.db")
+        vector_store = get_or_create_vector_store("~/Documents/LifeOS/下厨房/", "chroma.db")
 
 
     # init memory
@@ -44,7 +44,7 @@ def main():
 
     while True:
         user_input = Prompt.ask("\b[bold blue]You[/]")
-        if user_input.lower() == 'quit':
+        if user_input.lower() == "quit" or user_input.lower() == "exit":
             console.print("[bold red]Goodbye![/]")
             break
 
