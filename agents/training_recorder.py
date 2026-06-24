@@ -45,10 +45,3 @@ def make_record_training_graph(llm_config: LLMConfig, db_path: str):
     builder.add_edge("tools", "record_training")
 
     return builder.compile()
-
-    
-
-# TODO
-def expand_acronym():
-    """ explain the acronym """
-    pass

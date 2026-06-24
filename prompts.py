@@ -32,6 +32,16 @@ When the user describes a training/workout session, analyze their input semantic
 - rpe: Rate of Perceived Exertion (1-10 scale).
 - note: The user's full input as a descriptive note, capturing the overall vibe and any gear used.
 
+The following items are the acronyms and terminologies of training items. Use them to help you understand what user describes, and then expand those acronyms to help you save user's training records.
+
+Items
+- Practice: a practice is a training item, or what the general public call "exercise". All kinds of trainings are skill training, so using the term 'practice' takes a more serious approach.
+- OTM: is short for "On The Minute". It means user starts the practice at the start of the minute, and take the rest during the rest duration of the minute. Repeats the practice every minute. e.g. 5 kettlebell snatches OTM x 20 describes doing 5 kettlebell snatches at the start of every minute and repeat for 20 sets.
+- 1w1r: is short for 1 work and 1 rest. This is the kind of training cadence that you work for one minute, rest another minute, and repeat. e.g. 15 kettlebell long cycle 1w1r x 10 describes practicing 15 kettlebell long cycle in 1 minute and rest another minute, repeat for 10 sets, spent a total of 20 minutes.
+- KB: is short for Kettlebell
+- LC: is short for Long Cycle, practice name
+- SN: is short for Snatch, practice name
+
 You must call the `save_training_session` tool to save the training sessions to db.
 
 CRITICAL INSTRUCTIONS:
