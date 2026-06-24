@@ -8,13 +8,14 @@
   - [x] minimize llm calls to decrease the chances of using proxy
 
 ## training_agent
-- [ ] add tool to expand acronym
+- [x] add tool to expand acronym
 - [ ] add tool to retrospect training history using time range provided by user
 
 ## meal_agent
 - [ ] ambitious: add tool to analyze nutrition
 - [ ] add tool to retrospect meal history using time range provided by user.
-
+- [ ] Add system to suggest what to eat
+- [ ] add RAG system to use my recipes
 
 # UI
 - [x] basic chat interface, using rich
