@@ -1,9 +1,9 @@
 import os
 import uuid
 
-from llm_factory.llm_factory import LLMConfig
-from storage.db import init_db 
-from nodes.supervisor_agent import make_supervisor_agent
+from utils.llm_factory import LLMConfig
+from utils.db import init_db 
+from agents.assistant_selector import make_agent_graph
 
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
@@ -16,7 +16,6 @@ from rich.prompt import Prompt
 console = Console()
 
 def main():
-    # llm configuration
     llm_config = LLMConfig(
         provider="google",
         model_name="gemini-3.5-flash",
@@ -25,15 +24,13 @@ def main():
         kwargs={"client_args": {"proxy": "socks5://127.0.0.1:8990"}}
     )
 
-    # db configuraiton
     db_path = "chatfit.db"
     if not os.path.exists(db_path):
         init_db(db_path)
 
-
     # init memory
     memory = MemorySaver()
-    app = make_supervisor_agent(llm_config, db_path, checkpointer=memory)
+    app = make_agent_graph(llm_config, db_path, checkpointer=memory)
     thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
 
@@ -55,7 +52,7 @@ def main():
         with console.status("[bold yellow]Agent is thinking...[/]", spinner="dots"):
             for event in app.stream(initial_state, config=config, stream_mode="updates"):
                 for node_name, node_output in event.items():
-                    if node_name in ["training_session_agent", "meal_record_agent", "supervisor_agent"]:
+                    if node_name in ["training", "meal", "assistant_selector", "chatter"]:
                         new_messages = node_output.get("messages", [])
                         if new_messages:
                             last_message = new_messages[-1]
