@@ -39,6 +39,12 @@ def make_agent_graph(llm_config: LLMConfig, db_path: str, vector_store, checkpoi
         result = meal_recorder_node.invoke(state)
         return {"messages": result["messages"]}
 
+    def chatter_node(state: AgentState):
+        llm = create_chat_model(llm_config)
+        messages = [SystemMessage(content="You are ChatFit, a friendly fitness and nutrition assistant. Answer general questions, say hello, and be helpful.")] + state["messages"]
+        response = llm.invoke(messages)
+        return {"messages": [response]}
+
     # routing node
     def assistant_selector_node(state: AgentState):
         user_input = state["messages"][-1].content
@@ -48,12 +54,13 @@ def make_agent_graph(llm_config: LLMConfig, db_path: str, vector_store, checkpoi
     # routing callable
     def route_decision(state: AgentState):
         if len(state["assistant_names"]) == 0:
-            return ["end"]
+            return ["chatter"]
         return state["assistant_names"]
 
     builder = StateGraph(AgentState)
     builder.add_node("training", training_wrapper)
     builder.add_node("meal", meal_wrapper)
+    builder.add_node("chatter", chatter_node)
     builder.add_node("assistant_selector", assistant_selector_node)
 
     builder.add_edge(START, "assistant_selector")
@@ -63,7 +70,7 @@ def make_agent_graph(llm_config: LLMConfig, db_path: str, vector_store, checkpoi
         {
             "training_agent": "training",
             "meal_agent": "meal",
-            "end": END
+            "chatter": "chatter"
         }
     )
 
