@@ -24,6 +24,11 @@
 - [ ] add migration script to initialize database(drop table and create new)
 - [ ] add item to configure db path
 
+# Vectore store
+- [x] in-memory store
+- [x] local store
+- [ ] incrementally update store
+
 
 # Tests
 - [x] Add end to end tests for all agents

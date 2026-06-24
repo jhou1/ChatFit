@@ -27,9 +27,9 @@ def route_assistant_on_relevance(llm_config: LLMConfig, user_input: str) -> Dict
 
     return response["assistant_names"]
 
-def make_agent_graph(llm_config: LLMConfig, db_path: str, checkpointer=None) -> StateGraph:
+def make_agent_graph(llm_config: LLMConfig, db_path: str, vector_store, checkpointer=None) -> StateGraph:
     training_recorder_node = make_record_training_graph(llm_config, db_path)
-    meal_recorder_node = make_record_meal_graph(llm_config, db_path)
+    meal_recorder_node = make_record_meal_graph(llm_config, db_path, vector_store)
 
     def training_wrapper(state: AgentState):
         result = training_recorder_node.invoke(state)

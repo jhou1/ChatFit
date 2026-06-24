@@ -12,6 +12,7 @@ from rich.prompt import Prompt
 from utils.llm_factory import LLMConfig
 from utils.db import init_db
 from agents.assistant_selector import make_agent_graph
+from rag import get_or_create_vector_store
 
 console = Console()
 
@@ -28,8 +29,12 @@ def main():
     if not os.path.exists(db_path):
         init_db(db_path)
 
+    with console.status("[bold yellow]Loading Cookbook ...[/]", spinner="dots"):
+        vector_store = get_or_create_vector_store("~/Documents/LifeOS/下厨房/", "./chroma.db")
+
+
     # init memory
-    app = make_agent_graph(llm_config, db_path, checkpointer=MemorySaver())
+    app = make_agent_graph(llm_config, db_path, vector_store, checkpointer=MemorySaver())
     thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
 
