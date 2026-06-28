@@ -9,3 +9,7 @@ wheels/
 # Virtual environments
 .venv
 .env
+
+# data
+chroma.db/*
+chatfit.db
