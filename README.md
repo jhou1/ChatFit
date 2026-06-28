@@ -8,3 +8,10 @@ ChatFit 是一个根据你的当前情况和目标，帮助你记录训练和饮
 - 帮助你规划和实现你的目标
 
 
+# Integrating to Telegram
+
+1. export TELEGRAM_BOT_TOKEN="your-bot-token-from-botfather"
+2. Start the API Server (in one terminal)
+uv run uvicorn api:app --reload
+3. Start the Telegram Bot (in a second terminal)
+uv run python bot.py
