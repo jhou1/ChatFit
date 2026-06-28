@@ -6,12 +6,14 @@
   - [x] system prompt, conditional edges
   - [x] support using proxy
   - [x] minimize llm calls to decrease the chances of using proxy
+- [ ] have memory of user preference
 
-## training_agent
+## Training
 - [x] add tool to expand acronym
 - [ ] add tool to retrospect training history using time range provided by user
+- [ ] Give training agent knowledge for strength development and nutrition, fat loss.
 
-## meal_agent
+## Meal
 - [ ] ambitious: add tool to analyze nutrition
 - [ ] add tool to retrospect meal history using time range provided by user.
 - [ ] Add system to suggest what to eat
@@ -20,6 +22,7 @@
 # UI
 - [x] basic chat interface, using rich
 - [ ] 解决terminal输入过程中，中文占用字符比英文宽的问题。如果输入了中文，删除时止退了一格，但中文占用了两格，所以会留下一个空格。
+- [x] Agent serves over api so I can use it on my phone. -- solved with telegram bot
 
 # DB
 - [ ] add migration script to initialize database(drop table and create new)
@@ -30,7 +33,6 @@
 - [x] local store
 - [ ] incrementally update store
 
-
 # Tests
 - [x] Add end to end tests for all agents
   - [x] training_agent
@@ -39,4 +41,4 @@
   - [x] configure the project to exclude e2e tests by default
 
 # Misc
-- [ ] add hooks to pylint the code
+- [x] add hooks to pylint the code
