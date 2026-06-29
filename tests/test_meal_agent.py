@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from agents.meal_recorder import make_record_meal_graph
 from utils.llm_factory import LLMConfig
 from utils.db import init_db
+from rag import get_or_create_vector_store
 
 from langchain_core.messages import HumanMessage
 
@@ -24,14 +25,20 @@ def llm_config():
         temperature=0
     )
 
+@pytest.fixture
+def vector_store(tmp_path):
+    chroma_db_path = tmp_path / "chroma.db"
+    return get_or_create_vector_store("tests/recipes", chroma_db_path)
+
+
 @pytest.mark.e2e
-def test_make_meal_subgraph(llm_config, temp_db_path):
+def test_make_meal_subgraph(llm_config, temp_db_path, vector_store):
     message = HumanMessage(content="breakfast: 2 fried eggs and bread today")
     initial_state = {
         "messages": [message]
     }
 
-    app = make_record_meal_graph(llm_config, temp_db_path)
+    app = make_record_meal_graph(llm_config, temp_db_path, vector_store)
     app.invoke(initial_state)
 
     # agent should have inserted db records

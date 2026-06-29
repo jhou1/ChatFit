@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from agents.assistant_selector import route_assistant_on_relevance, make_agent_graph
 from utils.llm_factory import LLMConfig
 from utils.db import init_db
+from rag import get_or_create_vector_store
 
 from langchain_core.messages import HumanMessage
 
@@ -24,6 +25,12 @@ def llm_config():
         temperature=0
     )
 
+@pytest.fixture
+def vector_store(tmp_path):
+    chroma_db_path = tmp_path / "chroma.db"
+    return get_or_create_vector_store("tests/recipes", chroma_db_path)
+
+# tests start here
 @pytest.mark.e2e
 def test_routing_meal_assistant(llm_config):
     message = "breakfast: 2 fried eggs and bread today"
@@ -51,36 +58,47 @@ def test_routing_none(llm_config):
     message = "the weather is fine today"
     result = route_assistant_on_relevance(llm_config, message)
 
-    assert result == []
+    assert result == ['chatter']
 
 @pytest.mark.e2e
-def test_make_agent_graph(llm_config: LLMConfig, temp_db_path: str):
-    app = make_agent_graph(llm_config, temp_db_path)
+def test_make_agent_graph(llm_config, temp_db_path, vector_store):
+    app = make_agent_graph(llm_config, temp_db_path, vector_store)
 
     message = HumanMessage(content="I ran 5km in 30 minutes yesterday. RPE was around 5. Then I had 2 burgers for lunch.")
-    initial_state = {
-        "messages": [message]
-    }
-    response = app.invoke(initial_state)
+    state = {"messages": [message]}
+    response = app.invoke(state)
+
+    agent_reply = response["messages"][-1].content[0]["text"]
+    assert "running" in agent_reply.lower()
+    assert "?" in agent_reply.lower()
+
+    state["messages"].extend([
+        response["messages"][-1],
+        HumanMessage(content="Yes, please add running as distance practice.")
+    ])
+    app.invoke(state)
 
     # agent should have inserted db records
     with sqlite3.connect(temp_db_path) as conn:
         conn.row_factory = sqlite3.Row
+
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT * from training_sessions
+            SELECT p.name name, t.rpe rpe, s.duration duration
+            FROM practices p, training_sessions t, training_sets s
+            WHERE p.id = t.practice_id and s.training_session_id = t.id
             """
         )
-        rows = cursor.fetchall()
 
+        rows = cursor.fetchall()
         assert len(rows) == 1
 
         # verify that data has been correctly inserted
-        saved_session = rows[0]
-        assert saved_session["practice_name"].lower() == "running"
-        assert saved_session["rpe"] == 5
-        assert saved_session["duration"] == 30
+        result = rows[0]
+        assert result["name"].lower() == "running"
+        assert result["rpe"] == 5.0
+        assert result["duration"] == 30.0
 
     with sqlite3.connect(temp_db_path) as conn:
         conn.row_factory = sqlite3.Row

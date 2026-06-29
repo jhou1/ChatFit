@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from models import MealInfo, TrainingSessionInfo
+from models import MealInfo
 from utils.db import init_db, add_training_session, add_meal_record
 from utils.llm_factory import LLMConfig, create_chat_model
 
