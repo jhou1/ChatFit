@@ -1,14 +1,54 @@
 import os
 import httpx
+import mistune
+import telegram.error
 from telegram import Update
+from telegram.constants import ParseMode
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
 from dotenv import load_dotenv
 
+class TelegramRenderer(mistune.HTMLRenderer):
+    def heading(self, text, level, **attrs):
+        return f"<b>{text}</b>\n\n"
+    def paragraph(self, text):
+        return f"{text}\n\n"
+    def list(self, text, ordered, **attrs):
+        return f"{text.strip()}\n\n"
+    def list_item(self, text, **attrs):
+        return f"• {text.strip()}\n"
+    def strong(self, text):
+        return f"<b>{text}</b>"
+    def emphasis(self, text):
+        return f"<i>{text}</i>"
+    def block_code(self, code, info=None):
+        return f"<pre><code>{mistune.escape(code)}</code></pre>\n\n"
+    def codespan(self, text):
+        return f"<code>{mistune.escape(text)}</code>"
+    def thematic_break(self):
+        return "───────────────\n\n"
+    def block_text(self, text):
+        return f"{text}\n"
+    def block_quote(self, text):
+        return f"<i>{text}</i>\n"
+    def block_html(self, html):
+        return mistune.escape(html)
+    def inline_html(self, html):
+        return mistune.escape(html)
+    def image(self, src, alt="", title=None):
+        return f"[Image: {alt}]"
+    def link(self, link, text=None, title=None):
+        return f'<a href="{link}">{text or link}</a>'
+
+markdown_to_tg_html = mistune.create_markdown(renderer=TelegramRenderer())
+
 # Load variables from .env
 load_dotenv()
 
-API_URL = "http://127.0.0.1:8000/chat"
+# In PaaS environments (like Railway), the port is often dynamically assigned.
+# We connect to localhost since both processes will run in the same container.
+api_port = os.environ.get("PORT", "8000")
+API_URL = f"http://127.0.0.1:{api_port}/chat"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /start command."""
@@ -46,7 +86,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         bot_reply = f"An unexpected error occurred: {e}"
         
-    await update.message.reply_text(bot_reply)
+    try:
+        html_reply = markdown_to_tg_html(bot_reply).strip()
+        await update.message.reply_text(html_reply, parse_mode=ParseMode.HTML)
+    except telegram.error.BadRequest:
+        # Fallback to plain text if Telegram rejects the HTML
+        try:
+            await update.message.reply_text(bot_reply)
+        except telegram.error.NetworkError as ne:
+            print(f"Network error during fallback reply: {ne}")
+    except telegram.error.NetworkError as ne:
+        print(f"Network error while sending reply to Telegram: {ne}")
 
 def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -57,8 +107,8 @@ def main():
         
     print("Initializing Telegram Bot...")
     
-    # Use the same proxy as the LLM model if running locally
-    proxy_url = os.environ.get("TELEGRAM_PROXY", "socks5://127.0.0.1:8990")
+    # Use socks5h instead of socks5 to force remote DNS resolution (important for api.telegram.org in some regions)
+    proxy_url = os.environ.get("TELEGRAM_PROXY", "socks5h://127.0.0.1:8990")
     
     if proxy_url:
         print(f"Using proxy: {proxy_url}")
