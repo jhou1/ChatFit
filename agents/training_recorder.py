@@ -7,20 +7,19 @@ from langchain_core.messages import SystemMessage
 from langgraph.graph import StateGraph, START
 from langgraph.prebuilt import ToolNode, tools_condition
 
-from models import TrainingSessionInfo, AgentState
+from models import RecordTrainingInput, AgentState
 from utils.db import add_training_session, get_training_sessions_of_last_n_days
 from utils.llm_factory import create_chat_model, LLMConfig
-from prompts import TRAINING_RECORDER_INSTRUCTION, TRAINING_SESSION_RETRIEVER_INSTRUCTION
+from prompts import TRAINING_SESSION_ADDITION_INSTRUCTION, TRAINING_SESSION_RETRIEVAL_INSTRUCTION
 
 def make_record_training_graph(llm_config: LLMConfig, db_path: str):
 
-    @tool(args_schema=TrainingSessionInfo)
+    @tool(args_schema=RecordTrainingInput)
     def save_training_session(**kwargs):
-        """Save the user training log to db."""
+        """Add the user training log to db."""
 
-        training_session = TrainingSessionInfo(**kwargs)
-        add_training_session(training_session, db_path)
-        return "Training log saved successfully!"
+        input_data = RecordTrainingInput(**kwargs)
+        return add_training_session(input_data, db_path)
 
     @tool
     def retrieve_training_sessions(num_of_days: int):
@@ -34,7 +33,7 @@ def make_record_training_graph(llm_config: LLMConfig, db_path: str):
                                      ])
 
     def record_training(state: AgentState):
-        prompt_template = PromptTemplate.from_template(TRAINING_RECORDER_INSTRUCTION)
+        prompt_template = PromptTemplate.from_template(TRAINING_SESSION_ADDITION_INSTRUCTION)
         system_prompt = prompt_template.format(
             current_date=datetime.now().date().isoformat()
         )
@@ -44,7 +43,7 @@ def make_record_training_graph(llm_config: LLMConfig, db_path: str):
         return {"messages": response}
 
     def retrieve_training(state: AgentState):
-        system_message = SystemMessage
+        system_message = SystemMessage(content=TRAINING_SESSION_RETRIEVAL_INSTRUCTION)
         messages = [SystemMessage(content=system_message)] + state["messages"]
         response = llm_with_tools.invoke(messages)
         return {"message": response}
