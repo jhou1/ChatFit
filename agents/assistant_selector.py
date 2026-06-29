@@ -1,31 +1,34 @@
 from typing import Dict, Any
 
+from langchain_core.prompts.prompt import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.messages import HumanMessage, SystemMessage
+from langgraph.graph import StateGraph, START, END
+
 from models import AgentState
 from utils.llm_factory import create_chat_model, LLMConfig
 from prompts import ASSISTANT_SELECTION_INSTRUCTION
 from agents.meal_recorder import make_record_meal_graph
 from agents.training_recorder import make_record_training_graph
 
-from langchain_core.prompts.prompt import PromptTemplate
-from langchain_core.output_parsers import JsonOutputParser
-from langchain_core.messages import HumanMessage, SystemMessage
-from langgraph.graph import StateGraph, START, END
 
-
-def route_assistant_on_relevance(llm_config: LLMConfig, user_input: str) -> Dict[str, Any]:
+def route_assistant_on_relevance(llm_config: LLMConfig, messages: list) -> str:
     """
-    Select the appropriate assistant based on user input
+    Select the appropriate assistant based on conversation history
     """
 
     prompt_template = PromptTemplate.from_template(ASSISTANT_SELECTION_INSTRUCTION)
     system_prompt = prompt_template.format()
-    messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_input)]
+    
+    recent_messages = messages
+    routing_messages = [SystemMessage(content=system_prompt)] + recent_messages
 
     llm = create_chat_model(llm_config)
-    chain = llm | JsonOutputParser()
-    response = chain.invoke(messages)
+    chain = llm | StrOutputParser()
+    response = chain.invoke(routing_messages)
 
-    return response["assistant_names"]
+    decision = [agent.strip() for agent in response.split(",")]
+    return decision
 
 def make_agent_graph(llm_config: LLMConfig, db_path: str, vector_store, checkpointer=None) -> StateGraph:
     training_recorder_node = make_record_training_graph(llm_config, db_path)
@@ -47,8 +50,7 @@ def make_agent_graph(llm_config: LLMConfig, db_path: str, vector_store, checkpoi
 
     # routing node
     def assistant_selector_node(state: AgentState):
-        user_input = state["messages"][-1].content
-        decision = route_assistant_on_relevance(llm_config, user_input)
+        decision = route_assistant_on_relevance(llm_config, state["messages"])
         return {"assistant_names": decision}
 
     # routing callable

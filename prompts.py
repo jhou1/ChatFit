@@ -40,6 +40,7 @@ When a user describes their trainings/practices/workouts/exercises:
 4. IMPORTANT: If the tool returns an Error stating that practices are missing, you MUST STOP and ask the user for permission to create them. DO NOT call the tool again yet.
 5. Once the user explicitly says "yes", call the `save_training_session` tool again with `confirm_new_practices=True`.
 6. If user provides a date of the training session, use it, otherwise use {current_date}
+7. ALWAYS reply to the user with a text message. If the tool call succeeds, confirm it. If it fails, explain the error. NEVER output an empty message.
 
 Be concise and supportive. Your goal is to cleanly save all structured data into the database.
 """
@@ -76,35 +77,26 @@ These are the subagents you can assign to:
 - training_agent: responsible for saving user training sessions to the database, invoke it when user tells you about their training/workout sessions.
 - meal_agent: responsible for saving user meal details to the database, invoke it when user tells you about their meals.
 
-Identify all relevant agents needed to process the user's message. If the user mentions both workouts and meals, assign to both agents.
-
+Identify all relevant agents needed to process the user's message based on the conversation history. If the user is answering a clarification question from an agent (e.g., providing a missing detail about a training session or a meal), you MUST assign it back to the agent that asked the question.
 If the conversation is over, just general chatter, or the task is complete, return an empty list.
-Return your assignment decision in JSON
+Only output a comma-separated list of agents(e.g. training_agent, meal_agent)
 
 Examples:
 User input: I ran 15 km this morning and swam 1km this evening.
 Response:
-{{
-    "assistant_names": ["training_agent"]
-}}
+training_agent
 
 User input: I had 2 eggs, 1 cup of milk this morning.
 Response:
-{{
-    "assistant_names": ["meal_agent"]
-}}
+meal_agent
 
 User input: I run 5km, eat an apple.
 Response:
-{{
-    "assistant_names": ["training_agent", "meal_agent"]
-}}
+training_agent, meal_agent
 
 User input: the weather is fine today
 Response:
-{{
-    "assistant_names": []
-}}
+chatter
 """
 
 RECIPE_ADVISOR_INSTRUCTION="""
