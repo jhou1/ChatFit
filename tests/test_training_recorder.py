@@ -54,7 +54,7 @@ def test_make_record_training_graph(llm_config, temp_db_path):
         assert saved_session["date"] == (datetime.now() - timedelta(days=1)).date().isoformat()
 
 @pytest.mark.e2e
-def test_record_traiing_with_double_sessions(llm_config, temp_db_path):
+def test_record_training_with_double_sessions(llm_config, temp_db_path):
     initial_state = {
         "messages": ["I ran 10km in 30 minutes yesterday, then I snatched a 24kg kettlebell 150 times in 15 minutes. RPE was 10. Felt tired"]
     }
@@ -78,3 +78,23 @@ def test_record_traiing_with_double_sessions(llm_config, temp_db_path):
         assert kb_session is not None
         assert kb_session["duration"] == 15
         assert kb_session["rpe"] == 10
+
+@pytest.mark.e2e
+def test_retrieve_training(llm_config, temp_db_path):
+    # data preparation
+    message = HumanMessage(content="I swung the 32KG kettlebell for 200 times today!")
+    state = {"messages": [message]}
+    app = make_record_training_graph(llm_config, temp_db_path)
+    app.invoke(state)
+
+    new_message = HumanMessage(content="What training did I do today?")
+    new_state = {"messages": [new_message]}
+    app = make_record_training_graph(llm_config, temp_db_path)
+    response = app.invoke({"messages": new_state["messages"]})
+    final_text = response["messages"][-1].content[0]["text"]
+
+    assert "200" in final_text
+    assert "kettlebell" in final_text.lower()
+    assert "32kg" in final_text.lower()
+
+    
