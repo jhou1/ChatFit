@@ -22,6 +22,15 @@ class ChatResponse(BaseModel):
 # Global state to hold the initialized agent
 agent_app = None
 
+# tracks thread id
+user_sessions = {}
+
+def get_thread_id(user_id: str) -> str:
+    if user_id not in user_sessions:
+        user_sessions[user_id] = str(uuid.uuid4())
+    return user_sessions[user_id]
+
+
 @app.on_event("startup")
 def startup_event():
     global agent_app
@@ -59,7 +68,8 @@ def chat_endpoint(req: ChatRequest):
         raise HTTPException(status_code=500, detail="Agent application not initialized")
 
     # Use the Telegram user_id as the thread_id for LangGraph short-term memory separation
-    config = {"configurable": {"thread_id": req.user_id}}
+    thread_id = get_thread_id(req.user_id)
+    config = {"configurable": {"thread_id": thread_id}}
     initial_state = {"messages": [HumanMessage(content=req.message)]}
     
     final_response = ""
@@ -86,3 +96,8 @@ def chat_endpoint(req: ChatRequest):
                         final_response += text_content + "\n\n"
                         
     return ChatResponse(response=final_response.strip())
+
+@app.post("/clear")
+def clear_endpoint(req: ChatRequest):
+    user_sessions[req.user_id] = str(uuid.uuid4())
+    return ChatResponse(response="Conversation context cleared! You are starting fresh.")

@@ -122,10 +122,28 @@ def main():
         app = ApplicationBuilder().token(token).build()
     
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("clear", clear_context))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     
     print("Bot is polling for messages. Press Ctrl+C to stop.")
     app.run_polling()
+
+async def clear_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler for the /clear command."""
+    user_id = str(update.effective_user.id)
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0, proxy=None) as client:
+            response = await client.post(
+                f"http://127.0.0.1:{api_port}/clear",
+                json={"user_id": user_id, "message": "/clear"}
+            )
+            response.raise_for_status()
+            data = response.json()
+            reply = data.get("response", "Context cleared.")
+            await update.message.reply_text(reply)
+    except Exception as e:
+        await update.message.reply_text(f"Failed to clear context: {e}")
 
 if __name__ == '__main__':
     main()
