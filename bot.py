@@ -64,7 +64,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text
     
     # Send a typing action to let the user know the bot is thinking
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='typing')
+    try:
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='typing')
+    except telegram.error.NetworkError as ne:
+        print(f"Network error while sending typing action: {ne}")
     
     try:
         # Increase timeout because agent chains can take a while to complete.
