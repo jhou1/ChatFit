@@ -12,7 +12,7 @@ from agents.meal_recorder import make_record_meal_graph
 from agents.training_recorder import make_record_training_graph
 
 
-def route_assistant_on_relevance(llm_config: LLMConfig, messages: list) -> str:
+def route_assistant_on_relevance(llm_config: LLMConfig, messages: list) -> list[str]:
     """
     Select the appropriate assistant based on conversation history
     """
@@ -20,14 +20,20 @@ def route_assistant_on_relevance(llm_config: LLMConfig, messages: list) -> str:
     prompt_template = PromptTemplate.from_template(ASSISTANT_SELECTION_INSTRUCTION)
     system_prompt = prompt_template.format()
     
-    recent_messages = messages
-    routing_messages = [SystemMessage(content=system_prompt)] + recent_messages
+    recent_messages = messages[-10:]
+        
+    history_text = "\n".join([f"{type(m).__name__}: {m.content}" for m in recent_messages])
+    routing_input = f"Conversation History:\n{history_text}\n\nBased on the history above, return the assignment decision. Output ONLY a comma-separated list of agents (e.g. training_agent, meal_agent). If no agent is needed, output 'chatter'."
+    
+    routing_messages = [SystemMessage(content=system_prompt), HumanMessage(content=routing_input)]
 
     llm = create_chat_model(llm_config)
     chain = llm | StrOutputParser()
     response = chain.invoke(routing_messages)
 
-    decision = [agent.strip() for agent in response.split(",")]
+    decision = [agent.strip() for agent in response.split(",") if "agent" in agent]
+    if not decision:
+        return ["chatter"]
     return decision
 
 def make_agent_graph(llm_config: LLMConfig, db_path: str, vector_store, checkpointer=None) -> StateGraph:

@@ -38,9 +38,11 @@ When a user describes their trainings/practices/workouts/exercises:
 2. Formulate a list of `TrainingSession`, `TrainingSet` items. If a practice is new, assign it a type (endurance, distance, weighted, bodyweight).
 3. Call the `save_training_session` tool with `confirm_new_practices=False`.
 4. IMPORTANT: If the tool returns an Error stating that practices are missing, you MUST STOP and ask the user for permission to create them. DO NOT call the tool again yet.
-5. Once the user explicitly says "yes", call the `save_training_session` tool again with `confirm_new_practices=True`.
+5. Once the user approves, call the `save_training_session` tool again with `confirm_new_practices=True`.
 6. If user provides a date of the training session, use it, otherwise use {current_date}
 7. ALWAYS reply to the user with a text message. If the tool call succeeds, confirm it. If it fails, explain the error. NEVER output an empty message.
+
+User may send you information with multiple languages, you should attempt to translate their practice names and types to English before saving to database. If you are not sure, ask for user's clarification.
 
 Be concise and supportive. Your goal is to cleanly save all structured data into the database.
 """
@@ -76,10 +78,11 @@ You skilled at assigning user input to the correct subagents.
 These are the subagents you can assign to:
 - training_agent: responsible for saving user training sessions to the database, invoke it when user tells you about their training/workout sessions.
 - meal_agent: responsible for saving user meal details to the database, invoke it when user tells you about their meals.
+- chatter: everything else.
 
 Identify all relevant agents needed to process the user's message based on the conversation history. If the user is answering a clarification question from an agent (e.g., providing a missing detail about a training session or a meal), you MUST assign it back to the agent that asked the question.
-If the conversation is over, just general chatter, or the task is complete, return an empty list.
-Only output a comma-separated list of agents(e.g. training_agent, meal_agent)
+
+Only output a comma-separated list of agents(e.g. training_agent, meal_agent, chatter)
 
 Examples:
 User input: I ran 15 km this morning and swam 1km this evening.
