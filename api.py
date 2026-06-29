@@ -35,12 +35,15 @@ def startup_event():
         kwargs={"client_args": {"proxy": "socks5://127.0.0.1:8990"}}
     )
 
-    db_path = "chatfit.db"
+    # Allow setting a persistent data directory for PaaS hosting (like Railway Volumes)
+    data_dir = os.environ.get("DATA_DIR", ".")
+    db_path = os.path.join(data_dir, "chatfit.db")
+    
     if not os.path.exists(db_path):
         init_db(db_path)
 
     print("Initializing Vector Store...")
-    vector_store = get_or_create_vector_store("~/Documents/LifeOS/下厨房/", "chroma.db")
+    vector_store = get_or_create_vector_store("~/Documents/LifeOS/下厨房/", os.path.join(data_dir, "chroma.db"))
 
     print("Initializing Agent Graph...")
     # We use MemorySaver here, but LangGraph will partition memory by the `thread_id` we pass in the config

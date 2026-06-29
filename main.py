@@ -8,6 +8,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
+from rich.markdown import Markdown
 
 from utils.llm_factory import LLMConfig
 from utils.db import init_db
@@ -71,7 +72,9 @@ def main():
                                 text_content = str(last_message.content)
 
                             if text_content.strip():
-                                console.print(f"[bold green]Agent ({node_name}):[/] {text_content}\n")
+                                console.print(f"[bold green]Agent ({node_name}):[/]")
+                                console.print(Markdown(text_content))
+                                console.print()
 
                     elif node_name == "supervisor_agent":
                         decision = node_output.get("next_agents", []) # Note: ensure this matches your parallel setup fix if applied!
