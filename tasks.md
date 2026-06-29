@@ -11,7 +11,10 @@
 ## Training
 - [x] add tool to expand acronym
 - [ ] add tool to retrospect training history using time range provided by user
+  - [x] add tool to retrieve past n days of trainings
 - [ ] Give training agent knowledge for strength development and nutrition, fat loss.
+- [ ] if I record wrong data, I should be able to modify it, via chat.
+    - [ ] when updating, the agent should show the data for the user to confirm before updating. Because user could be entering multiple records in one day
 
 ## Meal
 - [ ] ambitious: add tool to analyze nutrition
