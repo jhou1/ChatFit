@@ -35,7 +35,6 @@
 # Vectore store
 - [x] in-memory store
 - [x] local store
-- [ ] incrementally update store
 
 # Tests
 - [x] Add end to end tests for all agents
@@ -46,3 +45,5 @@
 
 # Misc
 - [x] add hooks to pylint the code
+- [x] Create Dockerfile and use containers to manage the services
+- [x] on_event fastapi deprecated

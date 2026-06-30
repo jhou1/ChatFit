@@ -48,7 +48,8 @@ load_dotenv()
 # In PaaS environments (like Railway), the port is often dynamically assigned.
 # We connect to localhost since both processes will run in the same container.
 api_port = os.environ.get("PORT", "8000")
-API_URL = f"http://127.0.0.1:{api_port}/chat"
+API_URL = os.environ.get("API_URL", f"http://127.0.0.1:{api_port}/chat")
+API_CLEAR_URL = os.environ.get("API_CLEAR_URL", f"http://127.0.0.1:{api_port}/clear")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /start command."""
@@ -111,7 +112,7 @@ def main():
     print("Initializing Telegram Bot...")
     
     # Use socks5h instead of socks5 to force remote DNS resolution (important for api.telegram.org in some regions)
-    proxy_url = os.environ.get("TELEGRAM_PROXY", "socks5h://127.0.0.1:8990")
+    proxy_url = os.environ.get("TELEGRAM_PROXY", "socks5h://host.docker.internal:8990")
     
     if proxy_url:
         print(f"Using proxy: {proxy_url}")
@@ -135,7 +136,7 @@ async def clear_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         async with httpx.AsyncClient(timeout=30.0, proxy=None) as client:
             response = await client.post(
-                f"http://127.0.0.1:{api_port}/clear",
+                API_CLEAR_URL,
                 json={"user_id": user_id, "message": "/clear"}
             )
             response.raise_for_status()

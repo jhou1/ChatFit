@@ -2,7 +2,7 @@ import os
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
@@ -29,12 +29,13 @@ def get_thread_id(user_id: str) -> str:
 
 @asynccontextmanager
 async def startup_event(fastapi_app: FastAPI):
+    llm_proxy = os.environ.get("LLM_PROXY", "socks5://host.docker.internal:8990")
     llm_config = LLMConfig(
         provider="google",
         model_name="gemini-3.5-flash",
         temperature=0.5,
         max_tokens=2048,
-        kwargs={"client_args": {"proxy": "socks5://127.0.0.1:8990"}}
+        kwargs={"client_args": {"proxy": llm_proxy}}
     )
 
     db_path = os.path.expanduser("~/.iron/iron.db")
@@ -59,11 +60,11 @@ app = FastAPI(
 )
 
 @app.post("/chat", response_model=ChatResponse)
-def chat_endpoint(req: ChatRequest):
+def chat_endpoint(req: ChatRequest, request: Request):
     if not req.message.strip():
         raise HTTPException(status_code=400, detail="Empty message")
 
-    if not app.state.agent:
+    if not request.app.state.agent:
         raise HTTPException(status_code=500, detail="Agent application not initialized")
 
     # Use the Telegram user_id as the thread_id for LangGraph short-term memory separation
@@ -74,7 +75,7 @@ def chat_endpoint(req: ChatRequest):
     final_response = ""
 
     # Stream the graph updates
-    for event in app.state.agent.stream(initial_state, config=config, stream_mode="updates"):
+    for event in request.app.state.agent.stream(initial_state, config=config, stream_mode="updates"):
         for node_name, node_output in event.items():
             if node_name in ["training", "meal", "assistant_selector", "chatter"]:
                 new_messages = node_output.get("messages", [])
