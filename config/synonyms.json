@@ -1,0 +1,86 @@
+{
+  "自重：俯卧撑": {
+    "standard_name": "自重：俯卧撑",
+    "aliases": ["push up", "push ups", "俯卧撑"]
+  },
+  "indian club": {
+    "standard_name": "印第安棒",
+    "aliases": ["indian club", "indian clubs"]
+  },
+  "自重：臂屈伸": {
+    "standard_name": "自重：臂屈伸",
+    "aliases": ["dip", "dips", "臂屈伸", "双杠臂屈伸", "吊环臂屈伸"]
+  },
+  "变量日：随便练练": {
+    "standard_name": "变量日：随便练练",
+    "aliases": ["variety", "variety day", "random", "变量"]
+  },
+  "壶铃：借力推(Thruster)": {
+    "standard_name": "俯卧撑",
+    "aliases": ["thruster", "kettlebell thruster", "kb thruster", "借力推"]
+  },
+  "壶铃：军事推举": {
+    "standard_name": "壶铃：军事推举",
+    "aliases": ["military press", "kb military press", "kb press", "kb mp", "kbmp", "军事推举", "军推"]
+  },
+  "壶铃：单腿硬拉": {
+    "standard_name": "壶铃：单腿硬拉",
+    "aliases": ["sldl", "kb sldl", "kettlebell single leg dead lift", "kettlebell sldl", "单腿硬拉"]
+  },
+  "壶铃：抓举": {
+    "standard_name": "壶铃：抓举",
+    "aliases": ["kb sn", "snatch", "kettlebell snatch", "kettlebell sn", "抓举", "壶铃抓举", "sn"]
+  },
+  "壶铃：挺举": {
+    "standard_name": "壶铃：挺举",
+    "aliases": ["jerk", "kb jerk", "kettlebell jerk", "jk", "kb jk", "挺举", "壶铃挺举"]
+  },
+  "壶铃：摇摆": {
+    "standard_name": "壶铃：摇摆",
+    "aliases": ["壶铃摇摆", "摇摆", "swing", "kettlebell swing", "kb swing", "one arm swing", "two arm swing", "h2h swing"]
+  },
+  "壶铃：深蹲": {
+    "standard_name": "壶铃：深蹲",
+    "aliases": ["kb squat", "kettlebell front squat", "kettlebell goblet squat", "壶铃深蹲"]
+  },
+  "壶铃：钢铁有氧": {
+    "standard_name": "壶铃：钢铁有氧",
+    "aliases": ["钢铁有氧", "ic", "iron cardio"]
+  },
+  "壶铃：长循环": {
+    "standard_name": "壶铃：长循环",
+    "aliases": ["kblc", "kb lc", "long cycle", "lc", "kettlebell lc", "kettlebell long cycle", "kb clean and jerk", "kettlebell clean and jerk"]
+  },
+  "壶铃：高翻": {
+    "standard_name": "壶铃：高翻",
+    "aliases": ["clean", "kb clean", "kettlebell clean", "高翻"]
+  },
+  "自重：引体向上": {
+    "standard_name": "自重：引体向上",
+    "aliases": ["pull up", "pullup", "引体", "引体向上"]
+  },
+  "散步": {
+    "standard_name": "散步",
+    "aliases": ["walk", "walking", "走步"]
+  },
+  "棒铃：风车": {
+    "standard_name": "棒铃：风车",
+    "aliases": ["棒铃风车", "风车", "windmill"]
+  },
+  "波斯棒": {
+    "standard_name": "波斯棒",
+    "aliases": ["meels", "persian meels", "波斯棒"]
+  },
+  "自重：波比跳": {
+    "standard_name": "自重：波比跳",
+    "aliases": ["burpee", "波比跳"]
+  },
+  "锤铃": {
+    "standard_name": "锤铃",
+    "aliases": ["mace", "gada"]
+  },
+  "自重：蹲起": {
+    "standard_name": "自重：蹲起",
+    "aliases": ["squat", "bodyweight squat", "bw squat", "蹲起"]
+  }
+}
