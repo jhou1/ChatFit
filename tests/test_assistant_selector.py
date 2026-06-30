@@ -33,21 +33,21 @@ def vector_store(tmp_path):
 # tests start here
 @pytest.mark.e2e
 def test_routing_meal_assistant(llm_config):
-    message = "breakfast: 2 fried eggs and bread today"
+    message = [HumanMessage(content="breakfast: 2 fried eggs and bread today")]
     result = route_assistant_on_relevance(llm_config, message)
 
     assert result == ["meal_agent"]
 
 @pytest.mark.e2e
 def test_routing_training_assistant(llm_config):
-    message = "I pressed 48kg kettlebell 1 time today."
+    message = [HumanMessage(content="I pressed 48kg kettlebell 1 time today.")]
     result = route_assistant_on_relevance(llm_config, message)
 
     assert result == ["training_agent"]
 
 @pytest.mark.e2e
 def test_routing_multiple_assistants(llm_config):
-    message = "I ran 10km today, and then I eat 2 bananas."
+    message = [HumanMessage(content="I ran 10km today, and then I eat 2 bananas.")]
     result = route_assistant_on_relevance(llm_config, message)
 
     assert "meal_agent" in result
@@ -55,7 +55,7 @@ def test_routing_multiple_assistants(llm_config):
 
 @pytest.mark.e2e
 def test_routing_none(llm_config):
-    message = "the weather is fine today"
+    message = [HumanMessage(content="the weather is fine today")]
     result = route_assistant_on_relevance(llm_config, message)
 
     assert result == ['chatter']

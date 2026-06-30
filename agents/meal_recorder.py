@@ -36,7 +36,7 @@ def make_record_meal_graph(llm_config: LLMConfig, db_path: str, vector_store):
     def record_meal(state: AgentState):
         prompt_template = PromptTemplate.from_template(MEAL_RECORDER_INSTRUCTION)
         system_prompt = prompt_template.format(
-            current_date=datetime.now().date().isoformat()
+            current_time=datetime.now().isoformat()
         )
 
         messages = [SystemMessage(content=system_prompt)] + state["messages"]

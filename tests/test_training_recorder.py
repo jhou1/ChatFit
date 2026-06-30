@@ -56,7 +56,7 @@ def test_e2e_save_training_session(llm_config, temp_db_path):
         # verify that data has been correctly inserted
         saved_session = rows[0]
         assert saved_session["rpe"] == 5
-        assert saved_session["created_at"] == (datetime.now() - timedelta(days=1)).date().isoformat()
+        assert saved_session["date"] == (datetime.now() - timedelta(days=1)).date().isoformat()
 
         cursor.execute("SELECT * from training_sets")
         rows = cursor.fetchall()

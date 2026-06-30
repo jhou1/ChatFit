@@ -10,9 +10,15 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from models import RecordTrainingInput, AgentState
 from utils.db import add_training_session, get_training_sessions_of_last_n_days
 from utils.llm_factory import create_chat_model, LLMConfig
+from utils.normalizer import PracticeNormalizer
 from prompts import TRAINING_SESSION_ADDITION_INSTRUCTION, TRAINING_SESSION_RETRIEVAL_INSTRUCTION
 
 def make_record_training_graph(llm_config: LLMConfig, db_path: str):
+    @tool
+    def normalize_practice_name(user_input: str) -> str:
+        """Normalize the user input practice and return the standard name"""
+        normalizer = PracticeNormalizer("config/synonyms.json")
+        return normalizer.normalize(user_input)
 
     @tool(args_schema=RecordTrainingInput)
     def save_training_session(**kwargs):
@@ -27,15 +33,17 @@ def make_record_training_graph(llm_config: LLMConfig, db_path: str):
         return get_training_sessions_of_last_n_days(num_of_days, db_path)
 
 
+
     llm = create_chat_model(llm_config)
-    llm_with_tools = llm.bind_tools([save_training_session,
+    llm_with_tools = llm.bind_tools([normalize_practice_name,
+                                     save_training_session,
                                      retrieve_training_sessions
                                      ])
 
     def record_training(state: AgentState):
         prompt_template = PromptTemplate.from_template(TRAINING_SESSION_ADDITION_INSTRUCTION)
         system_prompt = prompt_template.format(
-            current_date=datetime.now().date().isoformat()
+            current_time=datetime.now().isoformat()
         )
 
         messages = [SystemMessage(content=system_prompt)] + state["messages"]
@@ -51,7 +59,8 @@ def make_record_training_graph(llm_config: LLMConfig, db_path: str):
     builder = StateGraph(AgentState)
     builder.add_node("record_training", record_training)
     builder.add_node("retrieve_training", retrieve_training)
-    tool_node = ToolNode(tools=[save_training_session,
+    tool_node = ToolNode(tools=[normalize_practice_name,
+                                save_training_session,
                                 retrieve_training_sessions])
     builder.add_node("tools", tool_node)
 

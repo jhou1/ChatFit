@@ -20,7 +20,7 @@ def init_db(db_path):
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
                 type TEXT NOT NULL,
-                created_at TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 active INTEGER NOT NULL DEFAULT 1
             )
             """
@@ -31,10 +31,11 @@ def init_db(db_path):
             CREATE TABLE IF NOT EXISTS training_sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 practice_id INTEGER NOT NULL REFERENCES practices(id),
+                date TEXT NOT NULL,
                 warm_up TEXT,
                 cool_down TEXT,
                 rpe INTEGER,
-                created_at TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 note TEXT
             )
             """
@@ -50,6 +51,7 @@ def init_db(db_path):
                 reps INTEGER,
                 distance REAL,
                 duration REAL
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
@@ -97,17 +99,16 @@ def add_training_session(input_data: RecordTrainingInput, db_path: str) -> str:
                 cursor.execute("SELECT id FROM practices WHERE lower(name)= ?", (session.practice_name.lower(),))
                 row = cursor.fetchone()
                 if not row:
-                    now_str = datetime.now().isoformat()
                     cursor.execute(
-                        "INSERT INTO practices (name, type, created_at, active) VALUES (?, ?, ?, 1)",
-                        (session.practice_name, session.practice_type, now_str)
+                        "INSERT INTO practices (name, type, active) VALUES (?, ?, 1)",
+                        (session.practice_name, session.practice_type)
                     )
                     practice_id = cursor.lastrowid
                 else:
                     practice_id = row[0]
 
                 cursor.execute(
-                    "INSERT INTO training_sessions (practice_id, created_at, note, rpe, warm_up, cool_down) VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO training_sessions (practice_id, date, note, rpe, warm_up, cool_down) VALUES (?, ?, ?, ?, ?, ?)",
                     (practice_id, input_data.date.isoformat(), session.note, session.rpe, session.warm_up, session.cool_down)
                 )
                 session_id = cursor.lastrowid
@@ -134,7 +135,7 @@ def get_training_sessions_of_last_n_days(n: int, db_path):
             SELECT *
             FROM training_sessions t, practices p, training_sets s
             WHERE t.practice_id = p.id AND t.id = s.training_session_id
-            AND date(t.created_at) >= date('now', '-{n} days')
+            AND date(t.date) >= date('now', '-{n} days')
             """
         )
         return cursor.fetchall()
@@ -168,4 +169,4 @@ def add_meal_record(meal: MealInfo, db_path: str) -> int:
             )
         )
         conn.commit()
-        return cursor.lastrowid
+        return cursor.lastrowid or 0
