@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    container_name: chatfit_api
+    ports:
+      - "8000:8000"
+    command: uvicorn api:app --host 0.0.0.0 --port 8000
+    volumes:
+      - ~/.iron:/root/.iron
+      - ~/Documents/LifeOS/下厨房/:/root/Documents/LifeOS/下厨房/
+      - ./chroma.db:/app/chroma.db
+      - ./chatfit.db:/app/chatfit.db
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  bot:
+    build: .
+    container_name: chatfit_bot
+    command: python bot.py
+    depends_on:
+      - api
+    env_file:
+      - .env
+    environment:
+      - API_URL=http://api:8000/chat
+      - API_CLEAR_URL=http://api:8000/clear
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
