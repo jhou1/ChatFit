@@ -15,3 +15,13 @@ ChatFit 是一个根据你的当前情况和目标，帮助你记录训练和饮
 uv run uvicorn api:app --reload
 3. Start the Telegram Bot (in a second terminal)
 uv run python bot.py
+
+# Getting Started
+## Create Telegram Bot
+
+## Prepare your LLM provider's API key
+
+## Run
+1. Copy the `.env.example` to `.env`, edit `.env` and add your API key for LLM and Telegram bot
+2. Optional: configure LangSmith to trace your agent steps
+3. Spin up your services with `podman compose up`.
