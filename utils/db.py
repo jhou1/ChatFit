@@ -57,7 +57,7 @@ def init_db(db_path):
 
         cursor.execute(
             """
-            CREATE TABLE meal_records (
+            CREATE TABLE IF NOT EXISTS meal_records (
                date TEXT NOT NULL,
                meal_type TEXT,
                items TEXT,
@@ -88,7 +88,7 @@ def add_training_session(input_data: RecordTrainingInput, db_path: str) -> str:
 
         if new_practices and not input_data.confirm_new_practices:
             return f"""Error: The following practices are not in the database: {new_practices}.
-                    Ask the user if they want to create them. Do not proceed until they say yes. 
+                    Ask the user if they want to create them. Do not proceed until they say yes.
                     If they say yes, call this tool again with confirm_new_practices=True.
                     """
 
@@ -133,7 +133,7 @@ def get_training_sessions_of_last_n_days(n: int, db_path):
             f"""
             SELECT *
             FROM training_sessions t, practices p, training_sets s
-            WHERE t.practice_id = p.id AND t.id = s.training_session_id 
+            WHERE t.practice_id = p.id AND t.id = s.training_session_id
             AND date(t.created_at) >= date('now', '-{n} days')
             """
         )
@@ -157,7 +157,7 @@ def add_meal_record(meal: MealInfo, db_path: str) -> int:
             """
             INSERT INTO meal_records (
                 date, meal_type, items, note
-            ) 
+            )
             VALUES (?, ?, ?, ?)
             """,
             (
