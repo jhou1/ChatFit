@@ -6,7 +6,9 @@
   - [x] system prompt, conditional edges
   - [x] support using proxy
   - [x] minimize llm calls to decrease the chances of using proxy
-- [ ] have memory of user preference
+- [ ] 可以使用llm router解决问题
+- [x] have memory of user preference
+- [ ] I could develop an mcp service to export my training to google spreadsheet, and use it to visualize trainings.
 
 ## Training
 - [x] add tool to expand acronym
@@ -24,7 +26,7 @@
 
 # UI
 - [x] basic chat interface, using rich
-- [ ] 解决terminal输入过程中，中文占用字符比英文宽的问题。如果输入了中文，删除时止退了一格，但中文占用了两格，所以会留下一个空格。
+- [-] 解决terminal输入过程中，中文占用字符比英文宽的问题。如果输入了中文，删除时止退了一格，但中文占用了两格，所以会留下一个空格。
 - [x] Agent serves over api so I can use it on my phone. -- solved with telegram bot
 - [ ] /clear command to clear agent context
 
@@ -47,3 +49,4 @@
 - [x] add hooks to pylint the code
 - [x] Create Dockerfile and use containers to manage the services
 - [x] on_event fastapi deprecated
+- [ ] Try out an agent evaluation framework
