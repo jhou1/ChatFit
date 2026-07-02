@@ -1,27 +1,26 @@
-ChatFit 是一个根据你的当前情况和目标，帮助你记录训练和饮食记录的 Agent
+# ChatFit
 
-# Features
-- 数据才是你的核心资产，你的训练数据和饮食记录会被结构化存储
-- 任何 Provider：OpenAI，Anthropic, DeepSeek 或是本地部署的 LLM
-- 持久化记忆，记忆会根据用户喜好持续化更
-- 通过数据进行回顾和总结，寻找训练和饮食中存在的盲区、短板
-- 帮助你规划和实现你的目标
+**ChatFit** is your personal, AI-powered training and meal assistant.
 
+By connecting ChatFit to a Telegram bot, you can seamlessly track your training volume and meals through natural chat, saving all your data securely into a local SQLite database.
 
-# Integrating to Telegram
+The true value of tracking lies in discovery. Humans tend to repeat unseen patterns that act against their goals, but data does not lie. The core idea is that, over time, you can use a local LLM or a custom data discovery program to learn from your training and eating habits. Your data becomes a goldmine, allowing you to uncover insights such as: performance breakthroughs, strength development patterns, root causes of injuries and setbacks, and how weight changes correlate with your daily activities.
 
-1. export TELEGRAM_BOT_TOKEN="your-bot-token-from-botfather"
-2. Start the API Server (in one terminal)
-uv run uvicorn api:app --reload
-3. Start the Telegram Bot (in a second terminal)
-uv run python bot.py
+ChatFit is completely unopinionated about your choice of LLM. You can plug in your favorite provider or use local LLMs when data privacy is your top concern.
 
 # Getting Started
-## Create Telegram Bot
+## Integrating with Telegram
 
-## Prepare your LLM provider's API key
+1. `export TELEGRAM_BOT_TOKEN="your-bot-token-from-botfather"`
+2. `cp .env.example .env`, open `.env` with a text editor, and then enter the values of the required fields.
+3. Spin up the service:
+```bash
+podman compose up -d
 
-## Run
-1. Copy the `.env.example` to `.env`, edit `.env` and add your API key for LLM and Telegram bot
-2. Optional: configure LangSmith to trace your agent steps
-3. Spin up your services with `podman compose up`.
+# or alternatively
+docker compose up -d
+Roadmap
+- LLM provider agnostic configuration
+- Deployment on container-native infrastructure
+- Connecting to WeChat
+- ... and more
