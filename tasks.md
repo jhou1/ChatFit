@@ -7,6 +7,8 @@
   - [x] support using proxy
   - [x] minimize llm calls to decrease the chances of using proxy
 - [x] have memory of user preference
+- [ ] Long term memory
+- [ ] compacting memory on condition
 - [ ] I could develop an mcp service to export my training to google spreadsheet, and use it to visualize trainings.
 
 ## Training
