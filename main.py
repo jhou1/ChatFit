@@ -10,10 +10,10 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.markdown import Markdown
 
-from utils.llm_factory import LLMConfig
-from utils.db import init_db
-from agents.assistant_selector import make_agent_graph
-from rag import get_or_create_vector_store
+from agents.llm_factory import LLMConfig
+from agents.sqlite_handler import init_db
+from agents.roles.supervisor import make_agent_graph
+from agents.rag import get_or_create_vector_store
 
 console = Console()
 

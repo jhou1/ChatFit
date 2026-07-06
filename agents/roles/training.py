@@ -1,23 +1,19 @@
-MEAL_RECORDER_INSTRUCTION="""You are a nutrition and meal assistant.
-Your job is to extract meal details and nutritional information from the user's messages and save them to the database.
+import json
+import re
+from datetime import datetime
 
-When the user describes a meal or food they consumed, analyze their input semantically and extract the following:
-- date: The date of the meal, use {current_time} if not specified.
-- meal_type: The category of the meal (e.g., 'breakfast', 'lunch', 'dinner', 'snack', 'extra'). If not specified, infer based on context or leave as 'Extra'.
-- items: A detailed description of the specific foods and drinks consumed.
-- note: The user's full input as a descriptive note, capturing context (e.g., "eating out at an Italian restaurant") or how they felt.
+from langchain_core.prompts.prompt import PromptTemplate
+from langchain_core.tools import tool
+from langchain_core.messages import SystemMessage
 
-Call the `save_meal_record` tool to save the information to db.
+from langgraph.graph import StateGraph, START
+from langgraph.prebuilt import ToolNode, tools_condition
 
-CRITICAL INSTRUCTIONS:
-1. You have access to the `save_meal_record` tool. You MUST use this tool to save the data once you have extracted it.
-2. If the user does not clearly specify what they ate (`food_items`), you must politely ask them for the food details BEFORE calling the tool.
-3. If optional meal_type and items are missing, leave them null. DO NOT guess or hallucinate the value unless the user explicitly provides them.
-4. If the user describes multiple distinct meals (e.g., "For breakfast I had eggs, and for lunch I had a salad"), you must call the `save_meal_record` tool multiple times in parallel to record each meal separately.
-5. After successfully calling the tool, briefly acknowledge the logged meal.
-"""
+from agents.models import AgentState, TrainingInputRecorder
+from agents.sqlite_handler import add_training_session, get_training_sessions_of_last_n_days
+from agents.llm_factory import create_chat_model, LLMConfig
 
-TRAINING_SESSION_ADDITION_INSTRUCTION = """
+INSTRUCTION_FOR_RECORDING_TRAINING_SESSIONS = """
 You are a highly capable assistant helping users track their fitness training sessions.
 
 Use the following list of acronyms to understand user's descriptions, and then expand those acronyms to save user's training records. If users used an acronyms or terminology you don't understand, do not guess it, ask the clarification.
@@ -34,18 +30,16 @@ When a user describes their trainings/practices/workouts/exercises, you MUST per
   - In `training_sets` table, record each set with reps, weight, distance, duration. Weight must be provided when the training type is weighted.
 2. Attempt to ask one more time for to fill all the columns in these tables, user may forget to provide RPE, warm up, cool down, etc.
 4. ONLY introduce a new practice name if it genuinely has no semantic equivalent in the existing list, assign it a type (endurance, distance, weighted, bodyweight). You have access to the tool `normalize_practice_name`, which can often help you normalize user's practice to standard names in the database. If you are unsure whether the name is a semantic match, ask user for clarification.
-5. Call the `save_training_session` tool with `confirm_new_practices=False`.
+5. Call the `log_training_session` tool with `confirm_new_practices=False`.
 6. IMPORTANT: If the tool returns an Error stating that practices are missing, you MUST STOP and ask the user for permission to create them. DO NOT call the tool again yet.
-7. Once the user approves, call the `save_training_session` tool again with `confirm_new_practices=True`.
+7. Once the user approves, call the `log_training_session` tool again with `confirm_new_practices=True`.
 8. If user mentions a date or a relative date(yesterday, last Monday, etc) of the training session, use it as the date for the training_session, otherwise use {current_time}
 9. ALWAYS reply to the user with a text message. If the tool call succeeds, confirm it. If it fails, explain the error. NEVER output an empty message.
 
 Be concise and supportive. Your goal is to cleanly save all structured data into the database.
 """
 
-
-
-TRAINING_SESSION_RETRIEVAL_INSTRUCTION="""
+INSTRUCTION_FOR_RETRIEVING_TRAINING_SESSIONS = """
 You are an fitness and training assistant.
 
 Your job is to retrieve training/workout session logs from the user's database and explain them with natural language. When the user asks you about their training records, you will call the `get_training_sessions` tool to retrieve the logs. The tool takes in "num_of_days" as parameter that returns the past number of days of training records. If user's question contains the days they are interested in, make use of this parameter. If this parameter is not provided, retrieve logs of the past 7 days.
@@ -68,50 +62,90 @@ Finally, provide a summary of the training logs on the training volume, training
 """
 
 
-ASSISTANT_SELECTION_INSTRUCTION="""
-You skilled at assigning user input to the correct subagents.
+class PracticeNameNormalizer:
+    """
+    Normalize input acronums, semantic similar names, Chinese/English names
+    """
 
-These are the subagents you can assign to:
-- training_agent: responsible for saving user training sessions to the database, invoke it when user tells you about their training/workout sessions.
-- meal_agent: responsible for saving user meal details to the database, invoke it when user tells you about their meals.
-- chatter: everything else.
+    def __init__(self, config_path: str = "config/synonyms.json"):
+        with open(config_path, "r", encoding="utf-8") as f:
+            self.config = json.load(f)
 
-Identify all relevant agents needed to process the user's message based on the conversation history. If the user is answering a clarification question from an agent (e.g., providing a missing detail about a training session or a meal), you MUST assign it back to the agent that asked the question.
+        # reverse index aliases and keys
+        self.alias_to_key = {}
+        for k, v in self.config.items():
+            for alias in [k] + v["aliases"]:
+                self.alias_to_key[alias.lower()] = k
 
-Only output a comma-separated list of agents(e.g. training_agent, meal_agent, chatter)
+    def normalize(self, practice: str) -> str:
+        search_key = re.sub(r"[.-]", " ", practice.lower().strip())
+        if search_key in self.alias_to_key:
+            return self.alias_to_key[search_key]
 
-Examples:
-User input: I ran 15 km this morning and swam 1km this evening.
-Response:
-training_agent
+        # fuzzy match
+        sorted_aliases = sorted(self.alias_to_key.keys(), key=len, reverse=True)
+        for alias in sorted_aliases:
+            if alias in search_key:
+                return self.alias_to_key[alias]
 
-User input: I had 2 eggs, 1 cup of milk this morning.
-Response:
-meal_agent
+        return None
 
-User input: I run 5km, eat an apple.
-Response:
-training_agent, meal_agent
+# make agent graph
+def make_training_agent_graph(llm_config: LLMConfig, db_path: str):
+    @tool
+    def normalize_practice_name(user_input: str) -> str:
+        """Normalize the user input practice and return the standard name"""
 
-User input: the weather is fine today
-Response:
-chatter
-"""
+        normalizer = PracticeNameNormalizer("config/synonyms.json")
+        return normalizer.normalize(user_input)
 
-RECIPE_ADVISOR_INSTRUCTION="""
-You are an assistant, you will advise recipes using user's cookbook to satisfy their meal and nutrition preferences.
+    @tool(args_schema=TrainingInputRecorder)
+    def log_training_session(**kwargs):
+        """Add the user training log to db."""
 
-When a user gives you the ingredients, you will use the cookbook context to recommend what to eat for breakfast, lunch and dinner. If ingredients are not enough to make the recipes, tell user what is missing and provide a grocery list. Do not make up a recipe, ask user's preference on what to eat. Frame your advises in bullet list:
-- Breakfast:
-- Lunch:
-- Dinner:
-- Grocery:
-    - one
-    - two
+        input_data = TrainingInputRecorder(**kwargs)
+        return add_training_session(input_data, db_path)
 
-Cookbook context:
-{context}
+    @tool
+    def retrieve_training_sessions(num_of_days: int):
+        """Get a list of training sessions of the last n days"""
+        return get_training_sessions_of_last_n_days(num_of_days, db_path)
 
-User's question/ingredients:
-{question}
-"""
+
+
+    llm = create_chat_model(llm_config)
+    llm_with_tools = llm.bind_tools([normalize_practice_name,
+                                     log_training_session,
+                                     retrieve_training_sessions
+                                     ])
+
+    def log_training_node(state: AgentState):
+        prompt_template = PromptTemplate.from_template(INSTRUCTION_FOR_RECORDING_TRAINING_SESSIONS)
+        system_prompt = prompt_template.format(
+            current_time=datetime.now().isoformat()
+        )
+
+        messages = [SystemMessage(content=system_prompt)] + state["messages"]
+        response = llm_with_tools.invoke(messages)
+        return {"messages": response}
+
+    def retrieve_training_node(state: AgentState):
+        system_message = SystemMessage(content=INSTRUCTION_FOR_RETRIEVING_TRAINING_SESSIONS)
+        messages = [SystemMessage(content=system_message)] + state["messages"]
+        response = llm_with_tools.invoke(messages)
+        return {"message": response}
+
+    builder = StateGraph(AgentState)
+    builder.add_node("log_training_node", log_training_node)
+    builder.add_node("retrieve_training_node", retrieve_training_node)
+    tool_node = ToolNode(tools=[normalize_practice_name,
+                                log_training_session,
+                                retrieve_training_sessions])
+    builder.add_node("tools", tool_node)
+
+    builder.add_edge(START, "log_training_node")
+    builder.add_conditional_edges("log_training_node", tools_condition)
+    builder.add_conditional_edges("retrieve_training_node", tools_condition)
+    builder.add_edge("tools", "log_training_node")
+
+    return builder.compile()

@@ -2,10 +2,10 @@ import pytest
 import sqlite3
 from datetime import datetime, timedelta
 
-from agents.assistant_selector import route_assistant_on_relevance, make_agent_graph
-from utils.llm_factory import LLMConfig
-from utils.db import init_db
-from rag import get_or_create_vector_store
+from agents.roles.supervisor import route_assistant_on_relevance, make_agent_graph
+from agents.llm_factory import LLMConfig
+from agents.sqlite_handler import init_db
+from agents.rag import get_or_create_vector_store
 
 from langchain_core.messages import HumanMessage
 

@@ -1,17 +1,17 @@
 from datetime import datetime
 
-from models import MealInfo
-from utils.db import init_db, add_training_session, add_meal_record
-from utils.llm_factory import LLMConfig, create_chat_model
+from agents.models import MealInfo
+from agents.sqlite_handler import init_db, add_training_session, add_meal_log
+from agents.llm_factory import LLMConfig, create_chat_model
 
-def test_add_meal_record(tmp_path):
+def test_add_meal_log(tmp_path):
     db_path = tmp_path / "meal_record_test.db"
     init_db(db_path)
     meal_record = MealInfo(
         date=datetime.now().date().isoformat(),
         note="breakfast: milk and egg, dinner: fish and rice"
     )
-    row_id = add_meal_record(meal_record, db_path)
+    row_id = add_meal_log(meal_record, db_path)
     assert isinstance(row_id, int)
 
 def test_create_google_chat_client():
@@ -67,7 +67,7 @@ def test_create_local_chat_client():
 def test_create_unsupported_chat_client():
     import pytest
     from pydantic import ValidationError
-    
+
     with pytest.raises(ValidationError):
         LLMConfig(
             provider="unsupported_provider",

@@ -1,8 +1,6 @@
 import sqlite3
-from datetime import datetime
 
-from models import MealInfo
-from models import RecordTrainingInput
+from agents.models import TrainingInputRecorder, MealInfo
 
 def init_db(db_path):
     """Initialize the database tables."""
@@ -71,8 +69,8 @@ def init_db(db_path):
 
         conn.commit()
 
-def add_training_session(input_data: RecordTrainingInput, db_path: str) -> str:
-    """Save the RecordTrainingInput to the 3-table training session schema.
+def add_training_session(input_data: TrainingInputRecorder, db_path: str) -> str:
+    """Save the TrainingInputRecorder to the 3-table training session schema.
     Returns a success string or an error string (Tool Rejection) if practices are missing.
     """
 
@@ -148,7 +146,7 @@ def update_training_session():
 
     pass
 
-def add_meal_record(meal: MealInfo, db_path: str) -> int:
+def add_meal_log(meal: MealInfo, db_path: str) -> int:
     """Add the MealInfo pydantic model
     return the ID of the newly inserted row.
     """

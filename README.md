@@ -13,7 +13,8 @@ ChatFit is completely unopinionated about your choice of LLM. You can plug in yo
 
 1. `export TELEGRAM_BOT_TOKEN="your-bot-token-from-botfather"`
 2. `cp .env.example .env`, open `.env` with a text editor, and then enter the values of the required fields.
-3. Spin up the service:
+3. Configure `docker-compose.yml` to mount your db file path and RAG directory path.
+4. Spin up the service:
 ```bash
 podman compose up -d
 

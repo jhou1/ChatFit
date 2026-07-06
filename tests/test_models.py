@@ -1,9 +1,9 @@
 from datetime import datetime
 import pytest
-from models import RecordTrainingInput, TrainingSession, TrainingSet, MealInfo
+from agents.models import TrainingInputRecorder, TrainingSession, TrainingSet, MealInfo
 
 def test_should_create_training_session_successfully():
-    input_data = RecordTrainingInput(
+    input_data = TrainingInputRecorder(
         date=datetime.now().date(),
         sessions=[
             TrainingSession(
@@ -20,7 +20,7 @@ def test_should_create_training_session_successfully():
 
 def test_should_failed_to_create_training_without_date():
     with pytest.raises(ValueError) as err:
-        RecordTrainingInput(
+        TrainingInputRecorder(
             sessions=[
                 TrainingSession(
                     practice_name="kettbell snatch",

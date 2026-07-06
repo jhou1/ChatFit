@@ -1,15 +1,42 @@
-from typing import Dict, Any
-
 from langchain_core.prompts.prompt import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, START, END
 
-from models import AgentState
-from utils.llm_factory import create_chat_model, LLMConfig
-from prompts import ASSISTANT_SELECTION_INSTRUCTION
-from agents.meal_recorder import make_record_meal_graph
-from agents.training_recorder import make_record_training_graph
+from agents.models import AgentState
+from agents.llm_factory import create_chat_model, LLMConfig
+from agents.roles.meal import make_meal_subagent_graph
+from agents.roles.training import make_training_agent_graph
+
+INSTRUCTION_FOR_ROUTING_SUBAGENTS="""
+You skilled at assigning user input to the correct subagents.
+
+These are the subagents you can assign to:
+- training_agent: responsible for saving user training sessions to the database, invoke it when user tells you about their training/workout sessions.
+- meal_agent: responsible for saving user meal details to the database, invoke it when user tells you about their meals.
+- chatter: everything else.
+
+Identify all relevant agents needed to process the user's message based on the conversation history. If the user is answering a clarification question from an agent (e.g., providing a missing detail about a training session or a meal), you MUST assign it back to the agent that asked the question.
+
+Only output a comma-separated list of agents(e.g. training_agent, meal_agent, chatter)
+
+Examples:
+User input: I ran 15 km this morning and swam 1km this evening.
+Response:
+training_agent
+
+User input: I had 2 eggs, 1 cup of milk this morning.
+Response:
+meal_agent
+
+User input: I run 5km, eat an apple.
+Response:
+training_agent, meal_agent
+
+User input: the weather is fine today
+Response:
+chatter
+"""
 
 
 def route_assistant_on_relevance(llm_config: LLMConfig, messages: list) -> list[str]:
@@ -17,14 +44,12 @@ def route_assistant_on_relevance(llm_config: LLMConfig, messages: list) -> list[
     Select the appropriate assistant based on conversation history
     """
 
-    prompt_template = PromptTemplate.from_template(ASSISTANT_SELECTION_INSTRUCTION)
+    prompt_template = PromptTemplate.from_template(INSTRUCTION_FOR_ROUTING_SUBAGENTS)
     system_prompt = prompt_template.format()
-    
+
     recent_messages = messages[-10:]
-        
     history_text = "\n".join([f"{type(m).__name__}: {m.content}" for m in recent_messages])
     routing_input = f"Conversation History:\n{history_text}\n\nBased on the history above, return the assignment decision. Output ONLY a comma-separated list of agents (e.g. training_agent, meal_agent). If no agent is needed, output 'chatter'."
-    
     routing_messages = [SystemMessage(content=system_prompt), HumanMessage(content=routing_input)]
 
     llm = create_chat_model(llm_config)
@@ -37,8 +62,8 @@ def route_assistant_on_relevance(llm_config: LLMConfig, messages: list) -> list[
     return decision
 
 def make_agent_graph(llm_config: LLMConfig, db_path: str, vector_store, checkpointer=None) -> StateGraph:
-    training_recorder_node = make_record_training_graph(llm_config, db_path)
-    meal_recorder_node = make_record_meal_graph(llm_config, db_path, vector_store)
+    training_recorder_node = make_training_agent_graph(llm_config, db_path)
+    meal_recorder_node = make_meal_subagent_graph(llm_config, db_path, vector_store)
 
     def training_wrapper(state: AgentState):
         result = training_recorder_node.invoke(state)

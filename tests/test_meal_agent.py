@@ -1,11 +1,11 @@
 import sqlite3
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime
 
-from agents.meal_recorder import make_record_meal_graph
-from utils.llm_factory import LLMConfig
-from utils.db import init_db
-from rag import get_or_create_vector_store
+from agents.roles.meal import make_meal_subagent_graph
+from agents.llm_factory import LLMConfig
+from agents.sqlite_handler import init_db
+from agents.rag import get_or_create_vector_store
 
 from langchain_core.messages import HumanMessage
 
@@ -38,7 +38,7 @@ def test_make_meal_subgraph(llm_config, temp_db_path, vector_store):
         "messages": [message]
     }
 
-    app = make_record_meal_graph(llm_config, temp_db_path, vector_store)
+    app = make_meal_subagent_graph(llm_config, temp_db_path, vector_store)
     app.invoke(initial_state)
 
     # agent should have inserted db records

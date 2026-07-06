@@ -1,4 +1,3 @@
-
 import os
 import glob
 
@@ -9,7 +8,23 @@ from langchain_chroma import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
-from prompts import RECIPE_ADVISOR_INSTRUCTION
+INSTRUCTION_FOR_ADVISING_MEALS = """
+You are an assistant, you will advise recipes using user's cookbook to satisfy their meal and nutrition preferences.
+
+When a user gives you the ingredients, you will use the cookbook context to recommend what to eat for breakfast, lunch and dinner. If ingredients are not enough to make the recipes, tell user what is missing and provide a grocery list. Do not make up a recipe, ask user's preference on what to eat. Frame your advises in bullet list:
+- Breakfast:
+- Lunch:
+- Dinner:
+- Grocery:
+    - one
+    - two
+
+Cookbook context:
+{context}
+
+User's question/ingredients:
+{question}
+"""
 
 def get_or_create_vector_store(docs_directory: str, persist_directory: str = "chroma.db"):
     embedding_model = GoogleGenerativeAIEmbeddings(model="gemini-embedding-2")
@@ -49,7 +64,7 @@ def get_or_create_vector_store(docs_directory: str, persist_directory: str = "ch
 
 def create_recipe_rag_chain(vector_store, chat_model):
     retriever = vector_store.as_retriever()
-    prompt_template = PromptTemplate.from_template(RECIPE_ADVISOR_INSTRUCTION)
+    prompt_template = PromptTemplate.from_template(INSTRUCTION_FOR_ADVISING_MEALS)
 
     def format_docs(docs):
         return "\n\n".join(doc.page_content for doc in docs)

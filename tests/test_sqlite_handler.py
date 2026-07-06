@@ -1,14 +1,14 @@
 from datetime import datetime, timedelta
 import sqlite3
 
-from models import TrainingSession, TrainingSet, RecordTrainingInput
-from utils.db import add_training_session, get_training_sessions_of_last_n_days, init_db
+from agents.models import TrainingInputRecorder, TrainingSet, TrainingSession
+from agents.sqlite_handler import add_training_session, get_training_sessions_of_last_n_days, init_db
 
 def test_add_training_session(tmp_path):
     db_path = tmp_path / "training_session_test.db"
     init_db(db_path)
 
-    test_input = RecordTrainingInput(
+    test_input = TrainingInputRecorder(
         date=datetime.now().date(),
         sessions=[
             TrainingSession(
@@ -18,7 +18,7 @@ def test_add_training_session(tmp_path):
                 sets=[TrainingSet(set_number=1, weight=100, reps=10)]
             )
         ],
-        confirm_new_practices=True 
+        confirm_new_practices=True
     )
 
     result = add_training_session(test_input, db_path)
@@ -50,7 +50,7 @@ def test_get_training_sessiosn_of_last_n_days(tmp_path):
 
     # prepare test data
     for i in range(1,8):
-        test_input = RecordTrainingInput(
+        test_input = TrainingInputRecorder(
             date=datetime.now().date() - timedelta(i),
             sessions=[
                 TrainingSession(
@@ -60,7 +60,7 @@ def test_get_training_sessiosn_of_last_n_days(tmp_path):
                     sets=[TrainingSet(set_number=1, weight=100, reps=10)]
                 )
             ],
-            confirm_new_practices=True 
+            confirm_new_practices=True
         )
 
         add_training_session(test_input, db_path)

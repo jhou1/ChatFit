@@ -2,10 +2,10 @@ import sqlite3
 import pytest
 from datetime import datetime, timedelta
 
-from agents.training_recorder import make_record_training_graph
-from utils.llm_factory import LLMConfig
-from utils.db import init_db, add_training_session
-from models import RecordTrainingInput, TrainingSession, TrainingSet
+from agents.roles.training import make_training_agent_graph
+from agents.llm_factory import LLMConfig
+from agents.sqlite_handler import init_db, add_training_session
+from agents.models import TrainingSession, TrainingSet, TrainingInputRecorder
 
 from langchain_core.messages import HumanMessage
 
@@ -29,7 +29,7 @@ def llm_config():
 def test_e2e_save_training_session(llm_config, temp_db_path):
     message = HumanMessage(content="I ran 5km in 30 minutes yesterday, rpe was around 5. Felt great!")
     state = {"messages": [message]}
-    app = make_record_training_graph(llm_config, temp_db_path)
+    app = make_training_agent_graph(llm_config, temp_db_path)
     response = app.invoke(state)
 
     # because addition of new practices must be approved
@@ -69,7 +69,7 @@ def test_e2e_save_training_session(llm_config, temp_db_path):
 def test_e2e_save_multiple_training_sessions(llm_config, temp_db_path):
     message = HumanMessage(content="I ran 10km in 30 minutes yesterday, then I snatched a 24kg kettlebell, 10 sets and 10 reps per set. RPE was 10.")
     state = {"messages": [message]}
-    app = make_record_training_graph(llm_config, temp_db_path)
+    app = make_training_agent_graph(llm_config, temp_db_path)
     response = app.invoke(state)
 
     agent_reply = response["messages"][-1].content[0]["text"]
@@ -111,7 +111,7 @@ def test_e2e_save_multiple_training_sessions(llm_config, temp_db_path):
 def test_retrieve_training_sessions(llm_config, temp_db_path):
     # prepare test data
     for i in range(1, 8):
-        test_input = RecordTrainingInput(
+        test_input = TrainingInputRecorder(
             date=datetime.now().date() - timedelta(i),
             sessions=[
                 TrainingSession(
@@ -121,14 +121,14 @@ def test_retrieve_training_sessions(llm_config, temp_db_path):
                     sets=[TrainingSet(set_number=1, reps=10*i)]
                 )
             ],
-            confirm_new_practices=True 
+            confirm_new_practices=True
         )
 
         add_training_session(test_input, temp_db_path)
 
     message = HumanMessage(content="Tell me about in the past 7 days, what trainings and practice types I had practiced.")
     state = {"messages": [message]}
-    app = make_record_training_graph(llm_config, temp_db_path)
+    app = make_training_agent_graph(llm_config, temp_db_path)
     response = app.invoke({"messages": state["messages"]})
     final_text = response["messages"][-1].content[0]["text"]
 
