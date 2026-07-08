@@ -2,8 +2,8 @@ import asyncio
 from typing import Sequence, Any
 
 from langchain_core.messages import ToolMessage, AIMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import ToolNode
-
 
 
 MAX_RETRIES = 3
@@ -100,7 +100,7 @@ class SafeToolNode:
     def __init__(self, tools: Sequence[Any]):
         self.tools = tools
 
-    async def __call__(self, state: dict, config: dict = None) -> dict:
+    async def __call__(self, state: dict, config: RunnableConfig | None = None) -> dict:
         messages = state.get("messages", [])
         if not messages:
             return {"messages": []}
