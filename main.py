@@ -1,5 +1,6 @@
 import os
 import uuid
+import asyncio
 
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
@@ -17,7 +18,7 @@ from agents.rag import get_or_create_vector_store
 
 console = Console()
 
-def main():
+async def main():
     llm_config = LLMConfig(
         provider="google",
         model_name="gemini-3.5-flash",
@@ -55,7 +56,7 @@ def main():
         initial_state = {"messages": [HumanMessage(content=user_input)]}
 
         with console.status("[bold yellow]Agent is thinking...[/]", spinner="dots"):
-            for event in app.stream(initial_state, config=config, stream_mode="updates"):
+            async for event in app.astream(initial_state, config=config, stream_mode="updates"):
                 for node_name, node_output in event.items():
                     if node_name in ["training", "meal", "assistant_selector", "chatter"]:
                         new_messages = node_output.get("messages", [])
@@ -82,4 +83,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
