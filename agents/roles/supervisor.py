@@ -1,12 +1,15 @@
+import asyncio
 from langchain_core.prompts.prompt import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import HumanMessage, SystemMessage
-from langgraph.graph import StateGraph, START, END
+from langgraph.graph import StateGraph, START
 
 from agents.models import AgentState
 from agents.llm_factory import create_chat_model, LLMConfig
 from agents.roles.meal import make_meal_subagent_graph
 from agents.roles.training import make_training_agent_graph
+
+from tools.safe_execution import _execute_llm_query_safely
 
 INSTRUCTION_FOR_ROUTING_SUBAGENTS="""
 You skilled at assigning user input to the correct subagents.
@@ -39,10 +42,8 @@ chatter
 """
 
 
-def route_assistant_on_relevance(llm_config: LLMConfig, messages: list) -> list[str]:
-    """
-    Select the appropriate assistant based on conversation history
-    """
+async def route_assistant_on_relevance(llm_config: LLMConfig, messages: list) -> list[str]:
+    """Select the appropriate assistant based on conversation history"""
 
     prompt_template = PromptTemplate.from_template(INSTRUCTION_FOR_ROUTING_SUBAGENTS)
     system_prompt = prompt_template.format()
@@ -53,10 +54,15 @@ def route_assistant_on_relevance(llm_config: LLMConfig, messages: list) -> list[
     routing_messages = [SystemMessage(content=system_prompt), HumanMessage(content=routing_input)]
 
     llm = create_chat_model(llm_config)
-    chain = llm | StrOutputParser()
-    response = chain.invoke(routing_messages)
+    # chain = llm | StrOutputParser()
+    response = await _execute_llm_query_safely(llm, routing_messages)
+    content = response["messages"].content
+    content_str = content if isinstance(content, str) else content[0]["text"]
+    
+    if "LLM request timeout exceeded" in content_str:
+        return ["chatter"]
 
-    decision = [agent.strip() for agent in response.split(",") if "agent" in agent]
+    decision = [agent.strip() for agent in content_str.split(",") if "agent" in agent]
     if not decision:
         return ["chatter"]
     return decision
@@ -65,23 +71,23 @@ def make_agent_graph(llm_config: LLMConfig, db_path: str, vector_store, checkpoi
     training_recorder_node = make_training_agent_graph(llm_config, db_path)
     meal_recorder_node = make_meal_subagent_graph(llm_config, db_path, vector_store)
 
-    def training_wrapper(state: AgentState):
-        result = training_recorder_node.invoke(state)
+    async def training_wrapper(state: AgentState):
+        result = await training_recorder_node.ainvoke(state)
         return {"messages": result["messages"]}
 
-    def meal_wrapper(state: AgentState):
-        result = meal_recorder_node.invoke(state)
+    async def meal_wrapper(state: AgentState):
+        result = await meal_recorder_node.ainvoke(state)
         return {"messages": result["messages"]}
 
-    def chatter_node(state: AgentState):
+    async def chatter_node(state: AgentState):
         llm = create_chat_model(llm_config)
         messages = [SystemMessage(content="You are ChatFit, a friendly fitness and nutrition assistant. Answer general questions, say hello, and be helpful.")] + state["messages"]
-        response = llm.invoke(messages)
+        response = await _execute_llm_query_safely(llm, messages)
         return {"messages": [response]}
 
     # routing node
-    def assistant_selector_node(state: AgentState):
-        decision = route_assistant_on_relevance(llm_config, state["messages"])
+    async def assistant_selector_node(state: AgentState):
+        decision = await route_assistant_on_relevance(llm_config, state["messages"])
         return {"assistant_names": decision}
 
     # routing callable
@@ -103,7 +109,7 @@ def make_agent_graph(llm_config: LLMConfig, db_path: str, vector_store, checkpoi
         {
             "training_agent": "training",
             "meal_agent": "meal",
-            "chatter": "chatter"
+            "chatter": "chatter",
         }
     )
 

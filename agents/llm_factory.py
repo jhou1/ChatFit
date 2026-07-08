@@ -26,7 +26,7 @@ provider_classes = {
 def create_chat_model(config: LLMConfig):
     provider = config.provider.lower()
     provider_class = provider_classes.get(provider)
-    
+
     if not provider_class:
         raise ValueError(f"Unsupported provider: {provider}")
 

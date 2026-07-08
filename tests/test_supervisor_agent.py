@@ -31,44 +31,50 @@ def vector_store(tmp_path):
     return get_or_create_vector_store("tests/recipes", chroma_db_path)
 
 # tests start here
+@pytest.mark.asyncio
 @pytest.mark.e2e
-def test_routing_meal_assistant(llm_config):
+async def test_routing_meal_assistant(llm_config):
     message = [HumanMessage(content="breakfast: 2 fried eggs and bread today")]
-    result = route_assistant_on_relevance(llm_config, message)
+    result = await route_assistant_on_relevance(llm_config, message)
 
     assert result == ["meal_agent"]
 
+@pytest.mark.asyncio
 @pytest.mark.e2e
-def test_routing_training_assistant(llm_config):
+async def test_routing_training_assistant(llm_config):
     message = [HumanMessage(content="I pressed 48kg kettlebell 1 time today.")]
-    result = route_assistant_on_relevance(llm_config, message)
+    result = await route_assistant_on_relevance(llm_config, message)
 
     assert result == ["training_agent"]
 
+@pytest.mark.asyncio
 @pytest.mark.e2e
-def test_routing_multiple_assistants(llm_config):
+async def test_routing_multiple_assistants(llm_config):
     message = [HumanMessage(content="I ran 10km today, and then I eat 2 bananas.")]
-    result = route_assistant_on_relevance(llm_config, message)
+    result = await route_assistant_on_relevance(llm_config, message)
 
     assert "meal_agent" in result
     assert "training_agent" in result
 
+@pytest.mark.asyncio
 @pytest.mark.e2e
-def test_routing_none(llm_config):
+async def test_routing_none(llm_config):
     message = [HumanMessage(content="the weather is fine today")]
-    result = route_assistant_on_relevance(llm_config, message)
+    result = await route_assistant_on_relevance(llm_config, message)
 
     assert result == ['chatter']
 
+@pytest.mark.asyncio
 @pytest.mark.e2e
-def test_make_agent_graph(llm_config, temp_db_path, vector_store):
+async def test_make_agent_graph(llm_config, temp_db_path, vector_store):
     app = make_agent_graph(llm_config, temp_db_path, vector_store)
 
     message = HumanMessage(content="I ran 5km in 30 minutes yesterday. RPE was around 5. Then I had 2 burgers for lunch.")
     state = {"messages": [message]}
-    response = app.invoke(state)
+    response = await app.ainvoke(state)
 
-    agent_reply = response["messages"][-1].content[0]["text"]
+    content = response["messages"][-1].content
+    agent_reply = content if isinstance(content, str) else content[0]["text"]
     assert "running" in agent_reply.lower()
     assert "?" in agent_reply.lower()
 
@@ -76,7 +82,7 @@ def test_make_agent_graph(llm_config, temp_db_path, vector_store):
         response["messages"][-1],
         HumanMessage(content="Yes, please add running as distance practice.")
     ])
-    app.invoke(state)
+    await app.ainvoke(state)
 
     # agent should have inserted db records
     with sqlite3.connect(temp_db_path) as conn:

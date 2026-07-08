@@ -9,7 +9,9 @@ from langchain_core.tools import tool
 from langchain_core.messages import SystemMessage
 from langchain_core.prompts.prompt import PromptTemplate
 from langgraph.graph import StateGraph, START
-from langgraph.prebuilt import ToolNode, tools_condition
+
+from langgraph.prebuilt import tools_condition
+from tools.safe_execution import SafeToolNode, _execute_llm_query_safely
 
 INSTRUCTION_FOR_RECORDING_MEALS = """
 You are a nutrition and meal assistant.
@@ -52,19 +54,17 @@ def make_meal_subagent_graph(llm_config: LLMConfig, db_path: str, vector_store):
 
     llm_with_tools = llm.bind_tools([log_meal, advise_meals])
 
-    def log_meal_node(state: AgentState):
+    async def log_meal_node(state: AgentState):
         prompt_template = PromptTemplate.from_template(INSTRUCTION_FOR_RECORDING_MEALS)
         system_prompt = prompt_template.format(
             current_time=datetime.now().isoformat()
         )
-
         messages = [SystemMessage(content=system_prompt)] + state["messages"]
-        response = llm_with_tools.invoke(messages)
-        return {"messages": response}
+        return await _execute_llm_query_safely(llm_with_tools, messages)
 
     builder = StateGraph(AgentState)
     builder.add_node("log_meal", log_meal_node)
-    tool_node = ToolNode(tools=[log_meal, advise_meals])
+    tool_node = SafeToolNode(tools=[log_meal, advise_meals])
     builder.add_node("tools", tool_node)
 
     builder.add_edge(START, "log_meal")

@@ -1,5 +1,6 @@
 import os
 import uuid
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
@@ -60,7 +61,7 @@ app = FastAPI(
 )
 
 @app.post("/chat", response_model=ChatResponse)
-def chat_endpoint(req: ChatRequest, request: Request):
+async def chat_endpoint(req: ChatRequest, request: Request):
     if not req.message.strip():
         raise HTTPException(status_code=400, detail="Empty message")
 
@@ -75,7 +76,7 @@ def chat_endpoint(req: ChatRequest, request: Request):
     final_response = ""
 
     # Stream the graph updates
-    for event in request.app.state.agent.stream(initial_state, config=config, stream_mode="updates"):
+    async for event in request.app.state.agent.astream(initial_state, config=config, stream_mode="updates"):
         for node_name, node_output in event.items():
             if node_name in ["training", "meal", "assistant_selector", "chatter"]:
                 new_messages = node_output.get("messages", [])

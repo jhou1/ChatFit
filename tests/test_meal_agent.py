@@ -31,15 +31,16 @@ def vector_store(tmp_path):
     return get_or_create_vector_store("tests/recipes", chroma_db_path)
 
 
+@pytest.mark.asyncio
 @pytest.mark.e2e
-def test_make_meal_subgraph(llm_config, temp_db_path, vector_store):
+async def test_make_meal_subgraph(llm_config, temp_db_path, vector_store):
     message = HumanMessage(content="breakfast: 2 fried eggs and bread today")
     initial_state = {
         "messages": [message]
     }
 
     app = make_meal_subagent_graph(llm_config, temp_db_path, vector_store)
-    app.invoke(initial_state)
+    await app.ainvoke(initial_state)
 
     # agent should have inserted db records
     with sqlite3.connect(temp_db_path) as conn:

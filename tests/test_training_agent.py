@@ -25,16 +25,18 @@ def llm_config():
         temperature=0
     )
 
+@pytest.mark.asyncio
 @pytest.mark.e2e
-def test_e2e_save_training_session(llm_config, temp_db_path):
+async def test_e2e_save_training_session(llm_config, temp_db_path):
     message = HumanMessage(content="I ran 5km in 30 minutes yesterday, rpe was around 5. Felt great!")
     state = {"messages": [message]}
     app = make_training_agent_graph(llm_config, temp_db_path)
-    response = app.invoke(state)
+    response = await app.ainvoke(state)
 
     # because addition of new practices must be approved
     # we create a new message to approve adding the record
-    agent_reply = response["messages"][-1].content[0]["text"]
+    content = response["messages"][-1].content
+    agent_reply = content if isinstance(content, str) else content[0]["text"]
     assert "running" in agent_reply.lower()
     assert "?" in agent_reply.lower()
 
@@ -42,7 +44,7 @@ def test_e2e_save_training_session(llm_config, temp_db_path):
         response["messages"][-1],
         HumanMessage(content="Yes, please add it as distance practice.")
     ])
-    app.invoke(state)
+    await app.ainvoke(state)
 
     # agent should have inserted db records
     with sqlite3.connect(temp_db_path) as conn:
@@ -65,14 +67,16 @@ def test_e2e_save_training_session(llm_config, temp_db_path):
         assert saved_sets["distance"] == 5.0
         assert saved_sets["duration"] == 30.0
 
+@pytest.mark.asyncio
 @pytest.mark.e2e
-def test_e2e_save_multiple_training_sessions(llm_config, temp_db_path):
+async def test_e2e_save_multiple_training_sessions(llm_config, temp_db_path):
     message = HumanMessage(content="I ran 10km in 30 minutes yesterday, then I snatched a 24kg kettlebell, 10 sets and 10 reps per set. RPE was 10.")
     state = {"messages": [message]}
     app = make_training_agent_graph(llm_config, temp_db_path)
-    response = app.invoke(state)
+    response = await app.ainvoke(state)
 
-    agent_reply = response["messages"][-1].content[0]["text"]
+    content = response["messages"][-1].content
+    agent_reply = content if isinstance(content, str) else content[0]["text"]
     assert "running" in agent_reply.lower()
     assert "kettlebell" in agent_reply.lower()
     assert "?" in agent_reply.lower()
@@ -81,7 +85,7 @@ def test_e2e_save_multiple_training_sessions(llm_config, temp_db_path):
         response["messages"][-1],
         HumanMessage(content="Yes, please add running as distance practice and add kettlebell snatch as weighted practice.")
     ])
-    app.invoke(state)
+    await app.ainvoke(state)
 
 
     # agent should have inserted db records
@@ -107,8 +111,9 @@ def test_e2e_save_multiple_training_sessions(llm_config, temp_db_path):
             assert row["name"].lower() in ["running", "kettlebell snatch"]
             assert row["type"].lower() in ["weighted", "distance"]
 
+@pytest.mark.asyncio
 @pytest.mark.e2e
-def test_retrieve_training_sessions(llm_config, temp_db_path):
+async def test_retrieve_training_sessions(llm_config, temp_db_path):
     # prepare test data
     for i in range(1, 8):
         test_input = TrainingInputRecorder(
@@ -129,8 +134,9 @@ def test_retrieve_training_sessions(llm_config, temp_db_path):
     message = HumanMessage(content="Tell me about in the past 7 days, what trainings and practice types I had practiced.")
     state = {"messages": [message]}
     app = make_training_agent_graph(llm_config, temp_db_path)
-    response = app.invoke({"messages": state["messages"]})
-    final_text = response["messages"][-1].content[0]["text"]
+    response = await app.ainvoke({"messages": state["messages"]})
+    content = response["messages"][-1].content
+    final_text = content if isinstance(content, str) else content[0]["text"]
 
     assert "squat" in final_text.lower()
     assert "bodyweight" in final_text.lower()

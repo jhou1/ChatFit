@@ -1,17 +1,19 @@
 import json
 import re
+
 from datetime import datetime
 
 from langchain_core.prompts.prompt import PromptTemplate
 from langchain_core.tools import tool
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage
 
 from langgraph.graph import StateGraph, START
-from langgraph.prebuilt import ToolNode, tools_condition
 
 from agents.models import AgentState, TrainingInputRecorder
 from agents.sqlite_handler import add_training_session, get_training_sessions_of_last_n_days
 from agents.llm_factory import create_chat_model, LLMConfig
+from langgraph.prebuilt import tools_condition
+from tools.safe_execution import SafeToolNode, _execute_llm_query_safely
 
 INSTRUCTION_FOR_RECORDING_TRAINING_SESSIONS = """
 You are a highly capable assistant helping users track their fitness training sessions.
@@ -111,34 +113,30 @@ def make_training_agent_graph(llm_config: LLMConfig, db_path: str):
         """Get a list of training sessions of the last n days"""
         return get_training_sessions_of_last_n_days(num_of_days, db_path)
 
-
-
     llm = create_chat_model(llm_config)
     llm_with_tools = llm.bind_tools([normalize_practice_name,
                                      log_training_session,
                                      retrieve_training_sessions
                                      ])
 
-    def log_training_node(state: AgentState):
+    async def log_training_node(state: AgentState):
         prompt_template = PromptTemplate.from_template(INSTRUCTION_FOR_RECORDING_TRAINING_SESSIONS)
         system_prompt = prompt_template.format(
             current_time=datetime.now().isoformat()
         )
-
         messages = [SystemMessage(content=system_prompt)] + state["messages"]
-        response = llm_with_tools.invoke(messages)
-        return {"messages": response}
+        return await _execute_llm_query_safely(llm_with_tools, messages)
 
-    def retrieve_training_node(state: AgentState):
+    async def retrieve_training_node(state: AgentState):
         system_message = SystemMessage(content=INSTRUCTION_FOR_RETRIEVING_TRAINING_SESSIONS)
         messages = [SystemMessage(content=system_message)] + state["messages"]
-        response = llm_with_tools.invoke(messages)
-        return {"message": response}
+        return await _execute_llm_query_safely(llm_with_tools, messages)
+
 
     builder = StateGraph(AgentState)
     builder.add_node("log_training_node", log_training_node)
     builder.add_node("retrieve_training_node", retrieve_training_node)
-    tool_node = ToolNode(tools=[normalize_practice_name,
+    tool_node = SafeToolNode(tools=[normalize_practice_name,
                                 log_training_session,
                                 retrieve_training_sessions])
     builder.add_node("tools", tool_node)
