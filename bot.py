@@ -84,10 +84,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data = response.json()
             bot_reply = data.get("response")
 
-            if bot_reply == "[SYSTEM_APPROVAL]":
+            if  "[SYSTEM_APPROVAL]" in bot_reply:
+                text_before_approval = bot_reply.replace("[SYSTEM_APPROVAL]", "").strip()
                 pending_tools = data.get("pending_tools", [])
                 tools_text = "\n".join([f"- {tool_call.get('name')}" for tool_call in pending_tools])
-                prompt_text = f"[Approval Requested]: I'll execute the following write operation: \n{tools_text}"
+
+                if text_before_approval:
+                    prompt_text = f"{text_before_approval}\n\n[Approval Requested]: I'll execute the following write operation: \n{tools_text}"
+                else:
+                    prompt_text = f"[Approval Requested]: I'll execute the following write operation: \n{tools_text}"
 
                 keyboard = [
                     [

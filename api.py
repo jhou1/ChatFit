@@ -96,8 +96,12 @@ async def chat_endpoint(req: ChatRequest, request: Request):
         # HITL interruptions
         if "__interrupt__" in event:
             interruption_data = event["__interrupt__"][0].value
+            if final_response.strip():
+                approval_msg = final_response.strip() + "\n\n[SYSTEM_APPROVAL]"
+            else:
+                approval_msg = "[SYSTEM_APPROVAL]"
             return ChatResponse(
-                response="[SYSTEM_APPROVAL]",
+                response=approval_msg,
                 pending_tools=interruption_data["tool_calls"]
             )
         for node_name, node_output in event.items():
