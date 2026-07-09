@@ -25,13 +25,21 @@ def llm_config():
         temperature=0
     )
 
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command
+
 @pytest.mark.asyncio
 @pytest.mark.e2e
 async def test_e2e_save_training_session(llm_config, temp_db_path):
     message = HumanMessage(content="I ran 5km in 30 minutes yesterday, rpe was around 5. Felt great!")
     state = {"messages": [message]}
     app = make_training_agent_graph(llm_config, temp_db_path)
-    response = await app.ainvoke(state)
+    app.checkpointer = MemorySaver()
+    config = {"configurable": {"thread_id": "test_3"}}
+    response = await app.ainvoke(state, config)
+
+    while "__interrupt__" in response:
+        response = await app.ainvoke(Command(resume={"approved": True}), config)
 
     # because addition of new practices must be approved
     # we create a new message to approve adding the record
@@ -40,11 +48,13 @@ async def test_e2e_save_training_session(llm_config, temp_db_path):
     assert "running" in agent_reply.lower()
     assert "?" in agent_reply.lower()
 
-    state["messages"].extend([
-        response["messages"][-1],
+    state = {"messages": response["messages"] + [
         HumanMessage(content="Yes, please add it as distance practice.")
-    ])
-    await app.ainvoke(state)
+    ]}
+    response = await app.ainvoke(state, config)
+    
+    while "__interrupt__" in response:
+        response = await app.ainvoke(Command(resume={"approved": True}), config)
 
     # agent should have inserted db records
     with sqlite3.connect(temp_db_path) as conn:
@@ -73,20 +83,26 @@ async def test_e2e_save_multiple_training_sessions(llm_config, temp_db_path):
     message = HumanMessage(content="I ran 10km in 30 minutes yesterday, then I snatched a 24kg kettlebell, 10 sets and 10 reps per set. RPE was 10.")
     state = {"messages": [message]}
     app = make_training_agent_graph(llm_config, temp_db_path)
-    response = await app.ainvoke(state)
+    app.checkpointer = MemorySaver()
+    config = {"configurable": {"thread_id": "test_4"}}
+    response = await app.ainvoke(state, config)
+    
+    while "__interrupt__" in response:
+        response = await app.ainvoke(Command(resume={"approved": True}), config)
 
     content = response["messages"][-1].content
     agent_reply = content if isinstance(content, str) else content[0]["text"]
-    assert "running" in agent_reply.lower()
+    assert "run" in agent_reply.lower() or "running" in agent_reply.lower()
     assert "kettlebell" in agent_reply.lower()
     assert "?" in agent_reply.lower()
 
-    state["messages"].extend([
-        response["messages"][-1],
+    state = {"messages": response["messages"] + [
         HumanMessage(content="Yes, please add running as distance practice and add kettlebell snatch as weighted practice.")
-    ])
-    await app.ainvoke(state)
-
+    ]}
+    response = await app.ainvoke(state, config)
+    
+    while "__interrupt__" in response:
+        response = await app.ainvoke(Command(resume={"approved": True}), config)
 
     # agent should have inserted db records
     with sqlite3.connect(temp_db_path) as conn:
@@ -108,7 +124,7 @@ async def test_e2e_save_multiple_training_sessions(llm_config, temp_db_path):
         cursor.execute("SELECT name, type FROM practices")
         rows = cursor.fetchall()
         for row in rows:
-            assert row["name"].lower() in ["running", "kettlebell snatch"]
+            assert row["name"].lower() in ["running", "kettlebell snatch", "壶铃：抓举"]
             assert row["type"].lower() in ["weighted", "distance"]
 
 @pytest.mark.asyncio

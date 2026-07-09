@@ -31,6 +31,9 @@ def vector_store(tmp_path):
     return get_or_create_vector_store("tests/recipes", chroma_db_path)
 
 
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command
+
 @pytest.mark.asyncio
 @pytest.mark.e2e
 async def test_make_meal_subgraph(llm_config, temp_db_path, vector_store):
@@ -40,7 +43,14 @@ async def test_make_meal_subgraph(llm_config, temp_db_path, vector_store):
     }
 
     app = make_meal_subagent_graph(llm_config, temp_db_path, vector_store)
-    await app.ainvoke(initial_state)
+    app.checkpointer = MemorySaver()
+    config = {"configurable": {"thread_id": "test_1"}}
+    
+    # We may need multiple resumes if the LLM makes a mistake and retries
+    state = await app.ainvoke(initial_state, config)
+    
+    while "__interrupt__" in state:
+        state = await app.ainvoke(Command(resume={"approved": True}), config)
 
     # agent should have inserted db records
     with sqlite3.connect(temp_db_path) as conn:
