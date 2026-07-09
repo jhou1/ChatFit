@@ -16,8 +16,6 @@ TRUNCATE_WARNINGS = "\n[OUTPUT TRUNCATED - the tool returned more data than can 
 HITL_TIMEOUT_SECONDS = 300.0 # 5 minutes for human-in-the-loop timeout
 HITL_TOOL_CALLS = ["log_training_session", "log_meal"]
 
-class ApprovalNotGrantedError(Exception):
-    """Control flow signal when approval is denied or times out"""
 
 def _is_transient_tool_error(error: Exception) -> bool:
     """Return True if a tool execution is likely transient"""
