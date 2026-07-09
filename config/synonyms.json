@@ -82,5 +82,9 @@
   "自重：蹲起": {
     "standard_name": "自重：蹲起",
     "aliases": ["squat", "bodyweight squat", "bw squat", "蹲起"]
+  },
+  "Shena": {
+      "standard_name": "Shena",
+      "aliases": ["sheno", "波斯板", "俯冲板"]
   }
 }
