@@ -169,3 +169,92 @@ async def test_execute_llm_query_safely_exhausts_retries(mock_sleep):
     assert "LLM request timeout exceeded" in result["messages"].content
     assert mock_llm.ainvoke.call_count == MAX_RETRIES
     assert mock_sleep.call_count == MAX_RETRIES
+
+from langchain_core.messages import AIMessage
+from tools.safe_execution import SafeToolNode
+
+@pytest.mark.asyncio
+@patch("tools.safe_execution.interrupt")
+@patch("tools.safe_execution._execute_single_tool_safely")
+async def test_safe_tool_node_non_write_tool(mock_execute, mock_interrupt):
+    # Setup
+    node = SafeToolNode(tools=[]) # Tool instances don't matter since we patch execution
+    state = {
+        "messages": [
+            AIMessage(
+                content="", 
+                tool_calls=[{"name": "retrieve_training_sessions", "args": {}, "id": "call_1"}]
+            )
+        ]
+    }
+    mock_execute.return_value = ToolMessage(content="Retrieved data", tool_call_id="call_1")
+
+    # Execution
+    result = await node(state)
+
+    # Verification
+    mock_interrupt.assert_not_called()
+    mock_execute.assert_called_once()
+    assert len(result["messages"]) == 1
+    assert result["messages"][0].content == "Retrieved data"
+
+@pytest.mark.asyncio
+@patch("tools.safe_execution.interrupt")
+@patch("tools.safe_execution._execute_single_tool_safely")
+async def test_safe_tool_node_write_tool_approved(mock_execute, mock_interrupt):
+    # Setup
+    node = SafeToolNode(tools=[])
+    state = {
+        "messages": [
+            AIMessage(
+                content="", 
+                tool_calls=[{"name": "log_training_session", "args": {"note": "test"}, "id": "call_2"}]
+            )
+        ]
+    }
+    # Simulate user approving the interrupt
+    mock_interrupt.return_value = {"approved": True}
+    mock_execute.return_value = ToolMessage(content="Saved successfully", tool_call_id="call_2")
+
+    # Execution
+    result = await node(state)
+
+    # Verification
+    mock_interrupt.assert_called_once_with({
+        "action": "approval_required",
+        "tool_calls": [{"name": "log_training_session", "args": {"note": "test"}, "id": "call_2", "type": "tool_call"}]
+    })
+    mock_execute.assert_called_once()
+    assert len(result["messages"]) == 1
+    assert result["messages"][0].content == "Saved successfully"
+
+@pytest.mark.asyncio
+@patch("tools.safe_execution.interrupt")
+@patch("tools.safe_execution._execute_single_tool_safely")
+async def test_safe_tool_node_write_tool_rejected(mock_execute, mock_interrupt):
+    # Setup
+    node = SafeToolNode(tools=[])
+    state = {
+        "messages": [
+            AIMessage(
+                content="", 
+                tool_calls=[{"name": "log_meal", "args": {"food": "apple"}, "id": "call_3"}]
+            )
+        ]
+    }
+    # Simulate user rejecting the interrupt
+    mock_interrupt.return_value = {"approved": False}
+
+    # Execution
+    result = await node(state)
+
+    # Verification
+    mock_interrupt.assert_called_once()
+    mock_execute.assert_not_called() # The tool must NOT be executed
+    
+    assert len(result["messages"]) == 1
+    rejected_message = result["messages"][0]
+    assert isinstance(rejected_message, ToolMessage)
+    assert rejected_message.status == "error"
+    assert "User rejected the operation" in rejected_message.content
+    assert rejected_message.tool_call_id == "call_3"
