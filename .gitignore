@@ -13,3 +13,4 @@ wheels/
 # data
 chroma.db/*
 chatfit.db
+checkpointer.db
