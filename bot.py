@@ -190,6 +190,26 @@ async def handle_approval_callback(update: Update, context: ContextTypes.DEFAULT
 
             bot_reply = data.get("response", "Operation complete.")
 
+            if "[SYSTEM_APPROVAL]" in bot_reply:
+                text_before_approval = bot_reply.replace("[SYSTEM_APPROVAL]", "").strip()
+                pending_tools = data.get("pending_tools", [])
+                tools_text = "\n".join([f"- {tool_call.get('name')}" for tool_call in pending_tools])
+
+                if text_before_approval:
+                    prompt_text = f"{text_before_approval}\n\n[Approval Requested]: I'll execute the following write operation: \n{tools_text}"
+                else:
+                    prompt_text = f"[Approval Requested]: I'll execute the following write operation: \n{tools_text}"
+
+                keyboard = [
+                    [
+                        InlineKeyboardButton("✅ Approve", callback_data="approve_yes"),
+                        InlineKeyboardButton("❌ Reject", callback_data="approve_no")
+                    ]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await context.bot.send_message(chat_id=query.message.chat_id, text=prompt_text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+                return
+
             html_reply = markdown_to_tg_html(bot_reply).strip()
             await context.bot.send_message(
                 chat_id=query.message.chat_id,

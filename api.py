@@ -137,6 +137,14 @@ async def resume_checkpoint(req: ResumeRequest, request: Request):
     resume_command = Command(resume={"approved": req.approved})
     final_response = ""
     async for event in request.app.state.agent.astream(resume_command, config=config, stream_mode="updates"):
+        if "__interrupt__" in event:
+            interruption_data = event["__interrupt__"][0].value
+            approval_msg = final_response.strip() + "\n\n[SYSTEM_APPROVAL]" if final_response.strip() else "[SYSTEM_APPROVAL]"
+            return ChatResponse(
+                response=approval_msg,
+                pending_tools=interruption_data["tool_calls"]
+            )
+            
         for node_name, node_output in event.items():
             if node_name in ["training", "meal", "assistant_selector", "chatter"]:
                 new_messages = node_output.get("messages", [])
