@@ -1,6 +1,6 @@
 from datetime import date as _date
 from typing import TypedDict, Annotated, Optional, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from langgraph.graph.message import add_messages
 
@@ -30,6 +30,17 @@ class TrainingSession(BaseModel):
     cool_down: Optional[str] = Field(default=None, description="Cool down activities after the training session")
     sets: list[TrainingSet] = Field(description="List of sets performed for this practice")
     note: str = Field(description="Specific notes, RPE, or feelings about this practice")
+
+    @model_validator(mode='after')
+    def validate_weighted_practices_has_weight(self):
+        if self.practice_type == "weighted":
+            for s in self.sets:
+                if s.weight is None or s.weight <= 0:
+                    raise ValueError(
+                        f"{self.practice_name} is a 'weighted' practice, but no weight has been provided in set {s.set_number}."
+                        "You MUST stop and ask the user to provide the weight they have used."
+                    )
+        return self
 
 
 class TrainingInputRecorder(BaseModel):
