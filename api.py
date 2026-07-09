@@ -37,13 +37,17 @@ def get_thread_id(user_id: str) -> str:
 
 @asynccontextmanager
 async def startup_event(fastapi_app: FastAPI):
-    llm_proxy = os.environ.get("LLM_PROXY", "socks5://host.docker.internal:8990")
+    llm_proxy = os.environ.get("LLM_PROXY", None)
+    kwargs = {}
+    if llm_proxy:
+        kwargs["client_args"] = {"proxy": llm_proxy}
+
     llm_config = LLMConfig(
         provider="google",
         model_name="gemini-3.5-flash",
         temperature=0.5,
         max_tokens=2048,
-        kwargs={"client_args": {"proxy": llm_proxy}}
+        kwargs=kwargs
     )
 
     db_path = os.path.expanduser("~/.iron/iron.db")
@@ -62,9 +66,9 @@ async def startup_event(fastapi_app: FastAPI):
         await checkpointer.setup()
         fastapi_app.state.agent = make_agent_graph(llm_config, db_path, vector_store, checkpointer=checkpointer)
 
-    print("ChatFit API is ready.")
+        print("ChatFit API is ready.")
 
-    yield
+        yield
 
 app = FastAPI(
     title="ChatFit API",
@@ -147,3 +151,5 @@ async def resume_checkpoint(req: ResumeRequest, request: Request):
                     if text_content.strip():
                         # We accumulate the response texts from the agents
                         final_response += text_content + "\n\n"
+
+    return ChatResponse(response=final_response.strip())

@@ -128,8 +128,7 @@ def main():
 
     print("Initializing Telegram Bot...")
 
-    # Use socks5h instead of socks5 to force remote DNS resolution (important for api.telegram.org in some regions)
-    proxy_url = os.environ.get("TELEGRAM_PROXY", "socks5h://host.docker.internal:8990")
+    proxy_url = os.environ.get("TELEGRAM_PROXY", None)
 
     if proxy_url:
         print(f"Using proxy: {proxy_url}")
