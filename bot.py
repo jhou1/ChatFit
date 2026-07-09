@@ -91,8 +91,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 keyboard = [
                     [
-                        InlineKeyboardButton("APPROVE", callback_data="approve_yes"),
-                        InlineKeyboardButton("REJECT", callback_data="approve_no")
+                        InlineKeyboardButton("✅ Approve", callback_data="approve_yes"),
+                        InlineKeyboardButton("❌ Reject", callback_data="approve_no")
                     ]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
