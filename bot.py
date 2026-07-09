@@ -2,9 +2,10 @@ import os
 import httpx
 import mistune
 import telegram.error
-from telegram import Update
+from telegram import CallbackQuery, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
 from dotenv import load_dotenv
 
@@ -50,6 +51,7 @@ load_dotenv()
 api_port = os.environ.get("PORT", "8000")
 API_URL = os.environ.get("API_URL", f"http://127.0.0.1:{api_port}/chat")
 API_CLEAR_URL = os.environ.get("API_CLEAR_URL", f"http://127.0.0.1:{api_port}/clear")
+API_RESUME_URL = os.environ.get("API_RESUME_URL", f"http://127.0.0.1:{api_port}/resume")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /start command."""
@@ -63,13 +65,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for all standard text messages."""
     user_id = str(update.effective_user.id)
     user_message = update.message.text
-    
+
     # Send a typing action to let the user know the bot is thinking
     try:
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='typing')
     except telegram.error.NetworkError as ne:
         print(f"Network error while sending typing action: {ne}")
-    
+
     try:
         # Increase timeout because agent chains can take a while to complete.
         # Explicitly set proxy to None for the local API call so it doesn't get routed through the SOCKS5 proxy.
@@ -81,15 +83,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             response.raise_for_status()
             data = response.json()
             bot_reply = data.get("response")
-            
+
+            if bot_reply == "[SYSTEM_APPROVAL]":
+                pending_tools = data.get("pending_tools", [])
+                tools_text = "\n".join([f"- {tool_call.get('name')}" for tool_call in pending_tools])
+                prompt_text = f"[Approval Requested]: I'll execute the following write operation: \n{tools_text}"
+
+                keyboard = [
+                    [
+                        InlineKeyboardButton("APPROVE", callback_data="approve_yes"),
+                        InlineKeyboardButton("REJECT", callback_data="approve_no")
+                    ]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await update.message.reply_text(prompt_text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+                return
+
             if not bot_reply:
                 bot_reply = "Sorry, I processed that but didn't generate a response."
-                
+
     except httpx.HTTPError as e:
         bot_reply = f"Sorry, I'm having trouble connecting to the backend right now. Error: {e}"
     except Exception as e:
         bot_reply = f"An unexpected error occurred: {e}"
-        
+
     try:
         html_reply = markdown_to_tg_html(bot_reply).strip()
         await update.message.reply_text(html_reply, parse_mode=ParseMode.HTML)
@@ -108,12 +125,12 @@ def main():
         print("Error: TELEGRAM_BOT_TOKEN not found in environment variables.")
         print("Please add it to your .env file.")
         exit(1)
-        
+
     print("Initializing Telegram Bot...")
-    
+
     # Use socks5h instead of socks5 to force remote DNS resolution (important for api.telegram.org in some regions)
     proxy_url = os.environ.get("TELEGRAM_PROXY", "socks5h://host.docker.internal:8990")
-    
+
     if proxy_url:
         print(f"Using proxy: {proxy_url}")
         # We also want to give Telegram's internal httpx client a longer timeout
@@ -121,18 +138,19 @@ def main():
         app = ApplicationBuilder().token(token).request(request).build()
     else:
         app = ApplicationBuilder().token(token).build()
-    
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clear", clear_context))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    
+    app.add_handler(CallbackQueryHandler(handle_approval_callback))
+
     print("Bot is polling for messages. Press Ctrl+C to stop.")
     app.run_polling()
 
 async def clear_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /clear command."""
     user_id = str(update.effective_user.id)
-    
+
     try:
         async with httpx.AsyncClient(timeout=30.0, proxy=None) as client:
             response = await client.post(
@@ -146,5 +164,40 @@ async def clear_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Failed to clear context: {e}")
 
+async def handle_approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle InlineKeyboardButton"""
+    query = update.callback_query
+
+    await query.answer()
+    user_id = str(query.from_user.id)
+    approved = query.data == "approve_yes"
+
+    status_text = "Approved, executing..." if approved else "Rejected."
+    await query.edit_message_text(f"{query.message.text}\n\n{status_text}", parse_mode=ParseMode.HTML)
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0, proxy=None) as client:
+            response = await client.post(
+                API_RESUME_URL,
+                json={"user_id": user_id, "approved": approved}
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            bot_reply = data.get("response", "Operation complete.")
+
+            html_reply = markdown_to_tg_html(bot_reply).strip()
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=html_reply,
+                parse_mode=ParseMode.HTML
+            )
+    except Exception as e:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=f"Resume operation error: {e}."
+        )
+
 if __name__ == '__main__':
     main()
+

@@ -1,9 +1,10 @@
 import asyncio
 from typing import Sequence, Any
 
-from langchain_core.messages import ToolMessage, AIMessage
+from langchain_core.messages import ToolCall, ToolMessage, AIMessage, tool
 from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import ToolNode
+from langgraph.types import interrupt
 
 
 MAX_RETRIES = 3
@@ -13,6 +14,7 @@ MIN_TOOL_EXECUTION_TOKENS = 50
 MAX_OUTPUT_TOKENS = 500
 TRUNCATE_WARNINGS = "\n[OUTPUT TRUNCATED - the tool returned more data than can be processed. Please ask a more specific question]"
 HITL_TIMEOUT_SECONDS = 300.0 # 5 minutes for human-in-the-loop timeout
+HITL_TOOL_CALLS = ["log_training_session", "log_meal"]
 
 class ApprovalNotGrantedError(Exception):
     """Control flow signal when approval is denied or times out"""
@@ -110,11 +112,30 @@ class SafeToolNode:
         if not hasattr(last_message, "tool_calls") or not last_message.tool_calls:
             return {"messages": []}
 
+        tool_calls = getattr(last_message, "tool_calls", [])
+
+        # tools that can write
+        write_tools = []
+        for tool_call in tool_calls:
+            if any(keyword in tool_call["name"].lower() for keyword in HITL_TOOL_CALLS):
+                write_tools.append(tool_call)
+
+        if write_tools:
+            decision = interrupt({
+                "action": "approval_required",
+                "tool_calls": write_tools
+            })
+
+            for tool_call in write_tools:
+                if not decision.get("approved"):
+                    return {"messages": [ToolMessage(
+                        tool_call_id = tool_call["id"],
+                        content="User rejected the operation.",
+                        status="error"
+                    )]}
+
         tasks = [_execute_single_tool_safely(call, self.tools) for call in last_message.tool_calls]
 
         # await all tool calls
         tool_outputs = await asyncio.gather(*tasks)
         return {"messages": list(tool_outputs)}
-
-
-

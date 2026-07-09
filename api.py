@@ -1,12 +1,14 @@
 import os
 import uuid
-import asyncio
 from contextlib import asynccontextmanager
+
+import aiosqlite
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from langchain_core.messages import HumanMessage
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.types import Command
 
 from agents.llm_factory import LLMConfig
 from agents.sqlite_handler import init_db
@@ -19,6 +21,11 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     response: str
+    pending_tools: list[dict] | None = None
+
+class ResumeRequest(BaseModel):
+    user_id: str
+    approved: bool
 
 user_sessions = {}
 
@@ -48,7 +55,12 @@ async def startup_event(fastapi_app: FastAPI):
     vector_store = get_or_create_vector_store("~/Documents/LifeOS/下厨房/", os.path.join(".", "chroma.db"))
 
     print("Initializing Agent Graph...")
-    fastapi_app.state.agent = make_agent_graph(llm_config, db_path, vector_store, checkpointer=MemorySaver())
+    # TODO make this configurable
+    checkpointer_db = "checkpointer.db"
+    async with aiosqlite.connect(checkpointer_db) as conn:
+        checkpointer = AsyncSqliteSaver(conn)
+        await checkpointer.setup()
+        fastapi_app.state.agent = make_agent_graph(llm_config, db_path, vector_store, checkpointer=checkpointer)
 
     print("ChatFit API is ready.")
 
@@ -77,6 +89,13 @@ async def chat_endpoint(req: ChatRequest, request: Request):
 
     # Stream the graph updates
     async for event in request.app.state.agent.astream(initial_state, config=config, stream_mode="updates"):
+        # HITL interruptions
+        if "__interrupt__" in event:
+            interruption_data = event["__interrupt__"][0].value
+            return ChatResponse(
+                response="[SYSTEM_APPROVAL]",
+                pending_tools=interruption_data["tool_calls"]
+            )
         for node_name, node_output in event.items():
             if node_name in ["training", "meal", "assistant_selector", "chatter"]:
                 new_messages = node_output.get("messages", [])
@@ -102,3 +121,29 @@ async def chat_endpoint(req: ChatRequest, request: Request):
 def clear_endpoint(req: ChatRequest):
     user_sessions[req.user_id] = str(uuid.uuid4())
     return ChatResponse(response="Conversation context cleared! You are starting fresh.")
+
+@app.post("/resume", response_model=ChatResponse)
+async def resume_checkpoint(req: ResumeRequest, request: Request):
+    thread_id = get_thread_id(req.user_id)
+    config = {"configurable": {"thread_id": thread_id}}
+    resume_command = Command(resume={"approved": req.approved})
+    final_response = ""
+    async for event in request.app.state.agent.astream(resume_command, config=config, stream_mode="updates"):
+        for node_name, node_output in event.items():
+            if node_name in ["training", "meal", "assistant_selector", "chatter"]:
+                new_messages = node_output.get("messages", [])
+                if new_messages:
+                    last_message = new_messages[-1]
+
+                    # Handle Gemini's list-based content (extract text parts)
+                    if isinstance(last_message.content, list):
+                        text_content = "".join(
+                            part.get("text", "") for part in last_message.content
+                            if isinstance(part, dict) and "text" in part
+                        )
+                    else:
+                        text_content = str(last_message.content)
+
+                    if text_content.strip():
+                        # We accumulate the response texts from the agents
+                        final_response += text_content + "\n\n"
