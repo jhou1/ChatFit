@@ -12,6 +12,7 @@ services:
       - ~/Documents/LifeOS/下厨房/:/root/Documents/LifeOS/下厨房/
       - ./chroma.db:/app/chroma.db
       - ./chatfit.db:/app/chatfit.db
+      - ./checkpointer.db:/app/checkpointer.db
     env_file:
       - .env
     extra_hosts:
@@ -28,5 +29,6 @@ services:
     environment:
       - API_URL=http://api:8000/chat
       - API_CLEAR_URL=http://api:8000/clear
+      - API_RESUME_URL=http://api:8000/resume
     extra_hosts:
       - "host.docker.internal:host-gateway"

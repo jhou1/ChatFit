@@ -83,7 +83,7 @@ def make_agent_graph(llm_config: LLMConfig, db_path: str, vector_store, checkpoi
         llm = create_chat_model(llm_config)
         messages = [SystemMessage(content="You are ChatFit, a friendly fitness and nutrition assistant. Answer general questions, say hello, and be helpful.")] + state["messages"]
         response = await _execute_llm_query_safely(llm, messages)
-        return {"messages": [response]}
+        return {"messages": [response["messages"]]}
 
     # routing node
     async def assistant_selector_node(state: AgentState):
