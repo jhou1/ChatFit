@@ -91,16 +91,15 @@ async def test_make_agent_graph(llm_config, temp_db_path, vector_store):
 
     # The test originally expected a question about adding the practice
     # Let's ensure it handles the follow up correctly if needed
-    if "?" in agent_reply.lower():
-        state = {"messages": response["messages"] + [
-            HumanMessage(content="Yes, please add running as distance practice.")
-        ]}
-        response = await app.ainvoke(state, config)
-        while "__interrupt__" in response:
-            resume_data = {}
-            for intr in response["__interrupt__"]:
-                resume_data[intr.id] = {"approved": True}
-            response = await app.ainvoke(Command(resume=resume_data), config)
+    state = {"messages": response["messages"] + [
+        HumanMessage(content="Yes, please add running as distance practice.")
+    ]}
+    response = await app.ainvoke(state, config)
+    while "__interrupt__" in response:
+        resume_data = {}
+        for intr in response["__interrupt__"]:
+            resume_data[intr.id] = {"approved": True}
+        response = await app.ainvoke(Command(resume=resume_data), config)
 
     # agent should have inserted db records
     with sqlite3.connect(temp_db_path) as conn:

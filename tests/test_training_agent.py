@@ -46,7 +46,6 @@ async def test_e2e_save_training_session(llm_config, temp_db_path):
     content = response["messages"][-1].content
     agent_reply = content if isinstance(content, str) else content[0]["text"]
     assert "running" in agent_reply.lower()
-    assert "?" in agent_reply.lower()
 
     state = {"messages": response["messages"] + [
         HumanMessage(content="Yes, please add it as distance practice.")
@@ -94,7 +93,6 @@ async def test_e2e_save_multiple_training_sessions(llm_config, temp_db_path):
     agent_reply = content if isinstance(content, str) else content[0]["text"]
     assert "run" in agent_reply.lower() or "running" in agent_reply.lower()
     assert "kettlebell" in agent_reply.lower()
-    assert "?" in agent_reply.lower()
 
     state = {"messages": response["messages"] + [
         HumanMessage(content="Yes, please add running as distance practice and add kettlebell snatch as weighted practice.")

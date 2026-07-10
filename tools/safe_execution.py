@@ -126,9 +126,10 @@ class SafeToolNode:
 
             for tool_call in write_tools:
                 if not decision.get("approved"):
+                    feedback = decision.get("feedback", "No feedback provided.")
                     return {"messages": [ToolMessage(
                         tool_call_id = tool_call["id"],
-                        content="User rejected the operation.",
+                        content=f"User rejected the operation. Feedback: {feedback}",
                         status="error"
                     )]}
 

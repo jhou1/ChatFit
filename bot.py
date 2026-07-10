@@ -2,10 +2,9 @@ import os
 import httpx
 import mistune
 import telegram.error
-from telegram import CallbackQuery, Update
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.constants import ParseMode
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
 from dotenv import load_dotenv
 
@@ -51,7 +50,6 @@ load_dotenv()
 api_port = os.environ.get("PORT", "8000")
 API_URL = os.environ.get("API_URL", f"http://127.0.0.1:{api_port}/chat")
 API_CLEAR_URL = os.environ.get("API_CLEAR_URL", f"http://127.0.0.1:{api_port}/clear")
-API_RESUME_URL = os.environ.get("API_RESUME_URL", f"http://127.0.0.1:{api_port}/resume")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /start command."""
@@ -83,26 +81,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             response.raise_for_status()
             data = response.json()
             bot_reply = data.get("response")
-
-            if  "[SYSTEM_APPROVAL]" in bot_reply:
-                text_before_approval = bot_reply.replace("[SYSTEM_APPROVAL]", "").strip()
-                pending_tools = data.get("pending_tools", [])
-                tools_text = "\n".join([f"- {tool_call.get('name')}" for tool_call in pending_tools])
-
-                if text_before_approval:
-                    prompt_text = f"{text_before_approval}\n\n[Approval Requested]: I'll execute the following write operation: \n{tools_text}"
-                else:
-                    prompt_text = f"[Approval Requested]: I'll execute the following write operation: \n{tools_text}"
-
-                keyboard = [
-                    [
-                        InlineKeyboardButton("✅ Approve", callback_data="approve_yes"),
-                        InlineKeyboardButton("❌ Reject", callback_data="approve_no")
-                    ]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await update.message.reply_text(prompt_text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
-                return
 
             if not bot_reply:
                 bot_reply = "Sorry, I processed that but didn't generate a response."
@@ -146,7 +124,6 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clear", clear_context))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    app.add_handler(CallbackQueryHandler(handle_approval_callback))
 
     print("Bot is polling for messages. Press Ctrl+C to stop.")
     app.run_polling()
@@ -168,60 +145,5 @@ async def clear_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Failed to clear context: {e}")
 
-async def handle_approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle InlineKeyboardButton"""
-    query = update.callback_query
-
-    await query.answer()
-    user_id = str(query.from_user.id)
-    approved = query.data == "approve_yes"
-
-    status_text = "Approved, executing..." if approved else "Rejected."
-    await query.edit_message_text(f"{query.message.text}\n\n{status_text}", parse_mode=ParseMode.HTML)
-
-    try:
-        async with httpx.AsyncClient(timeout=120.0, proxy=None) as client:
-            response = await client.post(
-                API_RESUME_URL,
-                json={"user_id": user_id, "approved": approved}
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            bot_reply = data.get("response", "Operation complete.")
-
-            if "[SYSTEM_APPROVAL]" in bot_reply:
-                text_before_approval = bot_reply.replace("[SYSTEM_APPROVAL]", "").strip()
-                pending_tools = data.get("pending_tools", [])
-                tools_text = "\n".join([f"- {tool_call.get('name')}" for tool_call in pending_tools])
-
-                if text_before_approval:
-                    prompt_text = f"{text_before_approval}\n\n[Approval Requested]: I'll execute the following write operation: \n{tools_text}"
-                else:
-                    prompt_text = f"[Approval Requested]: I'll execute the following write operation: \n{tools_text}"
-
-                keyboard = [
-                    [
-                        InlineKeyboardButton("✅ Approve", callback_data="approve_yes"),
-                        InlineKeyboardButton("❌ Reject", callback_data="approve_no")
-                    ]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await context.bot.send_message(chat_id=query.message.chat_id, text=prompt_text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
-                return
-
-            html_reply = markdown_to_tg_html(bot_reply).strip()
-            await context.bot.send_message(
-                chat_id=query.message.chat_id,
-                text=html_reply,
-                parse_mode=ParseMode.HTML
-            )
-    except Exception as e:
-        await context.bot.send_message(
-            chat_id=query.message.chat_id,
-            text=f"Resume operation error: {e}."
-        )
-
 if __name__ == '__main__':
     main()
-
