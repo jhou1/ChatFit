@@ -63,7 +63,7 @@ def get_or_create_vector_store(docs_directory: str, persist_directory: str = "ch
     return vector_store
 
 def create_recipe_rag_chain(vector_store, chat_model):
-    retriever = vector_store.as_retriever()
+    retriever = vector_store.as_retriever(search_kwargs={"k": 3})
     prompt_template = PromptTemplate.from_template(INSTRUCTION_FOR_ADVISING_MEALS)
 
     def format_docs(docs):
