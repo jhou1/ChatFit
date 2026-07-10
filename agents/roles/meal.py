@@ -59,6 +59,9 @@ def make_meal_subagent_graph(llm_config: LLMConfig, db_path: str, vector_store):
         system_prompt = prompt_template.format(
             current_time=datetime.now().isoformat()
         )
+        # adding summary as context
+        if state.get("summary"):
+            system_prompt += f"\n\n[Historical Conversation Summary:]\n{state['summary']}"
         messages = [SystemMessage(content=system_prompt)] + state["messages"]
         return await _execute_llm_query_safely(llm_with_tools, messages)
 

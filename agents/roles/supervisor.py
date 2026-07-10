@@ -1,7 +1,7 @@
 import asyncio
 from langchain_core.prompts.prompt import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, SystemMessage, ToolMessage
 from langgraph.graph import StateGraph, START
 
 from agents.models import AgentState
@@ -10,6 +10,7 @@ from agents.roles.meal import make_meal_subagent_graph
 from agents.roles.training import make_training_agent_graph
 
 from tools.safe_execution import _execute_llm_query_safely
+from agents.utils import extract_text
 
 INSTRUCTION_FOR_ROUTING_SUBAGENTS="""
 You skilled at assigning user input to the correct subagents.
@@ -41,6 +42,17 @@ Response:
 chatter
 """
 
+CONTEXT_GOVERNANCE_PROMPT="""
+You are an assistant memory manager. Compress the following conversation history into a concise summary.
+Focus on training(fitness) goals, dietary context, user preferences, and any important ongoing context.
+
+Here is the existing summary that you must merge with the new information:
+{existing_summary}
+
+Here is the new conversation history to compress:
+{summary_text}
+"""
+
 
 async def route_assistant_on_relevance(llm_config: LLMConfig, messages: list) -> list[str]:
     """Select the appropriate assistant based on conversation history"""
@@ -56,9 +68,8 @@ async def route_assistant_on_relevance(llm_config: LLMConfig, messages: list) ->
     llm = create_chat_model(llm_config)
     # chain = llm | StrOutputParser()
     response = await _execute_llm_query_safely(llm, routing_messages)
-    content = response["messages"].content
-    content_str = content if isinstance(content, str) else content[0]["text"]
-    
+    content_str = extract_text(response["messages"])
+
     if "LLM request timeout exceeded" in content_str:
         return ["chatter"]
 
@@ -81,9 +92,57 @@ def make_agent_graph(llm_config: LLMConfig, db_path: str, vector_store, checkpoi
 
     async def chatter_node(state: AgentState):
         llm = create_chat_model(llm_config)
-        messages = [SystemMessage(content="You are ChatFit, a friendly fitness and nutrition assistant. Answer general questions, say hello, and be helpful.")] + state["messages"]
+        system_msg = "You are ChatFit, a friendly fitness and nutrition assistant. Answer general questions, say hello, and be helpful."
+        # adding previous conversation summary as context
+        if state.get("summary"):
+            system_msg += f"\n\n[Historical Conversation Summary]:\n{state['summary']}"
+        messages = [SystemMessage(content=system_msg)] + state["messages"]
         response = await _execute_llm_query_safely(llm, messages)
         return {"messages": [response["messages"]]}
+
+    async def context_governance_node(state: AgentState):
+        """cut off the messages when its length exceeds max length
+        the messages to be cutoff are compressed using LLM
+        if the messages contain ToolMessage or AIMessage with tool calls,
+        then shift the cut off index dynamically to prevent cutting off tool messages
+        """
+        messages = state["messages"]
+        MAX_MESSAGES_LENGTH = 20
+        if len(messages) < MAX_MESSAGES_LENGTH:
+            return
+
+        message_cutoff_index = 10
+        while message_cutoff_index < len(messages):
+            msg = messages[message_cutoff_index]
+            if isinstance(msg, ToolMessage):
+                message_cutoff_index += 1
+            elif isinstance(msg, AIMessage) and getattr(msg, "tool_calls", []):
+                message_cutoff_index += 1
+            else:
+                break
+        messages_to_compress = messages[:message_cutoff_index]
+
+        summary_text = ""
+        for message in messages_to_compress:
+            text = extract_text(message)
+            if text.strip():
+                summary_text += f"{type(message).__name__}: {text}\n"
+
+        existing_summary = state["summary"] if state.get("summary") else ""
+        prompt_template = PromptTemplate.from_template(CONTEXT_GOVERNANCE_PROMPT)
+        prompt = prompt_template.format(
+            existing_summary=existing_summary,
+            summary_text= summary_text
+        )
+
+        llm = create_chat_model(llm_config)
+        response = await _execute_llm_query_safely(llm, [HumanMessage(content=prompt)])
+
+        new_summary = extract_text(response["messages"])
+
+        delete_cmd = [RemoveMessage(id=message.id) for message in messages_to_compress if message.id]
+        return {"summary": new_summary, "messages": delete_cmd}
+
 
     # routing node
     async def assistant_selector_node(state: AgentState):
@@ -97,12 +156,14 @@ def make_agent_graph(llm_config: LLMConfig, db_path: str, vector_store, checkpoi
         return state["assistant_names"]
 
     builder = StateGraph(AgentState)
+    builder.add_node("context_governance", context_governance_node)
     builder.add_node("training", training_wrapper)
     builder.add_node("meal", meal_wrapper)
     builder.add_node("chatter", chatter_node)
     builder.add_node("assistant_selector", assistant_selector_node)
 
-    builder.add_edge(START, "assistant_selector")
+    builder.add_edge(START, "context_governance")
+    builder.add_edge("context_governance", "assistant_selector")
     builder.add_conditional_edges(
         "assistant_selector",
         route_decision,

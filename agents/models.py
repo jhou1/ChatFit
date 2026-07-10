@@ -1,5 +1,5 @@
 from datetime import date as _date
-from typing import TypedDict, Annotated, Optional, Literal
+from typing import TypedDict, Annotated, Optional, Literal, NotRequired
 from pydantic import BaseModel, Field, model_validator
 
 from langgraph.graph.message import add_messages
@@ -70,3 +70,4 @@ class AgentState(TypedDict):
 
     messages: Annotated[list, add_messages]
     assistant_names: list[str]
+    summary: NotRequired[str]
