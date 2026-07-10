@@ -15,6 +15,7 @@ from langchain_core.prompts import PromptTemplate
 from agents.sqlite_handler import init_db
 from agents.roles.supervisor import make_agent_graph
 from agents.rag import get_or_create_vector_store
+from agents.utils import extract_text
 
 class ChatRequest(BaseModel):
     user_id: str
@@ -94,9 +95,7 @@ async def generate_conversational_approval(tool_calls: list, llm_config: LLMConf
     """
     try:
         response = await llm.ainvoke([HumanMessage(content=prompt)])
-        text = response.content
-        if isinstance(text, list):
-            text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
+        text = extract_text(response)
         return text.strip()
     except Exception as e:
         print("Conversational approval generation failed:", e)
@@ -117,9 +116,7 @@ async def _classify_approval_intent(user_message: str, llm_config: LLMConfig) ->
     """
     try:
         response = await llm.ainvoke([HumanMessage(content=prompt)])
-        text = response.content
-        if isinstance(text, list):
-            text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
+        text = extract_text(response)
         import json
         text = text.replace('```json', '').replace('```', '').strip()
         data = json.loads(text)
@@ -179,15 +176,7 @@ async def chat_endpoint(req: ChatRequest, request: Request):
                 new_messages = node_output.get("messages", [])
                 if new_messages:
                     last_message = new_messages[-1]
-
-                    # Handle Gemini's list-based content (extract text parts)
-                    if isinstance(last_message.content, list):
-                        text_content = "".join(
-                            part.get("text", "") for part in last_message.content
-                            if isinstance(part, dict) and "text" in part
-                        )
-                    else:
-                        text_content = str(last_message.content)
+                    text_content = extract_text(last_message)
 
                     if text_content.strip():
                         # We accumulate the response texts from the agents
