@@ -134,6 +134,7 @@ def get_training_sessions_of_last_n_days(n: int, db_path):
             FROM training_sessions t, practices p, training_sets s
             WHERE t.practice_id = p.id AND t.id = s.training_session_id
             AND date(t.date) >= date('now', '-{n} days')
+            ORDER BY t.date DESC
             """
         )
         return cursor.fetchall()
