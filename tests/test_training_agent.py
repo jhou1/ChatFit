@@ -8,6 +8,7 @@ from agents.sqlite_handler import init_db, add_training_session
 from agents.models import TrainingSession, TrainingSet, TrainingInputRecorder
 
 from langchain_core.messages import HumanMessage
+from agents.utils import extract_text
 
 @pytest.fixture
 def temp_db_path(tmp_path):
@@ -43,8 +44,7 @@ async def test_e2e_save_training_session(llm_config, temp_db_path):
 
     # because addition of new practices must be approved
     # we create a new message to approve adding the record
-    content = response["messages"][-1].content
-    agent_reply = content if isinstance(content, str) else content[0]["text"]
+    agent_reply = extract_text(response["messages"][-1])
     assert "running" in agent_reply.lower()
 
     state = {"messages": response["messages"] + [
@@ -89,8 +89,7 @@ async def test_e2e_save_multiple_training_sessions(llm_config, temp_db_path):
     while "__interrupt__" in response:
         response = await app.ainvoke(Command(resume={"approved": True}), config)
 
-    content = response["messages"][-1].content
-    agent_reply = content if isinstance(content, str) else content[0]["text"]
+    agent_reply = extract_text(response["messages"][-1])
     assert "run" in agent_reply.lower() or "running" in agent_reply.lower()
     assert "kettlebell" in agent_reply.lower()
 
@@ -149,8 +148,7 @@ async def test_retrieve_training_sessions(llm_config, temp_db_path):
     state = {"messages": [message]}
     app = make_training_agent_graph(llm_config, temp_db_path)
     response = await app.ainvoke({"messages": state["messages"]})
-    content = response["messages"][-1].content
-    final_text = content if isinstance(content, str) else content[0]["text"]
+    final_text = extract_text(response["messages"][-1])
 
     assert "squat" in final_text.lower()
     assert "bodyweight" in final_text.lower()

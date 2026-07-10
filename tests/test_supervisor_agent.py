@@ -8,6 +8,7 @@ from agents.sqlite_handler import init_db
 from agents.rag import get_or_create_vector_store
 
 from langchain_core.messages import HumanMessage
+from agents.utils import extract_text
 
 @pytest.fixture
 def temp_db_path(tmp_path):
@@ -85,8 +86,7 @@ async def test_make_agent_graph(llm_config, temp_db_path, vector_store):
             resume_data[intr.id] = {"approved": True}
         response = await app.ainvoke(Command(resume=resume_data), config)
 
-    content = response["messages"][-1].content
-    agent_reply = content if isinstance(content, str) else content[0]["text"]
+    agent_reply = extract_text(response["messages"][-1])
     assert "running" in agent_reply.lower() or "burger" in agent_reply.lower()
 
     # The test originally expected a question about adding the practice
