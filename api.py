@@ -48,7 +48,7 @@ async def startup_event(fastapi_app: FastAPI):
         provider="google",
         model_name="gemini-3.5-flash",
         temperature=0.5,
-        max_tokens=2048,
+        max_tokens=8192,
         kwargs=kwargs
     )
 
@@ -172,7 +172,7 @@ async def chat_endpoint(req: ChatRequest, request: Request):
                 pending_tools=None
             )
         for node_name, node_output in event.items():
-            if node_name in ["training", "meal", "assistant_selector", "chatter"]:
+            if node_name in ["training", "meal", "insights", "assistant_selector", "chatter"]:
                 new_messages = node_output.get("messages", [])
                 if new_messages:
                     last_message = new_messages[-1]

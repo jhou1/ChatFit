@@ -61,7 +61,7 @@ The training session log attributes you will explain includes:
 
 You do not have to explain empty or null values of attributes, if user asked for those values, tell user they are empty.
 
-Finally, provide a summary of the training logs on the training volume, training intensity(rpe), and training focus(cardio, strength, power, endurace, etc).
+Be factual, precise, and organized. You are acting as a data reporter, not a coach. Leave complex coaching analysis to the insights agent.
 """
 
 

@@ -1,4 +1,3 @@
-import asyncio
 from langchain_core.prompts.prompt import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, SystemMessage, ToolMessage
@@ -8,6 +7,7 @@ from agents.models import AgentState
 from agents.llm_factory import create_chat_model, LLMConfig
 from agents.roles.meal import make_meal_subagent_graph
 from agents.roles.training import make_training_agent_graph
+from agents.roles.insights import make_insights_agent_graph
 
 from tools.safe_execution import _execute_llm_query_safely
 from agents.utils import extract_text
@@ -18,16 +18,21 @@ You skilled at assigning user input to the correct subagents.
 These are the subagents you can assign to:
 - training_agent: responsible for saving user training sessions to the database, invoke it when user tells you about their training/workout sessions.
 - meal_agent: responsible for saving user meal details to the database, invoke it when user tells you about their meals.
+- insights_agent: responsible for analyzing training progress, intensity, recovery, waveness, or answering questions about "am I training too much", "how is my consistency".
 - chatter: everything else.
 
 Identify all relevant agents needed to process the user's message based on the conversation history. If the user is answering a clarification question from an agent (e.g., providing a missing detail about a training session or a meal), you MUST assign it back to the agent that asked the question.
 
-Only output a comma-separated list of agents(e.g. training_agent, meal_agent, chatter)
+Only output a comma-separated list of agents(e.g. training_agent, meal_agent, insights_agent, chatter)
 
 Examples:
 User input: I ran 15 km this morning and swam 1km this evening.
 Response:
 training_agent
+
+User input: Am I training too hard lately? Can you analyze my recovery?
+Response:
+insights_agent
 
 User input: I had 2 eggs, 1 cup of milk this morning.
 Response:
@@ -81,6 +86,7 @@ async def route_assistant_on_relevance(llm_config: LLMConfig, messages: list) ->
 def make_agent_graph(llm_config: LLMConfig, db_path: str, vector_store, checkpointer=None) -> StateGraph:
     training_recorder_node = make_training_agent_graph(llm_config, db_path)
     meal_recorder_node = make_meal_subagent_graph(llm_config, db_path, vector_store)
+    insights_recorder_node = make_insights_agent_graph(llm_config, db_path)
 
     async def training_wrapper(state: AgentState):
         result = await training_recorder_node.ainvoke(state)
@@ -88,6 +94,10 @@ def make_agent_graph(llm_config: LLMConfig, db_path: str, vector_store, checkpoi
 
     async def meal_wrapper(state: AgentState):
         result = await meal_recorder_node.ainvoke(state)
+        return {"messages": result["messages"]}
+
+    async def insights_wrapper(state: AgentState):
+        result = await insights_recorder_node.ainvoke(state)
         return {"messages": result["messages"]}
 
     async def chatter_node(state: AgentState):
@@ -159,6 +169,7 @@ def make_agent_graph(llm_config: LLMConfig, db_path: str, vector_store, checkpoi
     builder.add_node("context_governance", context_governance_node)
     builder.add_node("training", training_wrapper)
     builder.add_node("meal", meal_wrapper)
+    builder.add_node("insights", insights_wrapper)
     builder.add_node("chatter", chatter_node)
     builder.add_node("assistant_selector", assistant_selector_node)
 
@@ -170,6 +181,7 @@ def make_agent_graph(llm_config: LLMConfig, db_path: str, vector_store, checkpoi
         {
             "training_agent": "training",
             "meal_agent": "meal",
+            "insights_agent": "insights",
             "chatter": "chatter",
         }
     )

@@ -23,7 +23,7 @@ async def main():
         provider="google",
         model_name="gemini-3.5-flash",
         temperature=0.5,
-        max_tokens=2048,
+        max_tokens=8192,
         kwargs={"client_args": {"proxy": "socks5://127.0.0.1:8990"}}
     )
 

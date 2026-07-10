@@ -169,3 +169,43 @@ def add_meal_log(meal: MealInfo, db_path: str) -> int:
         )
         conn.commit()
         return cursor.lastrowid or 0
+
+def get_aggregated_training_data(n: int, db_path: str):
+    """Aggregate training volume, sets, and RPE grouped by date and practice type."""
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT 
+                date(t.date) as training_date,
+                p.type as practice_type,
+                SUM(CASE WHEN p.type = 'weighted' THEN s.weight * s.reps ELSE 0 END) as total_weight_volume,
+                SUM(CASE WHEN p.type = 'bodyweight' THEN s.reps ELSE 0 END) as total_reps,
+                SUM(s.distance) as total_distance,
+                SUM(s.duration) as total_duration,
+                COUNT(s.id) as total_sets,
+                AVG(t.rpe) as avg_rpe
+            FROM training_sessions t
+            JOIN practices p ON t.practice_id = p.id
+            JOIN training_sets s ON t.id = s.training_session_id
+            WHERE date(t.date) >= date('now', '-{n} days')
+            GROUP BY date(t.date), p.type
+            ORDER BY date(t.date) ASC
+            """
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+def get_meal_records_of_last_n_days(n: int, db_path: str):
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT * FROM meal_records 
+            WHERE date(date) >= date('now', '-{n} days')
+            ORDER BY date ASC
+            LIMIT 50
+            """
+        )
+        return [dict(row) for row in cursor.fetchall()]
