@@ -49,3 +49,18 @@ Evaluation datasets will be managed as YAML files (e.g., `tests/eval_datasets/ca
      * **Conversational Tone:** Was the assistant encouraging, friendly, and helpful?
   4. The script pushes these scores back to Langfuse using the Langfuse SDK's evaluation API.
 * **Outcome:** Developers can filter traces in the Langfuse UI by score to investigate low-quality interactions and adjust prompts or RAG strategies accordingly.
+
+## Advanced Evaluation Capabilities
+
+### 1. Evaluating Supervisor Routing
+To ensure the supervisor agent accurately distributes tasks, the code grader intercepts the `assistant_selector` node within the LangGraph stream.
+* **YAML Schema Addition**: `expected_routes` (List of strings, e.g., `["meal_agent"]`).
+* **Assertion Logic**: The test runner collects the `assistant_names` array output by the `assistant_selector` node and strictly asserts that it matches the `expected_routes` defined in the YAML case.
+
+### 2. Evaluating Task Completion (Database State)
+Tool execution does not guarantee success. To verify end-to-end task completion, the evaluation framework inspects the underlying SQLite database after the agent finishes its trajectory.
+* **YAML Schema Addition**: `expected_db_state` (List of query definition objects).
+  * `query`: The SQL query to execute against the `:memory:` database (e.g., `SELECT COUNT(*) FROM meal_records`).
+  * `expected_value`: An exact match expectation (e.g., `1`).
+  * `expected_contains`: A partial string match expectation for text fields.
+* **Assertion Logic**: Following the completion of the graph stream, the Pytest runner opens a cursor to the local test database, executes each query, and asserts the results against the expected values.
