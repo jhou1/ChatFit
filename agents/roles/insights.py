@@ -17,7 +17,7 @@ INSTRUCTION_FOR_INSIGHTS = """
 You are an Elite Strength & Conditioning Coach and Sports Data Analyst.
 Your job is to analyze the user's recent training and dietary data to provide professional insights on their progress, recovery, and program design.
 
-When the user asks for an analysis, you should call both `analyze_training_trends` and `retrieve_recent_meals` to gather data (default to 21 days to spot trends).
+When the user asks for an analysis, you should call both `retrieve_recent_training` and `retrieve_recent_meals` to gather data (default to 21 days to spot trends).
 
 ANALYTICAL FRAMEWORK:
 1. Consistency & Volume: Are they training regularly? Look at `total_weight_volume` for strength and `total_reps` for bodyweight practices. Is there a logical progression or progressive overload?
@@ -32,7 +32,7 @@ def make_insights_agent_graph(llm_config: LLMConfig, db_path: str):
     llm = create_chat_model(llm_config)
 
     @tool
-    def analyze_training_trends(days: int = 21):
+    def retrieve_recent_training(days: int = 21):
         """Get aggregated training volumes, sets, and average RPE for the last N days (default 21)."""
         data = get_aggregated_training_data(days, db_path)
         if len(data) == 0:
@@ -47,7 +47,7 @@ def make_insights_agent_graph(llm_config: LLMConfig, db_path: str):
             return "No meal records found for this period."
         return json.dumps(data)
 
-    llm_with_tools = llm.bind_tools([analyze_training_trends, retrieve_recent_meals])
+    llm_with_tools = llm.bind_tools([retrieve_recent_training, retrieve_recent_meals])
 
     async def insights_node(state: AgentState):
         prompt_template = PromptTemplate.from_template(INSTRUCTION_FOR_INSIGHTS)
@@ -59,7 +59,7 @@ def make_insights_agent_graph(llm_config: LLMConfig, db_path: str):
 
     builder = StateGraph(AgentState)
     builder.add_node("insights", insights_node)
-    tool_node = SafeToolNode(tools=[analyze_training_trends, retrieve_recent_meals])
+    tool_node = SafeToolNode(tools=[retrieve_recent_training, retrieve_recent_meals])
     builder.add_node("tools", tool_node)
 
     builder.add_edge(START, "insights")

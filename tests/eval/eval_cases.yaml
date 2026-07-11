@@ -1,6 +1,6 @@
 - id: test_meal_extraction_01
   input: "I just had 3 scrambled eggs and a piece of toast for breakfast."
-  expected_tools: 
+  expected_tools:
     - name: log_meal
       args_contain: ["scrambled eggs", "toast"]
 - id: test_greeting_no_tool
@@ -36,3 +36,11 @@
 - id: test_routing_chatter
   input: "the weather is fine today"
   expected_tools: []
+
+- id: test_routing_insights
+  input: "Tell me about me training and eating of the last 14 days"
+  expected_tools:
+    - name: retrieve_recent_training
+      args_contain: ["14"]
+    - name: retrieve_recent_meals
+      args_contain: ["14"]
