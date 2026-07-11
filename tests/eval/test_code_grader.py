@@ -6,6 +6,7 @@ from langchain_core.messages import HumanMessage
 from agents.roles.supervisor import make_agent_graph
 from agents.llm_factory import LLMConfig
 from agents.rag import get_or_create_vector_store
+from agents.sqlite_handler import init_db
 
 # Suppress asyncio's "Task was destroyed but it is pending" stderr prints
 # caused by underlying unawaited google-genai client teardown.
@@ -17,16 +18,19 @@ def load_eval_cases():
         return yaml.safe_load(f)
 
 @pytest.fixture
-def mock_agent_graph():
+def mock_agent_env(tmp_path):
     llm_config = LLMConfig(provider="google", model_name="gemini-3.5-flash", temperature=0.0)
-    db_path = ":memory:"
+    db_path = str(tmp_path / "test_eval.db")
+    init_db(db_path)
     vector_store = get_or_create_vector_store("./chroma_test_db")
     # Using no checkpointer for pure functional eval run
-    return make_agent_graph(llm_config, db_path, vector_store, checkpointer=None)
+    app = make_agent_graph(llm_config, db_path, vector_store, checkpointer=None)
+    return app, db_path
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", load_eval_cases(), ids=lambda c: c["id"])
-async def test_agent_trajectory(case, mock_agent_graph):
+async def test_agent_trajectory(case, mock_agent_env):
+    mock_agent_graph, db_path = mock_agent_env
     user_input = case["input"]
     expected_tools = case.get("expected_tools", [])
     
