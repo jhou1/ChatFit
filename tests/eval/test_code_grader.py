@@ -31,7 +31,17 @@ async def test_agent_trajectory(case, mock_agent_graph):
     
     async for event in mock_agent_graph.astream({"messages": [HumanMessage(content=user_input)]}, config=config, stream_mode="updates"):
         for node_name, node_output in event.items():
-            messages = node_output.get("messages", [])
+            if node_name == "__interrupt__":
+                for interrupt in node_output:
+                    if hasattr(interrupt, "value") and isinstance(interrupt.value, dict):
+                        for tc in interrupt.value.get("tool_calls", []):
+                            tool_calls_made.append(tc)
+                continue
+                
+            if isinstance(node_output, dict):
+                messages = node_output.get("messages", [])
+            else:
+                continue
             for msg in messages:
                 if hasattr(msg, "tool_calls"):
                     for tc in msg.tool_calls:
