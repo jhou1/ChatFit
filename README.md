@@ -20,6 +20,22 @@ podman compose up -d
 
 # or alternatively
 docker compose up -d
+```
+
+## Evaluation Framework
+
+ChatFit features a dual-pipeline Agent Evaluation Framework built around local execution and **Langfuse** tracing.
+
+1. **Code Grader (CI/Integration)**
+   - Defined in `tests/eval/eval_cases.yaml`, these tests run the agent locally against fixed inputs.
+   - The custom Pytest runner (`test_code_grader.py`) analyzes the agent's trajectory and deterministically asserts that the expected tool calls (e.g., `log_meal`) were made with the correct arguments.
+   - Run it with: `uv run pytest tests/eval -v`
+
+2. **LLM-as-a-Judge (Production Quality)**
+   - A standalone script (`scripts/llm_judge.py`) fetches real execution traces from your local Langfuse server.
+   - It uses an LLM evaluator to score the conversational tone and RAG context quality (1-5), pushing those metrics back into the Langfuse UI.
+   - Run it with: `uv run python scripts/llm_judge.py <langfuse_trace_id>`
+
 Roadmap
 - LLM provider agnostic configuration
 - Deployment on container-native infrastructure
