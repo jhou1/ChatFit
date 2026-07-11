@@ -37,9 +37,13 @@ async def test_agent_trajectory(case, mock_agent_env):
     config = {"configurable": {"thread_id": case["id"]}}
     
     tool_calls_made = []
+    routed_assistants = []
     
     async for event in mock_agent_graph.astream({"messages": [HumanMessage(content=user_input)]}, config=config, stream_mode="updates"):
         for node_name, node_output in event.items():
+            if node_name == "assistant_selector":
+                if isinstance(node_output, dict) and "assistant_names" in node_output:
+                    routed_assistants.extend(node_output["assistant_names"])
             if node_name == "__interrupt__":
                 for interrupt in node_output:
                     if hasattr(interrupt, "value") and isinstance(interrupt.value, dict):
@@ -70,3 +74,7 @@ async def test_agent_trajectory(case, mock_agent_env):
             if tc["name"] == expected["name"]:
                 for arg_val in expected.get("args_contain", []):
                     assert arg_val.lower() in str(tc["args"]).lower(), f"Expected '{arg_val}' in arguments."
+                    
+    expected_routes = case.get("expected_routes", None)
+    if expected_routes is not None:
+        assert routed_assistants == expected_routes, f"Expected routes {expected_routes}, got {routed_assistants}"

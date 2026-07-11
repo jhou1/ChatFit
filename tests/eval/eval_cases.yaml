@@ -36,6 +36,7 @@
 - id: test_routing_chatter
   input: "the weather is fine today"
   expected_tools: []
+  expected_routes: ["chatter"]
 
 - id: test_routing_insights
   input: "Tell me about me training and eating of the last 14 days"
