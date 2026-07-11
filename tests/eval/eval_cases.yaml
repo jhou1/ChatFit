@@ -12,6 +12,9 @@
   expected_tools:
     - name: log_meal
       args_contain: ["fried eggs", "bread"]
+  expected_db_state:
+    - query: "SELECT COUNT(*) FROM meal_records WHERE meal_type = 'breakfast'"
+      expected_value: 1
 
 - id: test_training_run
   input: "I ran 5km in 30 minutes yesterday, rpe was around 5. Felt great!"

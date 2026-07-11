@@ -2,7 +2,10 @@ import os
 import yaml
 import pytest
 import logging
+import sqlite3
 from langchain_core.messages import HumanMessage
+from langgraph.types import Command
+from langgraph.checkpoint.memory import MemorySaver
 from agents.roles.supervisor import make_agent_graph
 from agents.llm_factory import LLMConfig
 from agents.rag import get_or_create_vector_store
@@ -23,8 +26,9 @@ def mock_agent_env(tmp_path):
     db_path = str(tmp_path / "test_eval.db")
     init_db(db_path)
     vector_store = get_or_create_vector_store("./chroma_test_db")
-    # Using no checkpointer for pure functional eval run
-    app = make_agent_graph(llm_config, db_path, vector_store, checkpointer=None)
+    # Using MemorySaver for checkpointer to allow interrupts
+    checkpointer = MemorySaver()
+    app = make_agent_graph(llm_config, db_path, vector_store, checkpointer=checkpointer)
     return app, db_path
 
 @pytest.mark.asyncio
@@ -56,9 +60,42 @@ async def test_agent_trajectory(case, mock_agent_env):
             else:
                 continue
             for msg in messages:
-                if hasattr(msg, "tool_calls"):
-                    for tc in msg.tool_calls:
-                        tool_calls_made.append(tc)
+                    if hasattr(msg, "tool_calls"):
+                        for tc in msg.tool_calls:
+                            tool_calls_made.append(tc)
+                            
+    # If the graph was interrupted (awaiting approval), approve it so it finishes DB writes
+    state = await mock_agent_graph.aget_state(config)
+    while state.next:
+        # The agent is paused, simulate approval
+        resume_data = {}
+        for task in state.tasks:
+            for intr in task.interrupts:
+                resume_data[intr.id] = {"approved": True}
+                
+        if not resume_data:
+            break
+            
+        async for event in mock_agent_graph.astream(Command(resume=resume_data), config=config, stream_mode="updates"):
+            for node_name, node_output in event.items():
+                if node_name == "assistant_selector":
+                    if isinstance(node_output, dict) and "assistant_names" in node_output:
+                        routed_assistants.extend(node_output["assistant_names"])
+                if node_name == "__interrupt__":
+                    for interrupt in node_output:
+                        if hasattr(interrupt, "value") and isinstance(interrupt.value, dict):
+                            for tc in interrupt.value.get("tool_calls", []):
+                                tool_calls_made.append(tc)
+                    continue
+                if isinstance(node_output, dict):
+                    messages = node_output.get("messages", [])
+                else:
+                    continue
+                for msg in messages:
+                    if hasattr(msg, "tool_calls"):
+                        for tc in msg.tool_calls:
+                            tool_calls_made.append(tc)
+        state = await mock_agent_graph.aget_state(config)
                         
     # Evaluate expected tools
     actual_tool_names = [tc["name"] for tc in tool_calls_made]
@@ -78,3 +115,13 @@ async def test_agent_trajectory(case, mock_agent_env):
     expected_routes = case.get("expected_routes", None)
     if expected_routes is not None:
         assert routed_assistants == expected_routes, f"Expected routes {expected_routes}, got {routed_assistants}"
+        
+    expected_db_state = case.get("expected_db_state", [])
+    if expected_db_state:
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            for state_check in expected_db_state:
+                cursor.execute(state_check["query"])
+                result = cursor.fetchone()[0]
+                expected_val = state_check["expected_value"]
+                assert result == expected_val, f"DB query {state_check['query']} returned {result}, expected {expected_val}"
