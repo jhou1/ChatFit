@@ -39,6 +39,10 @@ addopts = "-m 'not e2e'"
 markers = [
     "e2e: marks tests as end-to-end, these tests are slow and are excluded by default"
 ]
+filterwarnings = [
+    "ignore::DeprecationWarning:google.genai.*",
+    "ignore:coroutine 'BaseApiClient.aclose' was never awaited:RuntimeWarning"
+]
 
 [tool.pylint.messages_control]
 disable = [

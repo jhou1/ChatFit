@@ -1,10 +1,15 @@
 import os
 import yaml
 import pytest
+import logging
 from langchain_core.messages import HumanMessage
 from agents.roles.supervisor import make_agent_graph
 from agents.llm_factory import LLMConfig
 from agents.rag import get_or_create_vector_store
+
+# Suppress asyncio's "Task was destroyed but it is pending" stderr prints
+# caused by underlying unawaited google-genai client teardown.
+logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 
 def load_eval_cases():
     yaml_path = os.path.join(os.path.dirname(__file__), "eval_cases.yaml")
