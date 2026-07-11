@@ -1,0 +1,8 @@
+- id: test_meal_extraction_01
+  input: "I just had 3 scrambled eggs and a piece of toast for breakfast."
+  expected_tools: 
+    - name: log_meal
+      args_contain: ["scrambled eggs", "toast"]
+- id: test_greeting_no_tool
+  input: "Hello there, how are you doing today?"
+  expected_tools: []
