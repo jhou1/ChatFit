@@ -6,3 +6,33 @@
 - id: test_greeting_no_tool
   input: "Hello there, how are you doing today?"
   expected_tools: []
+
+- id: test_meal_breakfast
+  input: "breakfast: 2 fried eggs and bread today"
+  expected_tools:
+    - name: log_meal
+      args_contain: ["fried eggs", "bread"]
+
+- id: test_training_run
+  input: "I ran 5km in 30 minutes yesterday, rpe was around 5. Felt great!"
+  expected_tools:
+    - name: log_training_session
+      args_contain: ["5", "30"]
+
+- id: test_training_multiple
+  input: "I ran 10km in 30 minutes yesterday, then I snatched a 24kg kettlebell, 10 sets and 10 reps per set. RPE was 10."
+  expected_tools:
+    - name: log_training_session
+      args_contain: ["10", "30", "24"]
+
+- id: test_routing_meal_and_training
+  input: "I ran 5km in 30 minutes yesterday. RPE was around 5. Then I had 2 burgers for lunch."
+  expected_tools:
+    - name: log_meal
+      args_contain: ["burger", "lunch"]
+    - name: log_training_session
+      args_contain: ["5", "30"]
+
+- id: test_routing_chatter
+  input: "the weather is fine today"
+  expected_tools: []
