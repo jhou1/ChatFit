@@ -66,7 +66,9 @@ async def test_agent_trajectory(case, mock_agent_env):
                             
     # If the graph was interrupted (awaiting approval), approve it so it finishes DB writes
     state = await mock_agent_graph.aget_state(config)
-    while state.next:
+    iterations = 0
+    max_iterations = 5
+    while state.next and iterations < max_iterations:
         # The agent is paused, simulate approval
         resume_data = {}
         for task in state.tasks:
@@ -122,6 +124,8 @@ async def test_agent_trajectory(case, mock_agent_env):
             cursor = conn.cursor()
             for state_check in expected_db_state:
                 cursor.execute(state_check["query"])
-                result = cursor.fetchone()[0]
+                row = cursor.fetchone()
+                assert row is not None, f"DB query {state_check['query']} returned no results"
+                result = row[0]
                 expected_val = state_check["expected_value"]
                 assert result == expected_val, f"DB query {state_check['query']} returned {result}, expected {expected_val}"
