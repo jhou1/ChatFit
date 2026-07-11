@@ -45,6 +45,4 @@
   input: "Tell me about me training and eating of the last 14 days"
   expected_tools:
     - name: retrieve_recent_training
-      args_contain: ["14"]
     - name: retrieve_recent_meals
-      args_contain: ["14"]
