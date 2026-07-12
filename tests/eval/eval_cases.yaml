@@ -46,3 +46,58 @@
   expected_tools:
     - name: retrieve_recent_training
     - name: retrieve_recent_meals
+
+- id: test_e2e_training_completion
+  messages:
+    - "I ran 5km in 30 minutes yesterday, rpe was around 5. Felt great!"
+    - "Yes, please add it as distance practice."
+  expected_tools:
+    - name: log_training_session
+  expected_db_state:
+    - query: "SELECT COUNT(*) FROM practices WHERE name = 'running'"
+      expected_value: 1
+    - query: "SELECT COUNT(*) FROM training_sessions WHERE rpe = 5"
+      expected_value: 1
+
+- id: test_retrieve_training_completion
+  seed_db_fixture: "training_last_7_days"
+  input: "Tell me about in the past 7 days, what trainings and practice types I had practiced."
+  expected_response_contains: ["squat", "bodyweight"]
+
+- id: test_e2e_training_duration
+  messages:
+    - "I held a plank for 2 minutes today. RPE was 8."
+    - "Yes, please add it as duration practice."
+  expected_tools:
+    - name: log_training_session
+  expected_db_state:
+    - query: "SELECT COUNT(*) FROM practices WHERE name LIKE '%plank%'"
+      expected_value: 1
+    - query: "SELECT COUNT(*) FROM training_sets WHERE duration = 2"
+      expected_value: 1
+
+- id: test_e2e_training_bodyweight
+  messages:
+    - "I did 3 sets of 15 pullups today. RPE 7."
+    - "Yes, please add it as bodyweight practice."
+  expected_tools:
+    - name: log_training_session
+  expected_db_state:
+    - query: "SELECT COUNT(*) FROM practices WHERE name LIKE '%pullup%'"
+      expected_value: 1
+    - query: "SELECT COUNT(*) FROM training_sets WHERE reps = 15"
+      expected_value: 3
+
+- id: test_e2e_training_weighted_missing_weight
+  messages:
+    - "I did 5 sets of 5 reps of barbell squats today. RPE 9."
+    - "The weight was 100kg."
+    - "Yes, please add barbell squats as weighted practice."
+  expected_response_contains: ["weight", "100"]
+  expected_tools:
+    - name: log_training_session
+  expected_db_state:
+    - query: "SELECT COUNT(*) FROM practices WHERE name LIKE '%squat%'"
+      expected_value: 1
+    - query: "SELECT COUNT(*) FROM training_sets WHERE weight = 100 AND reps = 5"
+      expected_value: 5
