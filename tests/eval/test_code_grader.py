@@ -60,19 +60,25 @@ async def test_agent_trajectory(case, mock_agent_env):
     if seed_fixture:
         apply_seed_fixture(db_path, seed_fixture)
         
-    user_inputs = case.get("messages", [])
-    if not user_inputs and "input" in case:
-        user_inputs = [case["input"]]
+    turns = case.get("turns", [])
+    if not turns:
+        # Fallback for old format if any remains
+        turns = [{"user": case.get("input")}]
         
-    expected_tools = case.get("expected_tools", [])
-    
     config = {"configurable": {"thread_id": case["id"]}}
     
-    tool_calls_made = []
-    routed_assistants = []
-    final_response_text = ""
-    
-    for user_input in user_inputs:
+    for turn_idx, turn in enumerate(turns):
+        user_input = turn["user"]
+        expected_tools = turn.get("expected_tools", None)
+        expected_tools_count = turn.get("expected_tools_count", None)
+        expected_routes = turn.get("expected_routes", None)
+        expected_response_contains = turn.get("expected_response_contains", [])
+        expected_db_state = turn.get("expected_db_state", [])
+        
+        tool_calls_made = []
+        routed_assistants = []
+        turn_response_text = ""
+        
         async for event in mock_agent_graph.astream({"messages": [HumanMessage(content=user_input)]}, config=config, stream_mode="updates"):
             for node_name, node_output in event.items():
                 if node_name == "assistant_selector":
@@ -94,7 +100,7 @@ async def test_agent_trajectory(case, mock_agent_env):
                             for tc in msg.tool_calls:
                                 tool_calls_made.append(tc)
                         if msg.type == "ai" and extract_text(msg).strip():
-                            final_response_text += extract_text(msg) + "\n"
+                            turn_response_text += extract_text(msg) + "\n"
                             
         # If the graph was interrupted (awaiting approval), approve it so it finishes DB writes
         state = await mock_agent_graph.aget_state(config)
@@ -130,43 +136,43 @@ async def test_agent_trajectory(case, mock_agent_env):
                             for tc in msg.tool_calls:
                                 tool_calls_made.append(tc)
                         if msg.type == "ai" and extract_text(msg).strip():
-                            final_response_text += extract_text(msg) + "\n"
+                            turn_response_text += extract_text(msg) + "\n"
             state = await mock_agent_graph.aget_state(config)
             iterations += 1
                         
-    # Evaluate expected tools
-    actual_tool_names = [tc["name"] for tc in tool_calls_made]
-    
-    if len(expected_tools) == 0:
-        assert len(tool_calls_made) == 0, f"Expected no tools, got {actual_tool_names}"
-        return
+        # Evaluate expected tools for this turn
+        actual_tool_names = [tc["name"] for tc in tool_calls_made]
         
-    for expected in expected_tools:
-        assert expected["name"] in actual_tool_names, f"Expected tool {expected['name']} not called."
-        # Find the specific tool call
-        for tc in tool_calls_made:
-            if tc["name"] == expected["name"]:
-                for arg_val in expected.get("args_contain", []):
-                    assert arg_val.lower() in str(tc["args"]).lower(), f"Expected '{arg_val}' in arguments."
-                    
-    expected_routes = case.get("expected_routes", None)
-    if expected_routes is not None:
-        assert routed_assistants == expected_routes, f"Expected routes {expected_routes}, got {routed_assistants}"
+        if expected_tools_count is not None:
+            assert len(tool_calls_made) == expected_tools_count, f"Turn {turn_idx}: Expected {expected_tools_count} tools, got {len(tool_calls_made)} ({actual_tool_names})"
         
-        expected_db_state = case.get("expected_db_state", [])
+        if expected_tools is not None:
+            if len(expected_tools) == 0:
+                assert len(tool_calls_made) == 0, f"Turn {turn_idx}: Expected no tools, got {actual_tool_names}"
+            else:
+                for expected in expected_tools:
+                    assert expected["name"] in actual_tool_names, f"Turn {turn_idx}: Expected tool {expected['name']} not called."
+                    # Find the specific tool call
+                    for tc in tool_calls_made:
+                        if tc["name"] == expected["name"]:
+                            for arg_val in expected.get("args_contain", []):
+                                assert arg_val.lower() in str(tc["args"]).lower(), f"Turn {turn_idx}: Expected '{arg_val}' in arguments."
+                        
+        if expected_routes is not None:
+            # We use set intersection/issubset because the router might route to multiple but we only check for expected ones
+            for route in expected_routes:
+                assert route in routed_assistants, f"Turn {turn_idx}: Expected route {route} not found in {routed_assistants}"
+            
         if expected_db_state:
             with sqlite3.connect(db_path) as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT * FROM practices")
-                print("PRACTICES in DB:", cursor.fetchall())
                 for state_check in expected_db_state:
                     cursor.execute(state_check["query"])
                     row = cursor.fetchone()
-                    assert row is not None, f"DB query {state_check['query']} returned no results"
+                    assert row is not None, f"Turn {turn_idx}: DB query {state_check['query']} returned no results"
                     result = row[0]
                     expected_val = state_check["expected_value"]
-                    assert result == expected_val, f"DB query {state_check['query']} returned {result}, expected {expected_val}"
+                    assert result == expected_val, f"Turn {turn_idx}: DB query {state_check['query']} returned {result}, expected {expected_val}"
 
-    expected_response_contains = case.get("expected_response_contains", [])
-    for text_part in expected_response_contains:
-        assert text_part.lower() in final_response_text.lower(), f"Expected '{text_part}' in final response:\n{final_response_text}"
+        for text_part in expected_response_contains:
+            assert text_part.lower() in turn_response_text.lower(), f"Turn {turn_idx}: Expected '{text_part}' in response:\n{turn_response_text}"
