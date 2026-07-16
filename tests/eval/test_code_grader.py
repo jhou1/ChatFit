@@ -58,6 +58,7 @@ def mock_agent_env(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.e2e
 @pytest.mark.parametrize("case", load_eval_cases(), ids=lambda c: c["id"])
 async def test_agent_trajectory(case, mock_agent_env):
     mock_agent_graph, db_path = mock_agent_env
