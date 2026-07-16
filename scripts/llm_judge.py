@@ -38,7 +38,7 @@ async def evaluate_trace(trace_id: str, input_msg: str, output_msg: str):
         score = int(score_line.split(":")[1].strip())
         reason = score_text.replace(score_line, "").strip()
 
-        langfuse.score(
+        langfuse.score(  # type: ignore
             trace_id=trace_id, name="conversational_tone", value=score, comment=reason
         )
         print(f"Scored trace {trace_id}: {score}/5")

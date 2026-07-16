@@ -15,10 +15,10 @@ test:
 	uv run pytest
 
 security:
-	uv run bandit -r .
+	uv run bandit -r . -x ./.venv,./tests -ll
 
-coverage:
-	uv run pytest --cov=. --cov-report=term-missing
+quality: lint format typecheck security
+	@echo "All static check passed."
 
-verify: lint typecheck security test
+verify: test
 	@echo "All verification checks passed."

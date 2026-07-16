@@ -76,6 +76,8 @@ API_CLEAR_URL = os.environ.get("API_CLEAR_URL", f"http://127.0.0.1:{api_port}/cl
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /start command."""
+    if not update.message:
+        return
     welcome_text = (
         "Hello! I am ChatFit, your personal fitness and diet assistant.\n"
         "Tell me about your workouts, what you ate, or ask for analysis on your progress!"
@@ -85,8 +87,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for all standard text messages."""
+    if not update.message or not update.effective_user or not update.effective_chat:
+        return
     user_id = str(update.effective_user.id)
-    user_message = update.message.text
+    user_message = update.message.text or ""
 
     # Send a typing action to let the user know the bot is thinking
     try:
@@ -118,12 +122,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bot_reply = f"An unexpected error occurred: {e}"
 
     try:
-        html_reply = markdown_to_tg_html(bot_reply).strip()
-        await update.message.reply_text(html_reply, parse_mode=ParseMode.HTML)
+        html_reply = str(markdown_to_tg_html(bot_reply)).strip()
+        if update.message:
+            await update.message.reply_text(html_reply, parse_mode=ParseMode.HTML)
     except telegram.error.BadRequest:
         # Fallback to plain text if Telegram rejects the HTML
         try:
-            await update.message.reply_text(bot_reply)
+            if update.message:
+                await update.message.reply_text(bot_reply)
         except telegram.error.NetworkError as ne:
             print(f"Network error during fallback reply: {ne}")
     except telegram.error.NetworkError as ne:
@@ -159,6 +165,8 @@ def main():
 
 async def clear_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /clear command."""
+    if not update.effective_user or not update.message:
+        return
     user_id = str(update.effective_user.id)
 
     try:

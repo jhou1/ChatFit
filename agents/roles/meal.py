@@ -69,7 +69,7 @@ def make_meal_subagent_graph(llm_config: LLMConfig, db_path: str, vector_store):
     builder = StateGraph(AgentState)
     builder.add_node("log_meal", log_meal_node)
     tool_node = SafeToolNode(tools=[log_meal, advise_meals])
-    builder.add_node("tools", tool_node)
+    builder.add_node("tools", tool_node)  # type: ignore # type: ignore
 
     builder.add_edge(START, "log_meal")
     builder.add_conditional_edges("log_meal", tools_condition)

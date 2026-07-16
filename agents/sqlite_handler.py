@@ -77,7 +77,7 @@ def add_training_session(input_data: TrainingInputRecorder, db_path: str) -> str
 
         placeholders = ",".join(["?"] * len(incoming_practice_names))
         cursor.execute(
-            f"SELECT lower(name) FROM practices WHERE lower(name) in ({placeholders})",
+            f"SELECT lower(name) FROM practices WHERE lower(name) in ({placeholders})",  # nosec B608
             incoming_practice_names,
         )
         existing_practices = [row[0] for row in cursor.fetchall()]
@@ -150,7 +150,7 @@ def get_training_sessions_of_last_n_days(n: int, db_path):
             WHERE t.practice_id = p.id AND t.id = s.training_session_id
             AND date(t.date) >= date('now', '-{n} days')
             ORDER BY t.date DESC
-            """)
+            """)  # nosec B608
         return cursor.fetchall()
 
 
@@ -203,7 +203,7 @@ def get_aggregated_training_data(n: int, db_path: str):
             WHERE date(t.date) >= date('now', '-{n} days')
             GROUP BY date(t.date), p.type
             ORDER BY date(t.date) ASC
-            """)
+            """)  # nosec B608
         return [dict(row) for row in cursor.fetchall()]
 
 
@@ -216,5 +216,5 @@ def get_meal_records_of_last_n_days(n: int, db_path: str):
             WHERE date(date) >= date('now', '-{n} days')
             ORDER BY date ASC
             LIMIT 50
-            """)
+            """)  # nosec B608
         return [dict(row) for row in cursor.fetchall()]

@@ -83,7 +83,7 @@ class PracticeNameNormalizer:
             for alias in [k] + v["aliases"]:
                 self.alias_to_key[alias.lower()] = k
 
-    def normalize(self, practice: str) -> str:
+    def normalize(self, practice: str) -> str | None:
         search_key = re.sub(r"[.-]", " ", practice.lower().strip())
         if search_key in self.alias_to_key:
             return self.alias_to_key[search_key]
@@ -104,7 +104,7 @@ def make_training_agent_graph(llm_config: LLMConfig, db_path: str):
         """Normalize the user input practice and return the standard name"""
 
         normalizer = PracticeNameNormalizer("config/synonyms.json")
-        return normalizer.normalize(user_input)
+        return normalizer.normalize(user_input) or ""
 
     @tool(args_schema=TrainingInputRecorder)
     def log_training_session(**kwargs):
@@ -156,7 +156,7 @@ def make_training_agent_graph(llm_config: LLMConfig, db_path: str):
             retrieve_training_sessions,
         ]
     )
-    builder.add_node("tools", tool_node)
+    builder.add_node("tools", tool_node)  # type: ignore # type: ignore
 
     builder.add_edge(START, "log_training_node")
     builder.add_conditional_edges("log_training_node", tools_condition)

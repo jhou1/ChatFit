@@ -36,7 +36,9 @@ def _is_rate_limit_tool_error(error: Exception) -> bool:
     )
 
 
-async def _execute_single_tool_safely(tool_call: dict, tool_list: list) -> ToolMessage:
+async def _execute_single_tool_safely(
+    tool_call: dict, tool_list: Sequence[Any]
+) -> ToolMessage:
     """Safely execute tool call, catch exception, and return mild message"""
     tool_name = tool_call["name"]
     tool_args = tool_call["args"]

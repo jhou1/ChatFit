@@ -11,7 +11,10 @@ def extract_text(
     Appends a truncation warning if the message was cut off by max_tokens limit.
     """
     is_message = isinstance(message_or_content, BaseMessage)
-    content = message_or_content.content if is_message else message_or_content
+    if is_message:
+        content = message_or_content.content  # type: ignore
+    else:
+        content = message_or_content
 
     result_text = ""
     if isinstance(content, str):

@@ -7,6 +7,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langgraph.graph import StateGraph, START
+from langgraph.graph.state import CompiledStateGraph
 
 from agents.models import AgentState
 from agents.llm_factory import create_chat_model, LLMConfig
@@ -98,7 +99,7 @@ async def route_assistant_on_relevance(
 
 def make_agent_graph(
     llm_config: LLMConfig, db_path: str, vector_store, checkpointer=None
-) -> StateGraph:
+) -> CompiledStateGraph:
     training_recorder_node = make_training_agent_graph(llm_config, db_path)
     meal_recorder_node = make_meal_subagent_graph(llm_config, db_path, vector_store)
     insights_recorder_node = make_insights_agent_graph(llm_config, db_path)

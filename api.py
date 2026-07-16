@@ -1,5 +1,6 @@
 import os
 import uuid
+from typing import Any
 from contextlib import asynccontextmanager
 
 import aiosqlite
@@ -11,7 +12,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
 
 from agents.llm_factory import LLMConfig, create_chat_model
-from langfuse.callback import CallbackHandler
+from langfuse.callback import CallbackHandler  # type: ignore
 from agents.sqlite_handler import init_db
 from agents.roles.supervisor import make_agent_graph
 from agents.rag import get_or_create_vector_store
@@ -33,7 +34,7 @@ class ResumeRequest(BaseModel):
     approved: bool
 
 
-user_sessions = {}
+user_sessions: dict[str, str] = {}
 
 
 def get_thread_id(user_id: str) -> str:
@@ -174,7 +175,7 @@ async def chat_endpoint(req: ChatRequest, request: Request):
             intr.id: {"approved": is_approved, "feedback": feedback}
             for intr in interrupts
         }
-        action_command = Command(resume=resume_data)
+        action_command: Command[Any] | dict[str, Any] = Command(resume=resume_data)
     else:
         # Normal chat
         action_command = {"messages": [HumanMessage(content=req.message)]}

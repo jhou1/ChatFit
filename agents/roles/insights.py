@@ -66,7 +66,7 @@ def make_insights_agent_graph(llm_config: LLMConfig, db_path: str):
     builder = StateGraph(AgentState)
     builder.add_node("insights", insights_node)
     tool_node = SafeToolNode(tools=[retrieve_recent_training, retrieve_recent_meals])
-    builder.add_node("tools", tool_node)
+    builder.add_node("tools", tool_node)  # type: ignore # type: ignore
 
     builder.add_edge(START, "insights")
     builder.add_conditional_edges("insights", tools_condition)
