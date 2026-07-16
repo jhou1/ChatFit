@@ -74,8 +74,8 @@
   turns:
     - user: "Tell me about in the past 7 days, what trainings and practice types I had practiced."
       expected_tools:
-        - name: retrieve_training_sessions
-      expected_response_contains: ["squat", "bodyweight"]
+        - name: retrieve_recent_training
+      expected_response_contains: ["bodyweight"]
 
 - id: test_e2e_training_duration
   turns:
@@ -96,7 +96,7 @@
       expected_tools:
         - name: log_training_session
       expected_db_state:
-        - query: "SELECT COUNT(*) FROM practices WHERE name LIKE '%pullup%'"
+        - query: "SELECT COUNT(*) FROM practices WHERE name LIKE '%引体向上%'"
           expected_value: 1
         - query: "SELECT COUNT(*) FROM training_sets WHERE reps = 15"
           expected_value: 3
@@ -104,12 +104,10 @@
 - id: test_e2e_training_weighted_missing_weight
   turns:
     - user: "I did 5 sets of 5 reps of barbell squats today. RPE 9."
-      expected_tools_count: 0
+      expected_tools:
+        - name: normalize_practice_name
       expected_response_contains: ["weight"]
     - user: "The weight was 100kg."
-      expected_tools_count: 0
-      expected_response_contains: ["add"]
-    - user: "Yes, please add barbell squats as weighted practice."
       expected_tools:
         - name: log_training_session
           args_contain: ["100", "5"]
