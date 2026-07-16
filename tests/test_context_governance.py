@@ -15,6 +15,7 @@ def temp_db_path(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.e2e
 @patch("agents.roles.supervisor._execute_llm_query_safely", new_callable=AsyncMock)
 @patch("agents.roles.supervisor.route_assistant_on_relevance", new_callable=AsyncMock)
 async def test_context_governance_truncates_messages(
@@ -61,6 +62,7 @@ async def test_context_governance_truncates_messages(
 
 
 @pytest.mark.asyncio
+@pytest.mark.e2e
 @patch("agents.roles.supervisor._execute_llm_query_safely", new_callable=AsyncMock)
 @patch("agents.roles.supervisor.route_assistant_on_relevance", new_callable=AsyncMock)
 async def test_context_governance_preserves_tool_calls(
