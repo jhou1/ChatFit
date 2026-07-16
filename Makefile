@@ -1,24 +1,24 @@
 .PHONY: format lint typecheck test security coverage verify
 
 format:
-	black .
-	ruff check --fix .
+	uv run black .
+	uv run ruff check --fix .
 
 lint:
-	ruff check .
-	black --check .
+	uv run ruff check .
+	uv run black --check .
 
 typecheck:
-	mypy .
+	uv run mypy .
 
 test:
-	pytest
+	uv run pytest
 
 security:
-	bandit -r .
+	uv run bandit -r .
 
 coverage:
-	pytest --cov=. --cov-report=term-missing
+	uv run pytest --cov=. --cov-report=term-missing
 
 verify: lint typecheck security test
 	@echo "All verification checks passed."
