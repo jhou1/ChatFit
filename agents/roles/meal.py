@@ -33,6 +33,7 @@ CRITICAL INSTRUCTIONS:
 5. After successfully calling the tool, briefly acknowledge the logged meal.
 """
 
+
 def make_meal_subagent_graph(llm_config: LLMConfig, db_path: str, vector_store):
     llm = create_chat_model(llm_config)
 
@@ -56,12 +57,12 @@ def make_meal_subagent_graph(llm_config: LLMConfig, db_path: str, vector_store):
 
     async def log_meal_node(state: AgentState):
         prompt_template = PromptTemplate.from_template(INSTRUCTION_FOR_RECORDING_MEALS)
-        system_prompt = prompt_template.format(
-            current_time=datetime.now().isoformat()
-        )
+        system_prompt = prompt_template.format(current_time=datetime.now().isoformat())
         # adding summary as context
         if state.get("summary"):
-            system_prompt += f"\n\n[Historical Conversation Summary:]\n{state['summary']}"
+            system_prompt += (
+                f"\n\n[Historical Conversation Summary:]\n{state['summary']}"
+            )
         messages = [SystemMessage(content=system_prompt)] + state["messages"]
         return await _execute_llm_query_safely(llm_with_tools, messages)
 

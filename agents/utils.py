@@ -1,7 +1,10 @@
 from langchain_core.messages import BaseMessage
 from typing import Union, List, Dict, Any
 
-def extract_text(message_or_content: Union[BaseMessage, str, List[Dict[str, Any]], Any]) -> str:
+
+def extract_text(
+    message_or_content: Union[BaseMessage, str, List[Dict[str, Any]], Any],
+) -> str:
     """
     Safely extract text from a LangChain message or content field.
     Handles both OpenAI's string content and Gemini's list-based content.
@@ -14,7 +17,11 @@ def extract_text(message_or_content: Union[BaseMessage, str, List[Dict[str, Any]
     if isinstance(content, str):
         result_text = content
     elif isinstance(content, list):
-        result_text = "".join(part.get("text", "") for part in content if isinstance(part, dict) and "text" in part)
+        result_text = "".join(
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict) and "text" in part
+        )
     else:
         result_text = str(content)
 

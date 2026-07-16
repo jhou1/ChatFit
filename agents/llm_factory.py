@@ -7,8 +7,9 @@ from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_anthropic import ChatAnthropic
 
+
 class LLMConfig(BaseModel):
-    provider: Literal["openai", "google", "anthropic",  "local"]
+    provider: Literal["openai", "google", "anthropic", "local"]
     base_url: Optional[str] = None
     model_name: str
     api_key: Optional[str] = None
@@ -16,12 +17,14 @@ class LLMConfig(BaseModel):
     max_tokens: int = 2048
     kwargs: dict = {}
 
+
 provider_classes = {
     "openai": ChatOpenAI,
     "google": ChatGoogleGenerativeAI,
     "anthropic": ChatAnthropic,
-    "local": ChatOpenAI
+    "local": ChatOpenAI,
 }
+
 
 def create_chat_model(config: LLMConfig):
     provider = config.provider.lower()
@@ -37,7 +40,7 @@ def create_chat_model(config: LLMConfig):
         "api_key": config.api_key or os.getenv(provider_api_key_envvar),
         "temperature": config.temperature,
         "max_tokens": config.max_tokens,
-        **config.kwargs
+        **config.kwargs,
     }
 
     if config.base_url:

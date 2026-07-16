@@ -5,12 +5,15 @@ from datetime import datetime
 
 from langchain_core.prompts.prompt import PromptTemplate
 from langchain_core.tools import tool
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import SystemMessage
 
 from langgraph.graph import StateGraph, START
 
 from agents.models import AgentState, TrainingInputRecorder
-from agents.sqlite_handler import add_training_session, get_training_sessions_of_last_n_days
+from agents.sqlite_handler import (
+    add_training_session,
+    get_training_sessions_of_last_n_days,
+)
 from agents.llm_factory import create_chat_model, LLMConfig
 from langgraph.prebuilt import tools_condition
 from tools.safe_execution import SafeToolNode, _execute_llm_query_safely
@@ -93,6 +96,7 @@ class PracticeNameNormalizer:
 
         return None
 
+
 # make agent graph
 def make_training_agent_graph(llm_config: LLMConfig, db_path: str):
     @tool
@@ -115,19 +119,20 @@ def make_training_agent_graph(llm_config: LLMConfig, db_path: str):
         return get_training_sessions_of_last_n_days(num_of_days, db_path)
 
     llm = create_chat_model(llm_config)
-    llm_with_tools = llm.bind_tools([normalize_practice_name,
-                                     log_training_session,
-                                     retrieve_training_sessions
-                                     ])
+    llm_with_tools = llm.bind_tools(
+        [normalize_practice_name, log_training_session, retrieve_training_sessions]
+    )
 
     async def log_training_node(state: AgentState):
-        prompt_template = PromptTemplate.from_template(INSTRUCTION_FOR_RECORDING_TRAINING_SESSIONS)
-        system_prompt = prompt_template.format(
-            current_time=datetime.now().isoformat()
+        prompt_template = PromptTemplate.from_template(
+            INSTRUCTION_FOR_RECORDING_TRAINING_SESSIONS
         )
+        system_prompt = prompt_template.format(current_time=datetime.now().isoformat())
         # adding summary as context
         if state.get("summary"):
-            system_prompt += f"\n\n[Historical Conversation Summary:]\n{state['summary']}"
+            system_prompt += (
+                f"\n\n[Historical Conversation Summary:]\n{state['summary']}"
+            )
         messages = [SystemMessage(content=system_prompt)] + state["messages"]
         return await _execute_llm_query_safely(llm_with_tools, messages)
 
@@ -135,17 +140,22 @@ def make_training_agent_graph(llm_config: LLMConfig, db_path: str):
         system_prompt = INSTRUCTION_FOR_RETRIEVING_TRAINING_SESSIONS
         # adding summary as context
         if state.get("summary"):
-            system_prompt += f"\n\n[Historical Conversation Summary:]\n{state['summary']}"
+            system_prompt += (
+                f"\n\n[Historical Conversation Summary:]\n{state['summary']}"
+            )
         messages = [SystemMessage(content=system_prompt)] + state["messages"]
         return await _execute_llm_query_safely(llm_with_tools, messages)
-
 
     builder = StateGraph(AgentState)
     builder.add_node("log_training_node", log_training_node)
     builder.add_node("retrieve_training_node", retrieve_training_node)
-    tool_node = SafeToolNode(tools=[normalize_practice_name,
-                                log_training_session,
-                                retrieve_training_sessions])
+    tool_node = SafeToolNode(
+        tools=[
+            normalize_practice_name,
+            log_training_session,
+            retrieve_training_sessions,
+        ]
+    )
     builder.add_node("tools", tool_node)
 
     builder.add_edge(START, "log_training_node")

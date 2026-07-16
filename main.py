@@ -18,13 +18,14 @@ from agents.rag import get_or_create_vector_store
 
 console = Console()
 
+
 async def main():
     llm_config = LLMConfig(
         provider="google",
         model_name="gemini-3.5-flash",
         temperature=0.5,
         max_tokens=8192,
-        kwargs={"client_args": {"proxy": "socks5://127.0.0.1:8990"}}
+        kwargs={"client_args": {"proxy": "socks5://127.0.0.1:8990"}},
     )
 
     db_path = "chatfit.db"
@@ -32,17 +33,23 @@ async def main():
         init_db(db_path)
 
     with console.status("[bold yellow]Loading Cookbook ...[/]", spinner="dots"):
-        vector_store = get_or_create_vector_store("~/Documents/LifeOS/下厨房/", "chroma.db")
-
+        vector_store = get_or_create_vector_store(
+            "~/Documents/LifeOS/下厨房/", "chroma.db"
+        )
 
     # init memory
-    app = make_agent_graph(llm_config, db_path, vector_store, checkpointer=MemorySaver())
+    app = make_agent_graph(
+        llm_config, db_path, vector_store, checkpointer=MemorySaver()
+    )
     thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
 
-    welcome_msg = "[bold green]ChatFit Agent Initialized.[/]\nType [bold red]'quit'[/] to exit."
-    console.print(Panel(welcome_msg, title="ChatFit", expand=False, border_style="cyan"))
-
+    welcome_msg = (
+        "[bold green]ChatFit Agent Initialized.[/]\nType [bold red]'quit'[/] to exit."
+    )
+    console.print(
+        Panel(welcome_msg, title="ChatFit", expand=False, border_style="cyan")
+    )
 
     while True:
         user_input = Prompt.ask("\b[bold blue]You[/]")
@@ -56,9 +63,16 @@ async def main():
         initial_state = {"messages": [HumanMessage(content=user_input)]}
 
         with console.status("[bold yellow]Agent is thinking...[/]", spinner="dots"):
-            async for event in app.astream(initial_state, config=config, stream_mode="updates"):
+            async for event in app.astream(
+                initial_state, config=config, stream_mode="updates"
+            ):
                 for node_name, node_output in event.items():
-                    if node_name in ["training", "meal", "assistant_selector", "chatter"]:
+                    if node_name in [
+                        "training",
+                        "meal",
+                        "assistant_selector",
+                        "chatter",
+                    ]:
                         new_messages = node_output.get("messages", [])
                         if new_messages:
                             last_message = new_messages[-1]
@@ -66,7 +80,8 @@ async def main():
                             # Handle Gemini's list-based content (extract text parts)
                             if isinstance(last_message.content, list):
                                 text_content = "".join(
-                                    part.get("text", "") for part in last_message.content
+                                    part.get("text", "")
+                                    for part in last_message.content
                                     if isinstance(part, dict) and "text" in part
                                 )
                             else:
@@ -78,8 +93,12 @@ async def main():
                                 console.print()
 
                     elif node_name == "supervisor_agent":
-                        decision = node_output.get("next_agents", []) # Note: ensure this matches your parallel setup fix if applied!
-                        console.print(f"[dim italic]Supervisor routed to: {decision}[/]")
+                        decision = node_output.get(
+                            "next_agents", []
+                        )  # Note: ensure this matches your parallel setup fix if applied!
+                        console.print(
+                            f"[dim italic]Supervisor routed to: {decision}[/]"
+                        )
 
 
 if __name__ == "__main__":

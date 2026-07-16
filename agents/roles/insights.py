@@ -9,7 +9,10 @@ from langgraph.graph import StateGraph, START
 from langgraph.prebuilt import tools_condition
 
 from agents.models import AgentState
-from agents.sqlite_handler import get_aggregated_training_data, get_meal_records_of_last_n_days
+from agents.sqlite_handler import (
+    get_aggregated_training_data,
+    get_meal_records_of_last_n_days,
+)
 from agents.llm_factory import create_chat_model, LLMConfig
 from tools.safe_execution import SafeToolNode, _execute_llm_query_safely
 
@@ -27,6 +30,7 @@ ANALYTICAL FRAMEWORK:
 
 Be professional, encouraging, and highly data-driven. Do not simply list the numbers; synthesize them into a coherent story about their current physical trajectory.
 """
+
 
 def make_insights_agent_graph(llm_config: LLMConfig, db_path: str):
     llm = create_chat_model(llm_config)
@@ -53,7 +57,9 @@ def make_insights_agent_graph(llm_config: LLMConfig, db_path: str):
         prompt_template = PromptTemplate.from_template(INSTRUCTION_FOR_INSIGHTS)
         system_prompt = prompt_template.format(current_time=datetime.now().isoformat())
         if state.get("summary"):
-            system_prompt += f"\n\n[Historical Conversation Summary]:\n{state['summary']}"
+            system_prompt += (
+                f"\n\n[Historical Conversation Summary]:\n{state['summary']}"
+            )
         messages = [SystemMessage(content=system_prompt)] + state["messages"]
         return await _execute_llm_query_safely(llm_with_tools, messages)
 

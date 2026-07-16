@@ -2,6 +2,7 @@ import sqlite3
 
 from agents.models import TrainingInputRecorder, MealInfo
 
+
 def init_db(db_path):
     """Initialize the database tables."""
 
@@ -12,8 +13,7 @@ def init_db(db_path):
 
         cursor.execute("DROP TABLE IF EXISTS training_sessions")
 
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS practices (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
@@ -21,11 +21,9 @@ def init_db(db_path):
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 active INTEGER NOT NULL DEFAULT 1
             )
-            """
-        )
+            """)
 
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS training_sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 practice_id INTEGER NOT NULL REFERENCES practices(id),
@@ -36,11 +34,9 @@ def init_db(db_path):
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 note TEXT
             )
-            """
-        )
+            """)
 
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS training_sets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 training_session_id INTEGER NOT NULL REFERENCES training_sessions(id) ON DELETE CASCADE,
@@ -51,12 +47,9 @@ def init_db(db_path):
                 duration REAL
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-            """
-        )
+            """)
 
-
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS meal_records (
                date TEXT NOT NULL,
                meal_type TEXT,
@@ -64,10 +57,10 @@ def init_db(db_path):
                note TEXT NOT NULL,
                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-            """
-        )
+            """)
 
         conn.commit()
+
 
 def add_training_session(input_data: TrainingInputRecorder, db_path: str) -> str:
     """Save the TrainingInputRecorder to the 3-table training session schema.
@@ -78,13 +71,19 @@ def add_training_session(input_data: TrainingInputRecorder, db_path: str) -> str
         cursor = conn.cursor()
         cursor.execute("PRAGMA foreign_keys = ON")
 
-        incoming_practice_names = list(set([s.practice_name.lower() for s in input_data.sessions]))
+        incoming_practice_names = list(
+            set([s.practice_name.lower() for s in input_data.sessions])
+        )
 
         placeholders = ",".join(["?"] * len(incoming_practice_names))
-        cursor.execute(f"SELECT lower(name) FROM practices WHERE lower(name) in ({placeholders})",
-                       incoming_practice_names)
+        cursor.execute(
+            f"SELECT lower(name) FROM practices WHERE lower(name) in ({placeholders})",
+            incoming_practice_names,
+        )
         existing_practices = [row[0] for row in cursor.fetchall()]
-        new_practices = [p for p in incoming_practice_names if p not in existing_practices]
+        new_practices = [
+            p for p in incoming_practice_names if p not in existing_practices
+        ]
 
         if new_practices and not input_data.confirm_new_practices:
             return f"""Error: The following practices are not in the database: {new_practices}.
@@ -94,12 +93,15 @@ def add_training_session(input_data: TrainingInputRecorder, db_path: str) -> str
 
         try:
             for session in input_data.sessions:
-                cursor.execute("SELECT id FROM practices WHERE lower(name)= ?", (session.practice_name.lower(),))
+                cursor.execute(
+                    "SELECT id FROM practices WHERE lower(name)= ?",
+                    (session.practice_name.lower(),),
+                )
                 row = cursor.fetchone()
                 if not row:
                     cursor.execute(
                         "INSERT INTO practices (name, type, active) VALUES (?, ?, 1)",
-                        (session.practice_name, session.practice_type)
+                        (session.practice_name, session.practice_type),
                     )
                     practice_id = cursor.lastrowid
                 else:
@@ -107,14 +109,28 @@ def add_training_session(input_data: TrainingInputRecorder, db_path: str) -> str
 
                 cursor.execute(
                     "INSERT INTO training_sessions (practice_id, date, note, rpe, warm_up, cool_down) VALUES (?, ?, ?, ?, ?, ?)",
-                    (practice_id, input_data.date.isoformat(), session.note, session.rpe, session.warm_up, session.cool_down)
+                    (
+                        practice_id,
+                        input_data.date.isoformat(),
+                        session.note,
+                        session.rpe,
+                        session.warm_up,
+                        session.cool_down,
+                    ),
                 )
                 session_id = cursor.lastrowid
 
                 for s in session.sets:
                     cursor.execute(
                         "INSERT INTO training_sets (training_session_id, set_number, weight, reps, distance, duration) VALUES (?, ?, ?, ?, ?, ?)",
-                        (session_id, s.set_number, s.weight, s.reps, s. distance, s.duration)
+                        (
+                            session_id,
+                            s.set_number,
+                            s.weight,
+                            s.reps,
+                            s.distance,
+                            s.duration,
+                        ),
                     )
 
             conn.commit()
@@ -128,16 +144,15 @@ def get_training_sessions_of_last_n_days(n: int, db_path):
     """Get a list of training sessions of the last n days"""
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
-        cursor.execute(
-            f"""
+        cursor.execute(f"""
             SELECT *
             FROM training_sessions t, practices p, training_sets s
             WHERE t.practice_id = p.id AND t.id = s.training_session_id
             AND date(t.date) >= date('now', '-{n} days')
             ORDER BY t.date DESC
-            """
-        )
+            """)
         return cursor.fetchall()
+
 
 def update_training_session():
     """Update the TrainingSessionInfo Pydantic model
@@ -146,6 +161,7 @@ def update_training_session():
     """
 
     pass
+
 
 def add_meal_log(meal: MealInfo, db_path: str) -> int:
     """Add the MealInfo pydantic model
@@ -160,23 +176,18 @@ def add_meal_log(meal: MealInfo, db_path: str) -> int:
             )
             VALUES (?, ?, ?, ?)
             """,
-            (
-                meal.date.isoformat(),
-                meal.meal_type,
-                meal.items,
-                meal.note
-            )
+            (meal.date.isoformat(), meal.meal_type, meal.items, meal.note),
         )
         conn.commit()
         return cursor.lastrowid or 0
+
 
 def get_aggregated_training_data(n: int, db_path: str):
     """Aggregate training volume, sets, and RPE grouped by date and practice type."""
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute(
-            f"""
+        cursor.execute(f"""
             SELECT 
                 date(t.date) as training_date,
                 p.type as practice_type,
@@ -192,20 +203,18 @@ def get_aggregated_training_data(n: int, db_path: str):
             WHERE date(t.date) >= date('now', '-{n} days')
             GROUP BY date(t.date), p.type
             ORDER BY date(t.date) ASC
-            """
-        )
+            """)
         return [dict(row) for row in cursor.fetchall()]
+
 
 def get_meal_records_of_last_n_days(n: int, db_path: str):
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute(
-            f"""
+        cursor.execute(f"""
             SELECT * FROM meal_records 
             WHERE date(date) >= date('now', '-{n} days')
             ORDER BY date ASC
             LIMIT 50
-            """
-        )
+            """)
         return [dict(row) for row in cursor.fetchall()]

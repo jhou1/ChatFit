@@ -4,41 +4,63 @@ import mistune
 import telegram.error
 from telegram import Update
 from telegram.constants import ParseMode
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+)
 from telegram.request import HTTPXRequest
 from dotenv import load_dotenv
+
 
 class TelegramRenderer(mistune.HTMLRenderer):
     def heading(self, text, level, **attrs):
         return f"<b>{text}</b>\n\n"
+
     def paragraph(self, text):
         return f"{text}\n\n"
+
     def list(self, text, ordered, **attrs):
         return f"{text.strip()}\n\n"
+
     def list_item(self, text, **attrs):
         return f"• {text.strip()}\n"
+
     def strong(self, text):
         return f"<b>{text}</b>"
+
     def emphasis(self, text):
         return f"<i>{text}</i>"
+
     def block_code(self, code, info=None):
         return f"<pre><code>{mistune.escape(code)}</code></pre>\n\n"
+
     def codespan(self, text):
         return f"<code>{mistune.escape(text)}</code>"
+
     def thematic_break(self):
         return "───────────────\n\n"
+
     def block_text(self, text):
         return f"{text}\n"
+
     def block_quote(self, text):
         return f"<i>{text}</i>\n"
+
     def block_html(self, html):
         return mistune.escape(html)
+
     def inline_html(self, html):
         return mistune.escape(html)
+
     def image(self, src, alt="", title=None):
         return f"[Image: {alt}]"
+
     def link(self, link, text=None, title=None):
         return f'<a href="{link}">{text or link}</a>'
+
 
 markdown_to_tg_html = mistune.create_markdown(renderer=TelegramRenderer())
 
@@ -51,6 +73,7 @@ api_port = os.environ.get("PORT", "8000")
 API_URL = os.environ.get("API_URL", f"http://127.0.0.1:{api_port}/chat")
 API_CLEAR_URL = os.environ.get("API_CLEAR_URL", f"http://127.0.0.1:{api_port}/clear")
 
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /start command."""
     welcome_text = (
@@ -59,6 +82,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(welcome_text)
 
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for all standard text messages."""
     user_id = str(update.effective_user.id)
@@ -66,7 +90,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Send a typing action to let the user know the bot is thinking
     try:
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='typing')
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id, action="typing"
+        )
     except telegram.error.NetworkError as ne:
         print(f"Network error while sending typing action: {ne}")
 
@@ -75,8 +101,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Explicitly set proxy to None for the local API call so it doesn't get routed through the SOCKS5 proxy.
         async with httpx.AsyncClient(timeout=120.0, proxy=None) as client:
             response = await client.post(
-                API_URL,
-                json={"user_id": user_id, "message": user_message}
+                API_URL, json={"user_id": user_id, "message": user_message}
             )
             response.raise_for_status()
             data = response.json()
@@ -86,7 +111,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 bot_reply = "Sorry, I processed that but didn't generate a response."
 
     except httpx.HTTPError as e:
-        bot_reply = f"Sorry, I'm having trouble connecting to the backend right now. Error: {e}"
+        bot_reply = (
+            f"Sorry, I'm having trouble connecting to the backend right now. Error: {e}"
+        )
     except Exception as e:
         bot_reply = f"An unexpected error occurred: {e}"
 
@@ -101,6 +128,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print(f"Network error during fallback reply: {ne}")
     except telegram.error.NetworkError as ne:
         print(f"Network error while sending reply to Telegram: {ne}")
+
 
 def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -128,6 +156,7 @@ def main():
     print("Bot is polling for messages. Press Ctrl+C to stop.")
     app.run_polling()
 
+
 async def clear_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /clear command."""
     user_id = str(update.effective_user.id)
@@ -135,8 +164,7 @@ async def clear_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         async with httpx.AsyncClient(timeout=30.0, proxy=None) as client:
             response = await client.post(
-                API_CLEAR_URL,
-                json={"user_id": user_id, "message": "/clear"}
+                API_CLEAR_URL, json={"user_id": user_id, "message": "/clear"}
             )
             response.raise_for_status()
             data = response.json()
@@ -145,5 +173,6 @@ async def clear_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Failed to clear context: {e}")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

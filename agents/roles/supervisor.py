@@ -1,6 +1,11 @@
 from langchain_core.prompts.prompt import PromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, SystemMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    RemoveMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langgraph.graph import StateGraph, START
 
 from agents.models import AgentState
@@ -12,7 +17,7 @@ from agents.roles.insights import make_insights_agent_graph
 from tools.safe_execution import _execute_llm_query_safely
 from agents.utils import extract_text
 
-INSTRUCTION_FOR_ROUTING_SUBAGENTS="""
+INSTRUCTION_FOR_ROUTING_SUBAGENTS = """
 You skilled at assigning user input to the correct subagents.
 
 These are the subagents you can assign to:
@@ -47,7 +52,7 @@ Response:
 chatter
 """
 
-CONTEXT_GOVERNANCE_PROMPT="""
+CONTEXT_GOVERNANCE_PROMPT = """
 You are an assistant memory manager. Compress the following conversation history into a concise summary.
 Focus on training(fitness) goals, dietary context, user preferences, and any important ongoing context.
 
@@ -59,16 +64,23 @@ Here is the new conversation history to compress:
 """
 
 
-async def route_assistant_on_relevance(llm_config: LLMConfig, messages: list) -> list[str]:
+async def route_assistant_on_relevance(
+    llm_config: LLMConfig, messages: list
+) -> list[str]:
     """Select the appropriate assistant based on conversation history"""
 
     prompt_template = PromptTemplate.from_template(INSTRUCTION_FOR_ROUTING_SUBAGENTS)
     system_prompt = prompt_template.format()
 
     recent_messages = messages[-10:]
-    history_text = "\n".join([f"{type(m).__name__}: {m.content}" for m in recent_messages])
+    history_text = "\n".join(
+        [f"{type(m).__name__}: {m.content}" for m in recent_messages]
+    )
     routing_input = f"Conversation History:\n{history_text}\n\nBased on the history above, return the assignment decision. Output ONLY a comma-separated list of agents (e.g. training_agent, meal_agent). If no agent is needed, output 'chatter'."
-    routing_messages = [SystemMessage(content=system_prompt), HumanMessage(content=routing_input)]
+    routing_messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=routing_input),
+    ]
 
     llm = create_chat_model(llm_config)
     # chain = llm | StrOutputParser()
@@ -83,7 +95,10 @@ async def route_assistant_on_relevance(llm_config: LLMConfig, messages: list) ->
         return ["chatter"]
     return decision
 
-def make_agent_graph(llm_config: LLMConfig, db_path: str, vector_store, checkpointer=None) -> StateGraph:
+
+def make_agent_graph(
+    llm_config: LLMConfig, db_path: str, vector_store, checkpointer=None
+) -> StateGraph:
     training_recorder_node = make_training_agent_graph(llm_config, db_path)
     meal_recorder_node = make_meal_subagent_graph(llm_config, db_path, vector_store)
     insights_recorder_node = make_insights_agent_graph(llm_config, db_path)
@@ -141,8 +156,7 @@ def make_agent_graph(llm_config: LLMConfig, db_path: str, vector_store, checkpoi
         existing_summary = state["summary"] if state.get("summary") else ""
         prompt_template = PromptTemplate.from_template(CONTEXT_GOVERNANCE_PROMPT)
         prompt = prompt_template.format(
-            existing_summary=existing_summary,
-            summary_text= summary_text
+            existing_summary=existing_summary, summary_text=summary_text
         )
 
         llm = create_chat_model(llm_config)
@@ -150,9 +164,12 @@ def make_agent_graph(llm_config: LLMConfig, db_path: str, vector_store, checkpoi
 
         new_summary = extract_text(response["messages"])
 
-        delete_cmd = [RemoveMessage(id=message.id) for message in messages_to_compress if message.id]
+        delete_cmd = [
+            RemoveMessage(id=message.id)
+            for message in messages_to_compress
+            if message.id
+        ]
         return {"summary": new_summary, "messages": delete_cmd}
-
 
     # routing node
     async def assistant_selector_node(state: AgentState):
@@ -183,7 +200,7 @@ def make_agent_graph(llm_config: LLMConfig, db_path: str, vector_store, checkpoi
             "meal_agent": "meal",
             "insights_agent": "insights",
             "chatter": "chatter",
-        }
+        },
     )
 
     return builder.compile(checkpointer=checkpointer)
