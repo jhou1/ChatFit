@@ -24,7 +24,7 @@ docker compose up -d
 
 ## Evaluation Framework
 
-ChatFit features a dual-pipeline Agent Evaluation Framework built around local execution and **Langfuse** tracing.
+ChatFit features a dual-pipeline Agent Evaluation Framework built around local execution and **Langfuse Cloud** tracing.
 
 1. **Code Grader (CI/Integration)**
    - Defined in `tests/eval/eval_cases.yaml`, these tests run the agent locally against fixed inputs.
@@ -32,7 +32,7 @@ ChatFit features a dual-pipeline Agent Evaluation Framework built around local e
    - Run it with: `uv run pytest tests/eval -v`
 
 2. **LLM-as-a-Judge (Production Quality)**
-   - A standalone script (`scripts/llm_judge.py`) fetches real execution traces from your local Langfuse server.
+   - A standalone script (`scripts/llm_judge.py`) fetches real execution traces from Langfuse Cloud.
    - It uses an LLM evaluator to score the conversational tone and RAG context quality (1-5), pushing those metrics back into the Langfuse UI.
    - Run it with: `uv run python scripts/llm_judge.py <langfuse_trace_id>`
 

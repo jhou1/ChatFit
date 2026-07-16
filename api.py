@@ -154,7 +154,7 @@ async def chat_endpoint(req: ChatRequest, request: Request):
 
     # Use the Telegram user_id as the thread_id for LangGraph short-term memory separation
     thread_id = get_thread_id(req.user_id)
-    langfuse_handler = CallbackHandler()
+    langfuse_handler = CallbackHandler(host=os.environ.get("LANGFUSE_HOST"))
 
     config = {
         "configurable": {"thread_id": thread_id},

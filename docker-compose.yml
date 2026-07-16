@@ -1,56 +1,34 @@
 version: '3.8'
-
 services:
   api:
     build: .
     container_name: chatfit_api
     ports:
-      - "8000:8000"
+    - 8000:8000
     command: uvicorn api:app --host 0.0.0.0 --port 8000
     volumes:
-      - ~/.iron:/root/.iron
-      - ~/Documents/LifeOS/下厨房/:/root/Documents/LifeOS/下厨房/
-      - ./chroma.db:/app/chroma.db
-      - ./chatfit.db:/app/chatfit.db
-      - ./checkpointer.db:/app/checkpointer.db
+    - ~/.iron:/root/.iron
+    - "~/Documents/LifeOS/\u4E0B\u53A8\u623F/:/root/Documents/LifeOS/\u4E0B\u53A8\u623F\
+      /"
+    - ./chroma.db:/app/chroma.db
+    - ./chatfit.db:/app/chatfit.db
+    - ./checkpointer.db:/app/checkpointer.db
     env_file:
-      - .env
+    - .env
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+    - host.docker.internal:host-gateway
 
   bot:
     build: .
     container_name: chatfit_bot
     command: python bot.py
     depends_on:
-      - api
+    - api
     env_file:
-      - .env
+    - .env
     environment:
-      - API_URL=http://api:8000/chat
-      - API_CLEAR_URL=http://api:8000/clear
-      - API_RESUME_URL=http://api:8000/resume
+    - API_URL=http://api:8000/chat
+    - API_CLEAR_URL=http://api:8000/clear
+    - API_RESUME_URL=http://api:8000/resume
     extra_hosts:
-      - "host.docker.internal:host-gateway"
-
-  langfuse-server:
-    image: langfuse/langfuse:2
-    depends_on:
-      - langfuse-db
-    ports:
-      - "3000:3000"
-    environment:
-      - DATABASE_URL=postgresql://postgres:postgres@langfuse-db:5432/langfuse
-      - NEXTAUTH_SECRET=mysecret
-      - SALT=mysalt
-      - NEXTAUTH_URL=http://localhost:3000
-      - TELEMETRY_ENABLED=false
-      
-  langfuse-db:
-    image: postgres:15
-    environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=langfuse
-    volumes:
-      - ./langfuse_db_data:/var/lib/postgresql/data
+    - host.docker.internal:host-gateway
