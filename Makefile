@@ -20,5 +20,5 @@ security:
 coverage:
 	pytest --cov=. --cov-report=term-missing
 
-verify:
+verify: lint typecheck security test
 	@echo "All verification checks passed."
