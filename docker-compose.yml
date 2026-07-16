@@ -34,7 +34,7 @@ services:
       - "host.docker.internal:host-gateway"
 
   langfuse-server:
-    image: langfuse/langfuse:latest
+    image: langfuse/langfuse:2
     depends_on:
       - langfuse-db
     ports:

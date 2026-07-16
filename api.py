@@ -12,7 +12,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
 
 from agents.llm_factory import LLMConfig, create_chat_model
-from langfuse.callback import CallbackHandler  # type: ignore
+from langfuse.langchain import CallbackHandler  # type: ignore
 from agents.sqlite_handler import init_db
 from agents.roles.supervisor import make_agent_graph
 from agents.rag import get_or_create_vector_store
@@ -154,9 +154,13 @@ async def chat_endpoint(req: ChatRequest, request: Request):
 
     # Use the Telegram user_id as the thread_id for LangGraph short-term memory separation
     thread_id = get_thread_id(req.user_id)
-    langfuse_handler = CallbackHandler(session_id=thread_id, user_id=req.user_id)
+    langfuse_handler = CallbackHandler()
 
-    config = {"configurable": {"thread_id": thread_id}, "callbacks": [langfuse_handler]}
+    config = {
+        "configurable": {"thread_id": thread_id},
+        "callbacks": [langfuse_handler],
+        "metadata": {"session_id": thread_id, "user_id": req.user_id},
+    }
 
     # Check for pending interrupts
     state = await request.app.state.agent.aget_state(config)
