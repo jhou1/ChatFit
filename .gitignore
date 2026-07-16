@@ -16,3 +16,4 @@ chatfit.db
 checkpointer.db
 langfuse_db_data/
 chroma.db/
+.worktrees/
