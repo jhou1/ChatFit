@@ -1,0 +1,9 @@
+.venv/
+.git/
+__pycache__/
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+*.db
+langfuse_db_data/
+.worktrees/
