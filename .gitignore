@@ -15,5 +15,6 @@ chroma.db/*
 chatfit.db
 checkpointer.db
 langfuse_db_data/
+runtime-data/
 chroma.db/
 .worktrees/

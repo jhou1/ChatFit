@@ -13,7 +13,7 @@ ChatFit is completely unopinionated about your choice of LLM. You can plug in yo
 
 1. `export TELEGRAM_BOT_TOKEN="your-bot-token-from-botfather"`
 2. `cp .env.example .env`, open `.env` with a text editor, and then enter the values of the required fields.
-3. Configure `docker-compose.yml` to mount your db file path and RAG directory path.
+3. Configure `docker-compose.yml` to mount your business DB and RAG directory paths. LangGraph checkpoints are stored under the automatically created `runtime-data/` directory; do not replace the checkpoint file with a directory bind mount.
 4. Spin up the service:
 ```bash
 podman compose up -d
@@ -21,6 +21,8 @@ podman compose up -d
 # or alternatively
 docker compose up -d
 ```
+
+Langfuse reads `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY`, and `LANGFUSE_SECRET_KEY` from the environment. Tracing initialization is optional: if it fails, `/chat` remains available and the failure is logged.
 
 ## Evaluation Framework
 

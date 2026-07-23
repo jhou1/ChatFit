@@ -1,7 +1,9 @@
 import os
 import uuid
+import logging
 from typing import Any
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import aiosqlite
 
@@ -35,12 +37,40 @@ class ResumeRequest(BaseModel):
 
 
 user_sessions: dict[str, str] = {}
+logger = logging.getLogger(__name__)
 
 
 def get_thread_id(user_id: str) -> str:
     if user_id not in user_sessions:
         user_sessions[user_id] = str(uuid.uuid4())
     return user_sessions[user_id]
+
+
+def create_langfuse_callback() -> Any | None:
+    """Create optional tracing without making chat availability depend on it."""
+
+    try:
+        # Langfuse v4 reads host and credentials from LANGFUSE_* environment
+        # variables. Passing the removed `host` keyword raises TypeError.
+        return CallbackHandler()
+    except Exception:
+        logger.warning(
+            "Langfuse callback initialization failed; tracing is disabled",
+            exc_info=True,
+        )
+        return None
+
+
+def get_checkpointer_db_path() -> str:
+    """Resolve a writable SQLite file and reject directory-shaped bind mounts."""
+
+    db_path = Path(os.environ.get("CHECKPOINTER_DB_PATH", "checkpointer.db"))
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    if db_path.exists() and not db_path.is_file():
+        raise RuntimeError(
+            f"CHECKPOINTER_DB_PATH must be a file path, not a directory: {db_path}"
+        )
+    return str(db_path)
 
 
 @asynccontextmanager
@@ -70,7 +100,7 @@ async def startup_event(fastapi_app: FastAPI):
 
     print("Initializing Agent Graph...")
     # TODO make this configurable
-    checkpointer_db = "checkpointer.db"
+    checkpointer_db = get_checkpointer_db_path()
     async with aiosqlite.connect(checkpointer_db) as conn:
         checkpointer = AsyncSqliteSaver(conn)
         await checkpointer.setup()
@@ -154,11 +184,11 @@ async def chat_endpoint(req: ChatRequest, request: Request):
 
     # Use the Telegram user_id as the thread_id for LangGraph short-term memory separation
     thread_id = get_thread_id(req.user_id)
-    langfuse_handler = CallbackHandler(host=os.environ.get("LANGFUSE_HOST"))
+    langfuse_handler = create_langfuse_callback()
 
     config = {
         "configurable": {"thread_id": thread_id},
-        "callbacks": [langfuse_handler],
+        "callbacks": [langfuse_handler] if langfuse_handler is not None else [],
         "metadata": {"session_id": thread_id, "user_id": req.user_id},
     }
 
