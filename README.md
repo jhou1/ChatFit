@@ -265,8 +265,10 @@ ChatFit/
 ## 文档
 
 - [系统架构](docs/architecture.md)
+- [Agent Evaluation 设计](docs/evaluation.md)
+- [Agent 可观测性设计](docs/observability.md)
 - [质量与验证](docs/quality.md)
-- [Evaluation Framework 设计](docs/superpowers/specs/2026-07-11-agent-evaluation-framework-design.md)
+- [早期 Evaluation Framework Spec](docs/superpowers/specs/2026-07-11-agent-evaluation-framework-design.md)
 - [Agent Verification Pipeline 设计](docs/superpowers/specs/2026-07-16-agent-verification-pipeline-design.md)
 
 ## Roadmap
