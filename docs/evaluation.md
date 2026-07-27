@@ -115,9 +115,10 @@ flowchart TD
 - 断言完整节点顺序、工具参数、确认行为和最终数据库状态
 - 同一个数据集重复运行应得到相同结果
 
-当前 `tests/eval/test_code_grader.py` 已覆盖路由、工具、回复片段和数据库状态，
-但它使用 live model 并被标记为 `e2e`。目标状态应把不依赖模型推理的机械性断言
-迁移到 fake model 的 L1，以降低成本和波动。
+当前 `evaluation/graders.py` 已把路由、工具、参数和回复片段断言提取为可复用的
+确定性 Grader，`evaluation/models.py` 负责 YAML schema 校验。现有
+`tests/eval/test_code_grader.py` 已使用这些组件，但 Graph runner 仍使用 live model
+并被标记为 `e2e`。下一步应加入 fake model runner，形成完全离线的 L1。
 
 ### L2：Live Model E2E
 
@@ -150,9 +151,9 @@ LLM Judge 只负责需要语义判断的维度：
 上线前使用人工标注集计算 Judge 与人工的一致性。Judge Prompt 或模型变化后必须重新校准。
 对高风险失败、Judge 低置信度以及随机样本进行人工复核。
 
-当前 `scripts/llm_judge.py` 只演示了对传入 input/output 的
-`conversational_tone` 评分写回；CLI 仍使用固定占位文本。自动拉取 trace、
-RAG relevancy rubric、批量运行和校准属于待实现能力。
+当前 `scripts/llm_judge.py` 已要求 CLI 提供真实 input/output，并将校验后的
+`conversational_tone` 分数写回指定 trace。自动拉取 trace、RAG relevancy rubric、
+批量运行和校准仍属于待实现能力。
 
 ### L4：线上 Evaluation
 
@@ -260,7 +261,7 @@ SQL 断言只允许来自仓库内受审查的数据集，不允许执行生产�
 | Smoke/Regression 硬断言 | 100% 通过 | 100% 通过 | 阻断 |
 | Golden task completion | 可选子集 | ≥ 95% | 阻断或审批 |
 | 高风险 HITL/隔离用例 | 100% 通过 | 100% 通过 | 阻断 |
-| Conversational tone | 观察 | 平均 ≥ 4/5，P10 ≥ 3/5 | 审核 |
+| Conversational tone | 观察 | 覆盖率 100%，平均 ≥ 4/5，P10 ≥ 3/5 | 审核 |
 | P95 latency/cost | 记录趋势 | 不劣于基线 20% 以上 | 审核 |
 
 任何阈值豁免都应记录负责人、原因、影响范围和到期时间。
@@ -288,16 +289,26 @@ Grader 或基础设施失败不得计为 Agent 失败，也不得被忽略；应
 | 能力 | 当前状态 | 下一步 |
 | --- | --- | --- |
 | 单元与 API 回归 | 已实现 | 增加覆盖率与故障注入 |
-| YAML Evaluation 数据集 | 已实现 | 增加版本、标签、预算和风险字段 |
-| 路由/工具/DB Grader | 已实现于 E2E runner | 拆出 fake-model 确定性 L1 |
-| Live model E2E | 已实现，显式运行 | 记录 run/case/trace 关联 |
-| Tone Judge | 最小演示 | 接收真实 input/output，批量运行并校准 |
+| YAML Evaluation 数据集 | schema 已版本化，旧数据兼容 | 为现有 case 补齐标签、预算和风险字段 |
+| 路由/工具/回复 Grader | 已抽取为确定性模块 | 增加 fake-model Graph runner |
+| DB Grader | 已实现于 E2E runner | 抽取 repository 结果 Grader |
+| Live model E2E | 已实现，显式运行 | 默认写入 run/case/trace 关联 |
+| Tone Judge | 支持真实 input/output 和 trace 写回 | 增加批量运行并校准 |
 | RAG/忠实性 Judge | 未实现 | 建立 rubric 与人工标注集 |
-| Release scorecard | 未实现 | 生成 JSON/Markdown 并接入 CI |
+| Release scorecard | 已实现 JSON 输入、tone 覆盖检查、Markdown 输出和退出门禁 | 接入 CI artifact 与基线比较 |
 | 线上反馈闭环 | 未实现 | 从脱敏低分 trace 生成候选回归用例 |
 
 推荐实施顺序：先补齐稳定的 trace schema，再建立 fake-model L1 和版本化数据集，
 最后接入批量 Judge、线上采样与发布 scorecard。
+
+本地入口：
+
+```bash
+make eval
+make eval-live
+uv run python scripts/eval_report.py results.json --markdown report.md
+uv run python scripts/llm_judge.py <trace-id> --input "..." --output "..."
+```
 
 ## 10. 相关文档
 

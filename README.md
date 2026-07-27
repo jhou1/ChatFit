@@ -17,6 +17,7 @@ ChatFit 是一个基于自然语言交互的个人训练与饮食助手。用户
 - 长对话自动压缩历史上下文，保留重要训练和饮食信息
 - 支持 Google、OpenAI、Anthropic 以及 OpenAI-compatible 本地模型
 - 可选接入 Langfuse 进行 Agent 链路追踪和质量评估
+- 使用脱敏的结构化 trace 重建 Agent、LLM、工具、HITL 和 checkpoint 执行路径
 
 ## 架构概览
 
@@ -81,7 +82,9 @@ TELEGRAM_BOT_TOKEN=your-telegram-bot-token
 | `LANGFUSE_HOST` | Langfuse 服务地址 |
 | `LANGFUSE_PUBLIC_KEY` | Langfuse Public Key |
 | `LANGFUSE_SECRET_KEY` | Langfuse Secret Key |
+| `LANGFUSE_CAPTURE_CONTENT` | 是否允许 Langfuse 保存 prompt/output；默认 `false` |
 | `CHECKPOINTER_DB_PATH` | LangGraph checkpoint SQLite 文件路径 |
+| `OBSERVABILITY_HASH_KEY` | 对用户标识和敏感内容生成稳定 keyed hash 的随机密钥 |
 
 Langfuse 是可选依赖。Tracing 初始化或导出失败时，系统会记录日志并自动降级，
 不会让 `/chat` 接口返回 500。
@@ -176,6 +179,7 @@ curl -X POST http://localhost:8000/chat \
 ```
 
 完整 OpenAPI Schema 可在服务启动后访问 `/openapi.json`。
+每次 `/chat` 响应还会返回 `X-Request-ID` 和 `X-Trace-ID`，用于关联日志与 trace。
 
 ## 本地开发
 
@@ -213,17 +217,29 @@ Langfuse 或 Telegram 服务。质量规范参见 [质量与验证](docs/quality
 
 ## Agent Evaluation
 
-项目包含两层 Evaluation：
+项目包含确定性和概率性两类 Evaluation：
 
 1. **Code Grader**：读取 `tests/eval/eval_cases.yaml`，确定性验证 Agent 是否调用了
-   正确工具及参数。
+   正确路由、工具及参数。版本化 schema 和 Grader 位于 `evaluation/`。
 2. **LLM-as-a-Judge**：`scripts/llm_judge.py` 中的 `evaluate_trace` 接收 trace ID、
    输入和输出，对回复的对话语气评分，并将 `conversational_tone` 分数写回 Langfuse。
-   当前 CLI 使用固定占位输入和输出，仅用于演示评分写回流程。
+3. **Release Scorecard**：`scripts/eval_report.py` 聚合任务完成率、高风险用例、
+   tone、延迟和成本，未达到门禁时返回非零退出码。
 
 ```bash
-uv run pytest tests/eval -m e2e -v
-uv run python scripts/llm_judge.py <langfuse-trace-id>
+# 离线 Evaluation schema、Grader 和 Scorecard 测试
+make eval
+
+# 显式运行 live-model Agent Evaluation
+make eval-live
+
+# 对真实输入和输出评分
+uv run python scripts/llm_judge.py <langfuse-trace-id> \
+  --input "用户输入" \
+  --output "Agent 回复"
+
+# 从实验结果生成发布报告；门禁失败时退出码为 1
+uv run python scripts/eval_report.py results.json --markdown report.md
 ```
 
 ## 数据与上下文
@@ -250,6 +266,7 @@ ChatFit/
 │   └── sqlite_handler.py   # 业务数据访问
 ├── config/                 # 同义词等运行配置
 ├── docs/                   # 架构、质量与设计文档
+├── evaluation/             # 数据集 schema、确定性 Grader 与 Scorecard
 ├── scripts/                # Evaluation 等运维脚本
 ├── tests/
 │   ├── eval/               # Agent Code Grader

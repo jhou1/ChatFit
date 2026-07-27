@@ -53,3 +53,7 @@ production request is represented by one `trace_id`; related turns share a
 `session_id/thread_id`; evaluation traffic also carries a `run_id` and
 `case_id`. Observability records what happened, while Evaluation decides whether
 that behavior was acceptable.
+
+The backend-neutral signal envelope and fail-open sinks live in
+`agents/observability.py`. Versioned datasets, deterministic graders, and release
+scorecards live under `evaluation/`.

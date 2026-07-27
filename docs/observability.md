@@ -57,8 +57,10 @@ flowchart LR
 | `run_id` | 一次 Evaluation/实验 | 关联 commit、模型、Prompt、数据集 |
 | `case_id` | 一个 Evaluation case | 只在评估流量中出现 |
 
-当前 `api.py` 已把 `session_id` 和原始 `user_id` 放入 callback metadata。目标实现应把
-原始 `user_id` 替换为 `user_key`，并为每次请求显式生成 `trace_id/request_id`。
+当前 `api.py` 已为每次请求生成 `trace_id/request_id`，将 `session_id` 和 keyed
+`user_key` 放入 callback metadata，并通过响应头返回 trace/request ID。原始
+`user_id` 不再进入观测 metadata。Langfuse prompt/output 默认由 mask 替换为
+`[REDACTED]`；只有部署方显式设置 `LANGFUSE_CAPTURE_CONTENT=true` 才会上报正文。
 
 ## 4. Trace 层级
 
@@ -331,11 +333,11 @@ ChatFit 数据可能包含健康、饮食和行为信息，应按敏感数据处
 
 | 阶段 | 内容 | 状态 |
 | --- | --- | --- |
-| Phase 0 | Langfuse callback、session/user metadata、失败降级 | 部分完成 |
-| Phase 1 | 根 trace、request/trace ID、结构化日志、user hash | 待实现 |
-| Phase 2 | Graph node、LLM、tool、HITL、checkpoint 显式 span | 待实现 |
+| Phase 0 | Langfuse callback、session/user metadata、失败降级 | 已完成 |
+| Phase 1 | 根 trace、request/trace ID、结构化日志、user hash | 已完成 |
+| Phase 2 | Graph node、LLM、tool、HITL、checkpoint 显式 span | 基本完成；DB/RAG 专用 span 待补 |
 | Phase 3 | 指标、dashboard、告警、采样与保留策略 | 待实现 |
-| Phase 4 | Evaluation score、生产反馈与 Regression 闭环 | 待实现 |
+| Phase 4 | Evaluation score、生产反馈与 Regression 闭环 | Scorecard 已实现；线上闭环待补 |
 
 Phase 1–2 的验收标准：
 
