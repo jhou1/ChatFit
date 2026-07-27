@@ -136,6 +136,89 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"Network error while sending reply to Telegram: {ne}")
 
 
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler for voice messages."""
+    if not update.message or not update.effective_user or not update.effective_chat or not update.message.voice:
+        return
+    user_id = str(update.effective_user.id)
+
+    # Send a typing action to let the user know the bot is thinking
+    try:
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id, action="typing"
+        )
+    except telegram.error.NetworkError as ne:
+        print(f"Network error while sending typing action: {ne}")
+
+    try:
+        # Download voice file
+        voice_file = await context.bot.get_file(update.message.voice.file_id)
+        
+        import tempfile
+        import os
+        from google import genai
+        from google.genai import types
+
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+            tmp_path = tmp.name
+            
+        await voice_file.download_to_drive(tmp_path)
+        
+        # Transcribe voice using Gemini
+        api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        client = genai.Client(api_key=api_key)
+        
+        with open(tmp_path, "rb") as f:
+            audio_bytes = f.read()
+            
+        response = await client.aio.models.generate_content(
+            model='gemini-3.5-flash',
+            contents=[
+                "Transcribe this voice message exactly as spoken in its original language. Do not add any extra commentary or text.",
+                types.Part.from_bytes(data=audio_bytes, mime_type="audio/ogg")
+            ]
+        )
+        
+        user_message = response.text.strip()
+        os.remove(tmp_path)
+        
+        if not user_message:
+            bot_reply = "Could not transcribe the voice message."
+        else:
+            # Forward transcribed text to the API
+            async with httpx.AsyncClient(timeout=120.0, proxy=None) as http_client:
+                api_res = await http_client.post(
+                    API_URL, json={"user_id": user_id, "message": user_message}
+                )
+                api_res.raise_for_status()
+                data = api_res.json()
+                bot_reply = data.get("response")
+
+                if not bot_reply:
+                    bot_reply = "Sorry, I processed that but didn't generate a response."
+
+    except httpx.HTTPError as e:
+        bot_reply = (
+            f"Sorry, I'm having trouble connecting to the backend right now. Error: {e}"
+        )
+    except Exception as e:
+        bot_reply = f"An unexpected error occurred processing voice: {e}"
+
+    try:
+        html_reply = str(markdown_to_tg_html(bot_reply)).strip()
+        if update.message:
+            await update.message.reply_text(html_reply, parse_mode=ParseMode.HTML)
+    except telegram.error.BadRequest:
+        # Fallback to plain text if Telegram rejects the HTML
+        try:
+            if update.message:
+                await update.message.reply_text(bot_reply)
+        except telegram.error.NetworkError as ne:
+            print(f"Network error during fallback reply: {ne}")
+    except telegram.error.NetworkError as ne:
+        print(f"Network error while sending reply to Telegram: {ne}")
+
+
 def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -158,6 +241,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clear", clear_context))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
     print("Bot is polling for messages. Press Ctrl+C to stop.")
     app.run_polling()
