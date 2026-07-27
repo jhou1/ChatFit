@@ -15,7 +15,7 @@ test:
 	uv run pytest
 
 security:
-	uv run bandit -r . -x ./.venv,./tests -ll
+	uv run bandit -r . -x ./.venv,./tests,./.worktrees -ll
 
 quality: lint format typecheck security
 	@echo "All static check passed."
