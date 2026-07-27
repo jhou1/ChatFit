@@ -166,19 +166,29 @@ async def evaluate_case(case, llm_config, vector_store, sem, enable_llm_judge):
                                     failure_codes.append(code)
                                     print(f"  [{case.case_id}] [Fail] Turn {turn_idx}: {code} - DB query {state_check.query} returned {result}, expected {expected_val}")
                 
-                if enable_llm_judge and turn_response_text.strip():
+                if enable_llm_judge and turn_response_text.strip() and turn.expected_response_eval and turn.expected_response_eval.rubrics:
+                    rubrics_dict = [
+                        {
+                            "dimension_name": r.dimension_name,
+                            "criteria_description": r.criteria_description,
+                            "evidence_requirement": r.evidence_requirement,
+                            "weight": r.weight
+                        }
+                        for r in turn.expected_response_eval.rubrics
+                    ]
                     try:
                         judge_result = await evaluate_trace(
-                            trace_id=f"{case.case_id}-{turn_idx}",
-                            input_msg=user_input,
-                            output_msg=turn_response_text,
+                            f"{case.case_id}-{turn_idx}",
+                            user_input,
+                            turn_response_text,
+                            rubrics_dict,
                             langfuse_client=MockLangfuse()
                         )
                         case_weighted_scores.append(judge_result.overall_weighted_score)
                         for ev in judge_result.evaluations:
-                            if "Clarity" in ev.dimension:
+                            if "一致性" in ev.dimension or "澄清" in ev.dimension or "合理性" in ev.dimension or "完成率" in ev.dimension:
                                 case_clarity_scores.append(ev.score)
-                            elif "Tone" in ev.dimension:
+                            elif "交互质量" in ev.dimension or "安全边界" in ev.dimension:
                                 case_tone_scores.append(ev.score)
                     except Exception as e:
                         print(f"  [{case.case_id}] [Warn] LLM Judge failed: {e}")
@@ -187,8 +197,6 @@ async def evaluate_case(case, llm_config, vector_store, sem, enable_llm_judge):
                 print(f"  [{case.case_id}] [Pass]")
             
             avg_llm = sum(case_weighted_scores) / len(case_weighted_scores) if case_weighted_scores else None
-            avg_clarity = sum(case_clarity_scores) / len(case_clarity_scores) if case_clarity_scores else None
-            avg_tone = sum(case_tone_scores) / len(case_tone_scores) if case_tone_scores else None
             
             tags = case.capability_tags if case.capability_tags else []
             return CaseResult(
@@ -196,8 +204,6 @@ async def evaluate_case(case, llm_config, vector_store, sem, enable_llm_judge):
                 passed=case_passed,
                 tags=tags,
                 llm_score=avg_llm,
-                clarity_score=avg_clarity,
-                tone_score=avg_tone,
                 failure_codes=failure_codes
             )
 

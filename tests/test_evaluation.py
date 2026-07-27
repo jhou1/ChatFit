@@ -176,9 +176,8 @@ def test_experiment_report_enforces_release_gate_and_renders_markdown():
     markdown = report.to_markdown()
 
     assert not gate.passed
-    assert any("Task Completion Rate" in failure for failure in gate.failures)
-    assert "Release Gate" in markdown
-    assert "FAIL" in markdown
+    assert any("任务完成率" in failure for failure in gate.failures)
+    assert "❌ 拦截" in markdown
     assert "tool_args" in markdown
 
 
@@ -199,7 +198,7 @@ def test_release_gate_requires_tone_scores_by_default():
     gate = report.release_gate()
 
     assert not gate.passed
-    assert "average_llm_score not_scored" in gate.failures
+    assert "总体综合得分缺失" in gate.failures
 
 
 def test_release_gate_rejects_partial_tone_coverage():
@@ -222,7 +221,7 @@ def test_release_gate_rejects_partial_tone_coverage():
     gate = report.release_gate()
 
     assert not gate.passed
-    assert any("llm_coverage" in failure for failure in gate.failures)
+    assert any("大模型打分覆盖率" in failure for failure in gate.failures)
 
 
 def test_release_gate_can_explicitly_disable_tone_gates():
@@ -266,7 +265,7 @@ def test_release_gate_fails_closed_when_high_risk_slice_is_missing():
     gate = report.release_gate()
 
     assert not gate.passed
-    assert "high_risk_cases missing" in gate.failures
+    assert "高风险用例缺失" in gate.failures
 
 
 def test_parse_judge_response_validates_contract():

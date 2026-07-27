@@ -215,32 +215,39 @@ uv run pytest -m e2e -v
 默认测试配置会排除标记为 `e2e` 的用例，避免普通验证意外调用外部 LLM、
 Langfuse 或 Telegram 服务。质量规范参见 [质量与验证](docs/quality.md)。
 
-## Agent Evaluation
+## Agent Evaluation (Agent 能力评测)
 
-项目包含确定性和概率性两类 Evaluation：
+ChatFit 采用了一套“测试即文档”的严谨评测架构，实现了工程代码与业务评测用例的完全解耦。
 
-1. **Code Grader**：读取 `tests/eval/eval_cases.yaml`，确定性验证 Agent 是否调用了
-   正确路由、工具及参数。版本化 schema 和 Grader 位于 `evaluation/`。
-2. **LLM-as-a-Judge**：`scripts/llm_judge.py` 中的 `evaluate_trace` 接收 trace ID、
-   输入和输出，对回复的对话语气评分，并将 `conversational_tone` 分数写回 Langfuse。
-3. **Release Scorecard**：`scripts/eval_report.py` 聚合任务完成率、高风险用例、
-   tone、延迟和成本，未达到门禁时返回非零退出码。
+1. **唯一数据源 (JSONL Golden Test Set)**：
+   测试用例维护在 `evaluation/chatfit_golden_test_set.jsonl` 中。每一条 Case 严格定义了用户的输入（`user_input`）、期望的确定性轨迹（`expected_trajectory_eval`）以及基于场景动态配置的裁判打分基准（`rubrics`）。
+
+2. **多维动态 Rubric LLM-as-a-Judge**：
+   摒弃硬编码，根据用例场景在 JSONL 中动态分配 7 大核心维度的权重进行 LLM 裁判打分：
+   * 多轮上下文一致性 (Multi-turn Context Consistency)
+   * 任务完成率 (Task Completion Rate)
+   * 工具选择 (Tool Selection)
+   * 轨迹合理性 (Trajectory Rationality)
+   * 澄清能力 (Clarification Capability)
+   * 安全边界 (Safety Boundaries)
+   * 交互质量 (Interaction Quality)
+
+3. **四大量化指标与门禁 (Release Gate Scorecard)**：
+   评测引擎会根据生成的 `Trajectory` 和 Judge 分数，聚合产出四大核心量化指标：
+   * **TCR (任务完成率)**：成功闭环的用例占比。
+   * **TA (工具与参数准确率)**：精准阻断幻觉参数的工具调用率。
+   * **CCR (上下文一致性)**：多轮与跨域记忆的接力通过率。
+   * **ERR (异常恢复率)**：面对模糊意图的主动澄清或拒绝能力。
+   最终在终端与 `evaluation/latest_report.md` 中输出报告，门禁拦截失败时返回非零退出码。
 
 ```bash
-# 离线 Evaluation schema、Grader 和 Scorecard 测试
+# 启动真实的 LLM 和 Agent Graph 跑通 43 条全量测试集，并生成评估报告
 make eval
 
-# 显式运行 live-model Agent Evaluation
-make eval-live
-
-# 对真实输入和输出评分
-uv run python scripts/llm_judge.py <langfuse-trace-id> \
-  --input "用户输入" \
-  --output "Agent 回复"
-
-# 从实验结果生成发布报告；门禁失败时退出码为 1
-uv run python scripts/eval_report.py results.json --markdown report.md
+# 极速/本地调试模式 (高并发，关闭 LLM Judge 打分)
+uv run python evaluation/runner.py --concurrency 10 --no-judge
 ```
+
 
 ## 数据与上下文
 
@@ -266,11 +273,9 @@ ChatFit/
 │   └── sqlite_handler.py   # 业务数据访问
 ├── config/                 # 同义词等运行配置
 ├── docs/                   # 架构、质量与设计文档
-├── evaluation/             # 数据集 schema、确定性 Grader 与 Scorecard
-├── scripts/                # Evaluation 等运维脚本
-├── tests/
-│   ├── eval/               # Agent Code Grader
-│   └── test_*.py           # 单元与 API 回归测试
+├── evaluation/             # JSONL测试集、动态Rubric、Runner与评分器
+├── scripts/                # 运维脚本
+├── tests/                  # 工程质量(单元与API测试，与Agent能力评测解耦)
 ├── api.py                  # FastAPI 服务
 ├── bot.py                  # Telegram Bot
 ├── main.py                 # 本地终端入口
