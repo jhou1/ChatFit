@@ -21,9 +21,9 @@ logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 
 
 def load_eval_cases():
-    yaml_path = os.path.join(os.path.dirname(__file__), "eval_cases.yaml")
+    jsonl_path = os.path.join(os.path.dirname(__file__), "..", "..", "evaluation", "chatfit_golden_test_set.jsonl")
     return [
-        case.model_dump(exclude_none=True) for case in load_evaluation_cases(yaml_path)
+        case.model_dump(exclude_none=True) for case in load_evaluation_cases(jsonl_path)
     ]
 
 
@@ -61,7 +61,7 @@ def mock_agent_env(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.e2e
-@pytest.mark.parametrize("case", load_eval_cases(), ids=lambda c: c["id"])
+@pytest.mark.parametrize("case", load_eval_cases(), ids=lambda c: c["case_id"])
 async def test_agent_trajectory(case, mock_agent_env):
     mock_agent_graph, db_path = mock_agent_env
 
@@ -71,14 +71,17 @@ async def test_agent_trajectory(case, mock_agent_env):
 
     turns = case.get("turns", [])
     if not turns:
-        # Fallback for old format if any remains
-        turns = [{"user": case.get("input")}]
+        pytest.fail("No turns found in case.")
 
-    config = {"configurable": {"thread_id": case["id"]}}
+    config = {"configurable": {"thread_id": case["case_id"]}}
 
     for turn_idx, turn in enumerate(turns):
-        user_input = turn["user"]
-        expected_db_state = turn.get("expected_db_state", [])
+        user_input = turn["user_input"]
+        
+        expected_db_state = [
+            t for t in turn.get("expected_trajectory_eval", [])
+            if t.get("eval_type") == "db_state"
+        ]
 
         tool_calls_made = []
         routed_assistants = []

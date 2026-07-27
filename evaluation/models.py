@@ -1,11 +1,11 @@
-"""Versioned YAML contracts for ChatFit Agent evaluation cases."""
+"""JSONL contracts for ChatFit Agent evaluation cases."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Annotated, Any
 
-import yaml
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 NonEmptyString = Annotated[
@@ -18,31 +18,36 @@ class StrictEvaluationModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
-class ExpectedTool(StrictEvaluationModel):
-    name: NonEmptyString
-    args_contain: list[NonEmptyString] = Field(default_factory=list)
+class ExpectedTrajectoryAssertion(StrictEvaluationModel):
+    eval_type: NonEmptyString
+    expected_agent: NonEmptyString | None = None
+    expected_tool: NonEmptyString | None = None
+    expected_params_include: dict[str, Any] | None = None
+    expected_args_contain: list[str] | None = None
+    avoid_tool: NonEmptyString | None = None
+    expected_behavior: NonEmptyString | None = None
+    query: NonEmptyString | None = None
+    expected_value: Any | None = None
 
 
-class ExpectedDatabaseState(StrictEvaluationModel):
-    query: NonEmptyString
-    expected_value: Any
+class ExpectedResponseEval(StrictEvaluationModel):
+    must_contain_semantics: str | list[str] | None = None
+    tone: NonEmptyString | None = None
 
 
 class EvaluationTurn(StrictEvaluationModel):
-    user: NonEmptyString
-    expected_tools: list[ExpectedTool] | None = None
-    expected_tools_count: int | None = Field(default=None, ge=0)
-    expected_routes: list[NonEmptyString] | None = None
-    expected_response_contains: list[NonEmptyString] = Field(default_factory=list)
-    expected_db_state: list[ExpectedDatabaseState] = Field(default_factory=list)
+    turn_id: int | None = None
+    user_input: NonEmptyString
+    expected_trajectory_eval: list[ExpectedTrajectoryAssertion] = Field(default_factory=list)
+    expected_response_eval: ExpectedResponseEval | None = None
+    expected_trajectory: list[str] | None = None
+    expected_result: str | None = None
 
 
 class EvaluationCase(StrictEvaluationModel):
-    id: NonEmptyString
-    version: int = Field(default=1, ge=1)
-    tags: list[NonEmptyString] = Field(default_factory=list)
-    input_locale: NonEmptyString | None = None
-    seed_db_fixture: NonEmptyString | None = None
+    case_id: NonEmptyString
+    capability_tags: list[NonEmptyString] = Field(default_factory=list)
+    description: NonEmptyString | None = None
     turns: list[EvaluationTurn]
 
     @model_validator(mode="after")
@@ -53,18 +58,22 @@ class EvaluationCase(StrictEvaluationModel):
 
 
 def load_evaluation_cases(path: str | Path) -> list[EvaluationCase]:
-    """Load and validate a version-controlled YAML evaluation dataset."""
+    """Load and validate a version-controlled JSONL evaluation dataset."""
 
     dataset_path = Path(path)
+    raw_cases = []
     with dataset_path.open("r", encoding="utf-8") as dataset_file:
-        raw_cases = yaml.safe_load(dataset_file)
-    if not isinstance(raw_cases, list):
-        raise ValueError("evaluation dataset must be a YAML list")
+        for line in dataset_file:
+            line = line.strip()
+            if not line:
+                continue
+            raw_cases.append(json.loads(line))
+            
     if not raw_cases:
         raise ValueError("evaluation dataset must contain at least one case")
 
     cases = [EvaluationCase.model_validate(case) for case in raw_cases]
-    case_ids = [case.id for case in cases]
+    case_ids = [case.case_id for case in cases]
     if len(case_ids) != len(set(case_ids)):
         raise ValueError("evaluation case ids must be unique")
     return cases

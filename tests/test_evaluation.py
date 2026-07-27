@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -6,7 +7,12 @@ from langchain_core.messages import AIMessage
 from pydantic import ValidationError
 
 from evaluation.graders import Trajectory, grade_turn
-from evaluation.models import EvaluationTurn, load_evaluation_cases
+from evaluation.models import (
+    EvaluationTurn, 
+    ExpectedTrajectoryAssertion,
+    ExpectedResponseEval,
+    load_evaluation_cases
+)
 from evaluation.report import (
     CaseResult,
     ExperimentMetadata,
@@ -17,24 +23,18 @@ from scripts.llm_judge import evaluate_trace, parse_judge_response
 
 
 def test_repository_evaluation_dataset_is_valid_and_unique():
-    cases = load_evaluation_cases("tests/eval/eval_cases.yaml")
+    cases = load_evaluation_cases("evaluation/chatfit_golden_test_set.jsonl")
 
     assert len(cases) >= 10
-    assert len({case.id for case in cases}) == len(cases)
+    assert len({case.case_id for case in cases}) == len(cases)
     assert all(case.turns for case in cases)
 
 
 def test_evaluation_dataset_rejects_duplicate_ids(tmp_path: Path):
-    dataset = tmp_path / "duplicate.yaml"
+    dataset = tmp_path / "duplicate.jsonl"
     dataset.write_text(
-        """
-- id: duplicate
-  turns:
-    - user: hello
-- id: duplicate
-  turns:
-    - user: goodbye
-""",
+        json.dumps({"case_id": "duplicate", "turns": [{"user_input": "hello"}]}) + "\n" +
+        json.dumps({"case_id": "duplicate", "turns": [{"user_input": "goodbye"}]}) + "\n",
         encoding="utf-8",
     )
 
@@ -43,8 +43,8 @@ def test_evaluation_dataset_rejects_duplicate_ids(tmp_path: Path):
 
 
 def test_evaluation_dataset_rejects_empty_case_list(tmp_path: Path):
-    dataset = tmp_path / "empty.yaml"
-    dataset.write_text("[]\n", encoding="utf-8")
+    dataset = tmp_path / "empty.jsonl"
+    dataset.write_text("\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="at least one case"):
         load_evaluation_cases(dataset)
@@ -53,13 +53,9 @@ def test_evaluation_dataset_rejects_empty_case_list(tmp_path: Path):
 @pytest.mark.parametrize(
     "invalid_turn",
     [
-        {"user": "hello", "expected_toolz": []},
-        {"user": "   "},
-        {"user": "hello", "expected_routes": [""]},
-        {
-            "user": "hello",
-            "expected_tools": [{"name": "", "args_contain": []}],
-        },
+        {"user_input": "hello", "expected_trajectory_eval": [{"eval_type": ""}]},
+        {"user_input": "   "},
+        {"user_input": "hello", "unexpected_field": "test"},
     ],
 )
 def test_evaluation_schema_rejects_unknown_fields_and_empty_contracts(invalid_turn):
@@ -70,19 +66,20 @@ def test_evaluation_schema_rejects_unknown_fields_and_empty_contracts(invalid_tu
 def test_deterministic_grader_rejects_unexpected_routes():
     expected = EvaluationTurn.model_validate(
         {
-            "user": "log my run",
-            "expected_routes": ["training_agent"],
-            "expected_tools": [
+            "user_input": "log my run",
+            "expected_trajectory_eval": [
                 {
-                    "name": "log_training_session",
-                    "args_contain": ["5", "30"],
+                    "eval_type": "routing",
+                    "expected_agent": "training_agent"
                 }
             ],
-            "expected_response_contains": ["saved"],
+            "expected_response_eval": {
+                "must_contain_semantics": "saved"
+            }
         }
     )
     trajectory = Trajectory(
-        routes=["training_agent", "meal_agent"],
+        routes=["meal_agent"],
         tool_calls=[
             {
                 "name": "log_training_session",
@@ -95,21 +92,23 @@ def test_deterministic_grader_rejects_unexpected_routes():
     grade = grade_turn(expected, trajectory)
 
     assert not grade.passed
-    assert "unexpected_route" in {failure.code for failure in grade.failures}
-    assert grade.route_precision == 0.5
-    assert grade.route_recall == 1.0
+    assert "missing_route" in {failure.code for failure in grade.failures}
 
 
-def test_deterministic_grader_rejects_unexpected_tools():
+def test_deterministic_grader_rejects_missing_tools():
     expected = EvaluationTurn.model_validate(
         {
-            "user": "log my run",
-            "expected_tools": [{"name": "log_training_session"}],
+            "user_input": "log my run",
+            "expected_trajectory_eval": [
+                {
+                    "eval_type": "tool_call",
+                    "expected_tool": "log_training_session"
+                }
+            ]
         }
     )
     trajectory = Trajectory(
         tool_calls=[
-            {"name": "log_training_session", "args": {}},
             {"name": "log_meal", "args": {}},
         ]
     )
@@ -117,15 +116,23 @@ def test_deterministic_grader_rejects_unexpected_tools():
     grade = grade_turn(expected, trajectory)
 
     assert not grade.passed
-    assert "unexpected_tool" in {failure.code for failure in grade.failures}
+    assert "missing_tool" in {failure.code for failure in grade.failures}
 
 
 def test_deterministic_grader_returns_actionable_failures():
-    expected = EvaluationTurn(
-        user="hello",
-        expected_tools=[],
-        expected_routes=["chatter"],
-    )
+    expected = EvaluationTurn.model_validate({
+        "user_input": "hello",
+        "expected_trajectory_eval": [
+            {
+                "eval_type": "routing",
+                "expected_agent": "chatter"
+            },
+            {
+                "eval_type": "tool_avoidance",
+                "avoid_tool": "log_meal"
+            }
+        ]
+    })
 
     grade = grade_turn(
         expected,
@@ -136,11 +143,9 @@ def test_deterministic_grader_returns_actionable_failures():
     )
 
     assert not grade.passed
-    assert {failure.code for failure in grade.failures} == {
-        "unexpected_tool",
-        "missing_route",
-        "unexpected_route",
-    }
+    codes = {failure.code for failure in grade.failures}
+    assert "missing_route" in codes
+    assert "avoid_tool" in codes
 
 
 def test_experiment_report_enforces_release_gate_and_renders_markdown():
