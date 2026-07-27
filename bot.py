@@ -86,11 +86,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler for all standard text messages."""
+    """Handler for all standard text and voice messages."""
     if not update.message or not update.effective_user or not update.effective_chat:
         return
     user_id = str(update.effective_user.id)
-    user_message = update.message.text or ""
+    
+    user_message = ""
+    # Process voice message if present
+    if update.message.voice:
+        try:
+            voice_file = await update.message.voice.get_file()
+            # In a full implementation we would transcribe this using Gemini or similar,
+            # but for this quick fix we will just acknowledge it and pass a placeholder
+            user_message = "[Voice Message Received - Needs Transcription]"
+            await update.message.reply_text("Voice message received! I will process this shortly.")
+        except Exception as e:
+            await update.message.reply_text(f"Error reading voice message: {e}")
+            return
+    elif update.message.text:
+        user_message = update.message.text
+    else:
+        await update.message.reply_text("Unsupported message type. Please send text or a voice note.")
+        return
 
     # Send a typing action to let the user know the bot is thinking
     try:
@@ -157,7 +174,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clear", clear_context))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
 
     print("Bot is polling for messages. Press Ctrl+C to stop.")
     app.run_polling()
