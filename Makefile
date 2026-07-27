@@ -1,4 +1,4 @@
-.PHONY: format lint typecheck test security coverage verify eval eval-live
+.PHONY: format lint typecheck test security coverage verify eval
 
 format:
 	uv run black .
@@ -24,7 +24,4 @@ verify: test
 	@echo "All verification checks passed."
 
 eval:
-	uv run pytest tests/test_evaluation.py -v
-
-eval-live:
-	uv run pytest tests/eval -m e2e -v
+	PYTHONPATH=. uv run python evaluation/runner.py
