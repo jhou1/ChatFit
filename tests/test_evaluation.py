@@ -55,7 +55,7 @@ def test_evaluation_dataset_rejects_empty_case_list(tmp_path: Path):
     [
         {"user_input": "hello", "expected_trajectory_eval": [{"eval_type": ""}]},
         {"user_input": "   "},
-        {"user_input": "hello", "unexpected_field": "test"},
+        {"user_input": "hello", "expected_response_eval": {"rubrics": [{"dimension_name": ""}]}},
     ],
 )
 def test_evaluation_schema_rejects_unknown_fields_and_empty_contracts(invalid_turn):

@@ -30,9 +30,15 @@ class ExpectedTrajectoryAssertion(StrictEvaluationModel):
     expected_value: Any | None = None
 
 
+class RubricDimension(StrictEvaluationModel):
+    dimension_name: NonEmptyString
+    criteria_description: NonEmptyString
+    evidence_requirement: NonEmptyString
+    weight: float = Field(ge=0.0, le=1.0)
+
+
 class ExpectedResponseEval(StrictEvaluationModel):
-    must_contain_semantics: str | list[str] | None = None
-    tone: NonEmptyString | None = None
+    rubrics: list[RubricDimension] = Field(default_factory=list)
 
 
 class EvaluationTurn(StrictEvaluationModel):
