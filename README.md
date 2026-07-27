@@ -198,47 +198,44 @@ uv run python main.py
 
 ### 代码质量与测试
 
+项目使用 `pytest` 进行单元与回归测试，并结合多种工具保障代码质量。
+
 ```bash
-# Ruff、Black、MyPy、Bandit
+# 运行静态检查、代码格式化、类型检查与安全扫描 (Ruff, Black, MyPy, Bandit)
 make quality
 
-# 默认测试集；自动排除 e2e
+# 运行默认单元测试与 API 回归测试（自动排除端到端 e2e 用例）
 make verify
 
-# 单独运行 API 回归测试
+# 显式运行特定的测试用例
 uv run pytest tests/test_api.py -v
-
-# 显式运行端到端测试
-uv run pytest -m e2e -v
 ```
 
-默认测试配置会排除标记为 `e2e` 的用例，避免普通验证意外调用外部 LLM、
-Langfuse 或 Telegram 服务。质量规范参见 [质量与验证](docs/quality.md)。
+> **注意**：默认的 `make verify` 或 `pytest` 命令会**自动排除**被标记为 `e2e` 的端到端测试，以确保本地测试快速通过，且不会意外请求真实的外部 LLM、Langfuse 或 Telegram 产生消耗。具体的质量与测试规范，请参见 [质量与验证](docs/quality.md)。
 
 ## Agent Evaluation
 
-项目包含确定性和概率性两类 Evaluation：
+为了防止在重构、调整 Prompt 或更换模型时发生退化，项目实现了**确定性 (Code Grader)** 与 **概率性 (LLM-as-a-Judge)** 相结合的评估框架：
 
-1. **Code Grader**：读取 `tests/eval/eval_cases.yaml`，确定性验证 Agent 是否调用了
-   正确路由、工具及参数。版本化 schema 和 Grader 位于 `evaluation/`。
-2. **LLM-as-a-Judge**：`scripts/llm_judge.py` 中的 `evaluate_trace` 接收 trace ID、
-   输入和输出，对回复的对话语气评分，并将 `conversational_tone` 分数写回 Langfuse。
-3. **Release Scorecard**：`scripts/eval_report.py` 聚合任务完成率、高风险用例、
-   tone、延迟和成本，未达到门禁时返回非零退出码。
+1. **确定性验证 (Code Grader)**：通过读取定义在 `tests/eval/eval_cases.yaml` 中的多轮对话用例，验证 Agent 在给定上下文中是否精准路由到正确的 Node，并调用了预期的 Tool 及其参数。核心校验逻辑与 Schema 定义位于 `evaluation/`。
+2. **端到端真机评估 (Live Evaluation)**：真实发起 LLM 调用，跑通从 Prompt 渲染、LLM 推理到 Tool 生成的完整 Agent 轨迹。
+3. **LLM-as-a-Judge**：通过 `scripts/llm_judge.py` 接收输入输出或 Trace ID，使用独立大模型对对话基调 (Tone) 和有用性进行概率性评分，并可选择将 `conversational_tone` 回写至 Langfuse 等观测平台。
+4. **Release Scorecard**：通过 `scripts/eval_report.py` 聚合任务完成度、高风险场景拦截、延时与成本等综合表现，用于 CI 门禁（未达标返回非零退出码）。
 
 ```bash
-# 离线 Evaluation schema、Grader 和 Scorecard 测试
+# 运行纯本地离线 Evaluation 测试（验证 Grader 逻辑与 Schema 正确性）
 make eval
 
-# 显式运行 live-model Agent Evaluation
+# 显式运行依赖真实大模型的 Agent 端到端评估 (Live-model Agent Evaluation)
+# 注意：该步骤会真实请求 LLM 并消耗 Token
 make eval-live
 
-# 对真实输入和输出评分
+# LLM-as-a-Judge：对真实运行产生的内容进行评分
 uv run python scripts/llm_judge.py <langfuse-trace-id> \
   --input "用户输入" \
   --output "Agent 回复"
 
-# 从实验结果生成发布报告；门禁失败时退出码为 1
+# 生成发布报告并执行门禁；当未达到要求分数时，返回非 0 退出码
 uv run python scripts/eval_report.py results.json --markdown report.md
 ```
 
