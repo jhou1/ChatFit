@@ -82,7 +82,7 @@ def apply_seed_fixture(db_path: str, fixture_name: str):
                     practice_type="distance",
                     note="Testing",
                     sets=[TrainingSet(set_number=1, distance=1)],
-                )
+                ),
             ],
             confirm_new_practices=True,
         )
@@ -187,7 +187,9 @@ async def test_agent_trajectory(case, mock_agent_env):
                     for msg in messages:
                         if hasattr(msg, "tool_calls"):
                             for tc in msg.tool_calls:
-                                print(f"Appending tool call: {tc['name']} from node {node_name}")
+                                print(
+                                    f"Appending tool call: {tc['name']} from node {node_name}"
+                                )
                                 tool_calls_made.append(tc)
                         if msg.type == "ai" and extract_text(msg).strip():
                             turn_response_text += extract_text(msg) + "\n"

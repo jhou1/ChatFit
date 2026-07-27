@@ -55,11 +55,11 @@ def make_insights_agent_graph(llm_config: LLMConfig, db_path: str):
 
     async def insights_node(state: AgentState):
         prompt_template = PromptTemplate.from_template(INSTRUCTION_FOR_INSIGHTS)
-        system_prompt = prompt_template.format(current_time=datetime.now().date().isoformat())
+        system_prompt = prompt_template.format(
+            current_time=datetime.now().date().isoformat()
+        )
         if summary := state.get("summary"):
-            system_prompt += (
-                f"\n\n[Historical Conversation Summary]:\n{summary}"
-            )
+            system_prompt += f"\n\n[Historical Conversation Summary]:\n{summary}"
         messages = [SystemMessage(content=system_prompt)] + state["messages"]
         return await _execute_llm_query_safely(llm_with_tools, messages)
 

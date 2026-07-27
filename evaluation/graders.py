@@ -71,12 +71,16 @@ def grade_turn(expected: EvaluationTurn, actual: Trajectory) -> TurnGrade:
         expected_tool_counts = Counter(tool.name for tool in expected.expected_tools)
         actual_tool_counts = Counter(actual_tool_names)
         unexpected_tool_counts = actual_tool_counts - expected_tool_counts
-        
+
         # Filter out read tools from strict checking, as they can be called dynamically
-        read_tools = {"normalize_practice_name", "retrieve_recent_training", "retrieve_recent_meals"}
+        read_tools = {
+            "normalize_practice_name",
+            "retrieve_recent_training",
+            "retrieve_recent_meals",
+        }
         for t in read_tools:
             unexpected_tool_counts.pop(t, None)
-            
+
         if unexpected_tool_counts:
             failures.append(
                 GradeFailure(
