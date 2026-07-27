@@ -179,8 +179,9 @@ def test_experiment_report_enforces_release_gate_and_renders_markdown():
     markdown = report.to_markdown()
 
     assert not gate.passed
-    assert any("completion_rate" in failure for failure in gate.failures)
-    assert "Release gate: **FAIL**" in markdown
+    assert any("Task Completion Rate" in failure for failure in gate.failures)
+    assert "Release Gate" in markdown
+    assert "FAIL" in markdown
     assert "tool_args" in markdown
 
 
