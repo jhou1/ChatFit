@@ -207,13 +207,15 @@ endpoints delegate to `ConversationService`. `/inputs` is responsible for
 correlation headers, input validation, receipt lookup, media orchestration, and
 cleanup.
 
-`/inputs` and the compatibility `/chat` endpoint are internal service
-interfaces, not anonymous public APIs. Before ledger claim, media processing,
-thread lookup, or interrupt inspection, the API authenticates the Bot service
-and verifies a signed canonical request containing:
+`/inputs`, the compatibility `/chat` endpoint, and `/clear` are internal
+service interfaces, not anonymous public APIs. Before ledger claim, media
+processing, thread mutation, thread lookup, or interrupt inspection, the API
+authenticates the Bot service and verifies a signed canonical request
+containing:
 
 ```text
 key_id
+request_target
 user_id
 input_id
 update_id
@@ -223,6 +225,11 @@ timestamp
 nonce
 ```
 
+`request_target` is the exact internal route, so a signature for one route
+cannot be replayed against another. The Telegram `/clear` command derives its
+own stable input identifier from the update and signs the literal command
+payload before the API may replace the user's thread.
+
 The signature uses a rotatable Bot service credential delivered through
 deployment secrets. The API verifies the payload fingerprint against the
 received text or media, enforces a short timestamp window, and atomically
@@ -231,6 +238,12 @@ uses the same `input_id` but a new timestamp, nonce, and signature, after which
 the input ledger applies normal idempotency policy. Deployment may additionally
 use mTLS, but transport authentication does not replace request identity
 binding.
+
+The initial SQLite repository indexes nonce expiration and, under the same
+immediate transaction used to consume a nonce, deletes expired rows before
+inserting the new unique `(key_id, nonce)` pair. An injected wall clock makes
+expiration deterministic in tests. Concurrent consumers still have exactly
+one winner, while opportunistic pruning prevents unbounded table growth.
 
 Missing, invalid, expired, or replayed authentication returns 401/403 and has
 no observable effect: no input-ledger entry, Provider call, thread lookup,
@@ -390,8 +403,12 @@ parsing:
 
 ```text
 input_id
+root_input_id
+parent_input_id
 user_key
+thread_id
 modality
+delivery_role
 status
 trace_id
 created_at
@@ -399,9 +416,13 @@ completed_at
 lease_expires_at
 ```
 
-Allowed transitions are:
+An initial delivery has `delivery_role=root`, `root_input_id=input_id`, and no
+parent. A clarification or human-approval response has `delivery_role=reply`,
+its own `input_id`, and explicit root and parent identifiers. Root and reply
+rows have separate legal transitions:
 
 ```text
+root:
 absent → normalizing
 normalizing → graph_started | clarification_pending | failed
 graph_started → awaiting_hitl | completed | failed
@@ -410,7 +431,18 @@ awaiting_hitl → completed | failed
 graph_started → recovery_required
 awaiting_hitl → recovery_required
 recovery_required → completed
+
+reply:
+absent → normalizing
+normalizing → clarification_pending | completed | failed
+clarification_pending → completed | failed
 ```
+
+The repository exposes an authenticated lookup for the single root currently
+in `awaiting_hitl` for a `(user_key, thread_id)` pair. A partial unique index
+enforces at most one such root per pair. This metadata lookup does not read
+Graph state or interrupt content; it lets an ambiguous media reply attach to
+the correct root before the media clarification record is created.
 
 No transcript, image, audio, Base64 data, file path, or Telegram download URL
 is stored in the ledger.
@@ -427,19 +459,20 @@ entry is never replayed automatically. It becomes `recovery_required`, and a
 later user interaction receives a status message instead of silently adding a
 second Agent turn. `recovery_required` is not replayable: the user-facing
 recovery handler first queries all operation-ledger rows whose operation IDs
-belong to the original `input_id`. If committed writes exist, it reports the
-specific committed effects and does not ask the user to resend the original
-command. If no committed write exists, it explains that the conversational
-response was lost and permits a new submission with a new `input_id`. For a
-partially completed multi-write turn, it reports the committed subset and
-requires an explicit new command for only the missing effects. The handler
-then marks the old ledger entry `completed`. It never blindly asks the user to
-repeat an operation whose write outcome has not been checked.
+belong to the root delivery's `root_input_id`. If committed writes exist, it
+reports the specific committed effects and does not ask the user to resend the
+original command. If no committed write exists, it explains that the
+conversational response was lost and permits a new submission with a new
+`input_id`. For a partially completed multi-write turn, it reports the
+committed subset and requires an explicit new command for only the missing
+effects. The handler then marks the old ledger entry `completed`. It never
+blindly asks the user to repeat an operation whose write outcome has not been
+checked.
 
 This design provides at-least-once input delivery and best-effort duplicate
 turn suppression. It does not promise distributed exactly-once Agent turns.
 Business write tools receive a durable `operation_id` derived from the original
-`input_id` and tool call identity; the idempotency ledger and business write
+`root_input_id` and tool call identity; the idempotency ledger and business write
 occur in one SQLite transaction, so replaying the same operation cannot create
 a duplicate row.
 
@@ -698,6 +731,13 @@ priority over LangGraph interrupt resume. Any unresolved fragment—especially
 an ambiguous spoken “yes/no”—returns clarification and cannot reach the
 approval classifier or `Command(resume=...)`.
 
+When an ambiguous reply arrives during human approval, the input layer locates
+the owning root through `InputLedgerRepository`'s authenticated
+`(user_key, thread_id, awaiting_hitl)` metadata index. It does not inspect
+Graph state or interrupt content. The partial unique index guarantees there is
+at most one matching root, and the clarification stores that root identifier
+for the next text or voice reply.
+
 ## 9. Uncertainty and clarification
 
 Normal successful parsing does not echo the transcript or extracted document
@@ -827,6 +867,7 @@ and asks the user to retry rather than accepting work it cannot recover.
 | Voice longer than 180 seconds | No | Ask user to split it |
 | Normalized payload over limit | No | Ask user to shorten or retake |
 | Invalid Provider schema | One retry | Ask user to resend if still invalid |
+| Request task cancellation | No retry | Cleanup, release capacity, and propagate cancellation |
 | Ambiguous content | No technical retry | Ask a targeted clarification |
 | API loss while Bot survives | Not recoverable | Bot asks user to resend |
 | Bot process loss before reply | Not recoverable | No proactive notice; user resends after seeing no response |
@@ -838,6 +879,9 @@ and asks the user to retry rather than accepting work it cannot recover.
 
 Media parsing failure must never become an unhandled HTTP 500. API responses
 use stable error codes, while Telegram renders friendly instructions.
+`asyncio.CancelledError` is not converted into an application error response:
+all cleanup handlers run, and the original cancellation is re-raised so the
+calling task remains cancelled.
 
 Delivery is at least once. The input ledger collapses concurrent and completed
 duplicates, and refuses to replay uncertain post-Graph crash states. It does
