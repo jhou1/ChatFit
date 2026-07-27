@@ -1,0 +1,319 @@
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from langchain_core.messages import AIMessage
+from pydantic import ValidationError
+
+from evaluation.graders import Trajectory, grade_turn
+from evaluation.models import EvaluationTurn, load_evaluation_cases
+from evaluation.report import (
+    CaseResult,
+    ExperimentMetadata,
+    ExperimentReport,
+    ReleaseThresholds,
+)
+from scripts.llm_judge import evaluate_trace, parse_judge_response
+
+
+def test_repository_evaluation_dataset_is_valid_and_unique():
+    cases = load_evaluation_cases("tests/eval/eval_cases.yaml")
+
+    assert len(cases) >= 10
+    assert len({case.id for case in cases}) == len(cases)
+    assert all(case.turns for case in cases)
+
+
+def test_evaluation_dataset_rejects_duplicate_ids(tmp_path: Path):
+    dataset = tmp_path / "duplicate.yaml"
+    dataset.write_text(
+        """
+- id: duplicate
+  turns:
+    - user: hello
+- id: duplicate
+  turns:
+    - user: goodbye
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unique"):
+        load_evaluation_cases(dataset)
+
+
+def test_evaluation_dataset_rejects_empty_case_list(tmp_path: Path):
+    dataset = tmp_path / "empty.yaml"
+    dataset.write_text("[]\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="at least one case"):
+        load_evaluation_cases(dataset)
+
+
+@pytest.mark.parametrize(
+    "invalid_turn",
+    [
+        {"user": "hello", "expected_toolz": []},
+        {"user": "   "},
+        {"user": "hello", "expected_routes": [""]},
+        {
+            "user": "hello",
+            "expected_tools": [{"name": "", "args_contain": []}],
+        },
+    ],
+)
+def test_evaluation_schema_rejects_unknown_fields_and_empty_contracts(invalid_turn):
+    with pytest.raises(ValidationError):
+        EvaluationTurn.model_validate(invalid_turn)
+
+
+def test_deterministic_grader_rejects_unexpected_routes():
+    expected = EvaluationTurn.model_validate(
+        {
+            "user": "log my run",
+            "expected_routes": ["training_agent"],
+            "expected_tools": [
+                {
+                    "name": "log_training_session",
+                    "args_contain": ["5", "30"],
+                }
+            ],
+            "expected_response_contains": ["saved"],
+        }
+    )
+    trajectory = Trajectory(
+        routes=["training_agent", "meal_agent"],
+        tool_calls=[
+            {
+                "name": "log_training_session",
+                "args": {"distance": 5, "duration": 30},
+            }
+        ],
+        response="Training saved.",
+    )
+
+    grade = grade_turn(expected, trajectory)
+
+    assert not grade.passed
+    assert "unexpected_route" in {failure.code for failure in grade.failures}
+    assert grade.route_precision == 0.5
+    assert grade.route_recall == 1.0
+
+
+def test_deterministic_grader_rejects_unexpected_tools():
+    expected = EvaluationTurn.model_validate(
+        {
+            "user": "log my run",
+            "expected_tools": [{"name": "log_training_session"}],
+        }
+    )
+    trajectory = Trajectory(
+        tool_calls=[
+            {"name": "log_training_session", "args": {}},
+            {"name": "log_meal", "args": {}},
+        ]
+    )
+
+    grade = grade_turn(expected, trajectory)
+
+    assert not grade.passed
+    assert "unexpected_tool" in {failure.code for failure in grade.failures}
+
+
+def test_deterministic_grader_returns_actionable_failures():
+    expected = EvaluationTurn(
+        user="hello",
+        expected_tools=[],
+        expected_routes=["chatter"],
+    )
+
+    grade = grade_turn(
+        expected,
+        Trajectory(
+            routes=["meal_agent"],
+            tool_calls=[{"name": "log_meal", "args": {}}],
+        ),
+    )
+
+    assert not grade.passed
+    assert {failure.code for failure in grade.failures} == {
+        "unexpected_tool",
+        "missing_route",
+        "unexpected_route",
+    }
+
+
+def test_experiment_report_enforces_release_gate_and_renders_markdown():
+    report = ExperimentReport(
+        metadata=ExperimentMetadata(
+            run_id="run-1",
+            commit_sha="abc123",
+            dataset="golden",
+            dataset_version="1",
+            model="fake-model",
+            prompt_version="1",
+            grader_version="1",
+        ),
+        cases=[
+            CaseResult(
+                case_id="safe",
+                passed=True,
+                tags=["high_risk"],
+                tone_score=5,
+            ),
+            CaseResult(
+                case_id="regression",
+                passed=False,
+                failure_codes=["tool_args"],
+                tone_score=3,
+            ),
+        ],
+    )
+
+    gate = report.release_gate()
+    markdown = report.to_markdown()
+
+    assert not gate.passed
+    assert any("completion_rate" in failure for failure in gate.failures)
+    assert "Release gate: **FAIL**" in markdown
+    assert "`regression`: tool_args" in markdown
+
+
+def test_release_gate_requires_tone_scores_by_default():
+    report = ExperimentReport(
+        metadata=ExperimentMetadata(
+            run_id="run-1",
+            commit_sha="abc123",
+            dataset="golden",
+            dataset_version="1",
+            model="fake-model",
+            prompt_version="1",
+            grader_version="1",
+        ),
+        cases=[CaseResult(case_id="case-1", passed=True)],
+    )
+
+    gate = report.release_gate()
+
+    assert not gate.passed
+    assert "average_tone not_scored" in gate.failures
+
+
+def test_release_gate_rejects_partial_tone_coverage():
+    report = ExperimentReport(
+        metadata=ExperimentMetadata(
+            run_id="run-coverage",
+            commit_sha="abc123",
+            dataset="golden",
+            dataset_version="1",
+            model="fake-model",
+            prompt_version="1",
+            grader_version="1",
+        ),
+        cases=[
+            CaseResult(case_id="scored", passed=True, tone_score=5),
+            CaseResult(case_id="missing-score", passed=True),
+        ],
+    )
+
+    gate = report.release_gate()
+
+    assert not gate.passed
+    assert any("tone_coverage" in failure for failure in gate.failures)
+
+
+def test_release_gate_can_explicitly_disable_tone_gates():
+    report = ExperimentReport(
+        metadata=ExperimentMetadata(
+            run_id="run-no-judge",
+            commit_sha="abc123",
+            dataset="smoke",
+            dataset_version="1",
+            model="fake-model",
+            prompt_version="1",
+            grader_version="1",
+        ),
+        cases=[CaseResult(case_id="mechanical", passed=True)],
+    )
+
+    gate = report.release_gate(
+        ReleaseThresholds(
+            require_tone_scores=False,
+            minimum_high_risk_completion_rate=0,
+        )
+    )
+
+    assert gate.passed
+
+
+def test_release_gate_fails_closed_when_high_risk_slice_is_missing():
+    report = ExperimentReport(
+        metadata=ExperimentMetadata(
+            run_id="run-no-high-risk",
+            commit_sha="abc123",
+            dataset="golden",
+            dataset_version="1",
+            model="fake-model",
+            prompt_version="1",
+            grader_version="1",
+        ),
+        cases=[CaseResult(case_id="ordinary", passed=True, tone_score=5)],
+    )
+
+    gate = report.release_gate()
+
+    assert not gate.passed
+    assert "high_risk_cases missing" in gate.failures
+
+
+def test_parse_judge_response_validates_contract():
+    result = parse_judge_response("SCORE: 4\nREASON: Friendly and concise")
+
+    assert result.score == 4
+    assert result.reason == "Friendly and concise"
+
+    with pytest.raises(ValueError, match="exactly SCORE"):
+        parse_judge_response("SCORE: 6\nREASON: invalid")
+
+    with pytest.raises(ValueError, match="exactly SCORE"):
+        parse_judge_response("SCORE: 5\nthis is not a REASON field")
+
+    with pytest.raises(ValueError, match="exactly SCORE"):
+        parse_judge_response("SCORE: 5\nREASON: valid\nEXTRA: forbidden")
+
+
+@pytest.mark.asyncio
+async def test_llm_judge_scores_real_supplied_input_and_output():
+    class FakeJudge:
+        def __init__(self) -> None:
+            self.messages = None
+
+        async def ainvoke(self, messages):
+            self.messages = messages
+            return AIMessage(content="SCORE: 5\nREASON: Supportive and factual")
+
+    fake_judge = FakeJudge()
+    fake_langfuse = SimpleNamespace(create_score=lambda **kwargs: None)
+    recorded = {}
+
+    def record_score(**kwargs):
+        recorded.update(kwargs)
+
+    fake_langfuse.create_score = record_score
+    result = await evaluate_trace(
+        "trace-123",
+        "I completed my workout",
+        "Great work—your session was saved.",
+        judge_llm=fake_judge,
+        langfuse_client=fake_langfuse,
+    )
+
+    assert result.score == 5
+    assert "I completed my workout" in fake_judge.messages[1].content
+    assert "your session was saved" in fake_judge.messages[1].content
+    assert recorded == {
+        "trace_id": "trace-123",
+        "name": "conversational_tone",
+        "value": 5,
+        "comment": "Supportive and factual",
+    }

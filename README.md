@@ -1,43 +1,296 @@
 # ChatFit
 
-**ChatFit** is your personal, AI-powered training and meal assistant.
+ChatFit 是一个基于自然语言交互的个人训练与饮食助手。用户可以通过 Telegram
+记录训练、饮食和身体感受，并让 Agent 分析训练量、恢复情况与饮食习惯。
 
-By connecting ChatFit to a Telegram bot, you can seamlessly track your training volume and meals through natural chat, saving all your data securely into a local SQLite database.
+项目使用 FastAPI 提供服务接口，使用 LangGraph 编排多个专业 Agent，并将业务数据、
+对话检查点和食谱向量索引持久化到本地。
 
-The true value of tracking lies in discovery. Humans tend to repeat unseen patterns that act against their goals, but data does not lie. The core idea is that, over time, you can use a local LLM or a custom data discovery program to learn from your training and eating habits. Your data becomes a goldmine, allowing you to uncover insights such as: performance breakthroughs, strength development patterns, root causes of injuries and setbacks, and how weight changes correlate with your daily activities.
+## 核心能力
 
-ChatFit is completely unopinionated about your choice of LLM. You can plug in your favorite provider or use local LLMs when data privacy is your top concern.
+- 通过自然语言记录力量、耐力、距离和自重训练
+- 记录早餐、午餐、晚餐、加餐及备注
+- 分析训练量、训练频率、RPE 和恢复趋势
+- 基于本地食谱向量库提供饮食相关上下文
+- Supervisor 根据对话内容并行路由 Training、Meal、Insights 和 Chatter Agent
+- 数据写入前支持 Human-in-the-loop 确认
+- 长对话自动压缩历史上下文，保留重要训练和饮食信息
+- 支持 Google、OpenAI、Anthropic 以及 OpenAI-compatible 本地模型
+- 可选接入 Langfuse 进行 Agent 链路追踪和质量评估
+- 使用脱敏的结构化 trace 重建 Agent、LLM、工具、HITL 和 checkpoint 执行路径
 
-# Getting Started
-## Integrating with Telegram
+## 架构概览
 
-1. `export TELEGRAM_BOT_TOKEN="your-bot-token-from-botfather"`
-2. `cp .env.example .env`, open `.env` with a text editor, and then enter the values of the required fields.
-3. Configure `docker-compose.yml` to mount your db file path and RAG directory path.
-4. Spin up the service:
-```bash
-podman compose up -d
-
-# or alternatively
-docker compose up -d
+```mermaid
+flowchart LR
+    U["Telegram 用户"] --> B["Telegram Bot"]
+    B --> API["FastAPI /chat"]
+    API --> G["LangGraph Supervisor"]
+    G --> T["Training Agent"]
+    G --> M["Meal Agent"]
+    G --> I["Insights Agent"]
+    G --> C["Chatter Agent"]
+    T --> DB[("业务 SQLite")]
+    M --> DB
+    I --> DB
+    M --> VS[("Chroma 食谱索引")]
+    G --> CP[("LangGraph Checkpoint")]
+    G -. 可选追踪 .-> LF["Langfuse"]
 ```
 
-## Evaluation Framework
+| 组件 | 职责 |
+| --- | --- |
+| Telegram Bot | 接收用户消息、渲染 Markdown、调用后端 API |
+| FastAPI | 提供聊天与上下文管理接口，初始化 Agent Graph |
+| Supervisor | 根据当前消息和历史上下文选择一个或多个专业 Agent |
+| Training Agent | 解析并保存训练动作、组数、重量、次数、距离和 RPE |
+| Meal Agent | 保存饮食记录，并检索本地食谱上下文 |
+| Insights Agent | 聚合训练与饮食数据，生成趋势和恢复分析 |
+| Context Governance | 压缩过长的对话历史，避免上下文无限增长 |
+| Langfuse | 可选的运行轨迹、评分与生产质量观测 |
 
-ChatFit features a dual-pipeline Agent Evaluation Framework built around local execution and **Langfuse Cloud** tracing.
+更完整的设计参见 [系统架构](docs/architecture.md)。
 
-1. **Code Grader (CI/Integration)**
-   - Defined in `tests/eval/eval_cases.yaml`, these tests run the agent locally against fixed inputs.
-   - The custom Pytest runner (`test_code_grader.py`) analyzes the agent's trajectory and deterministically asserts that the expected tool calls (e.g., `log_meal`) were made with the correct arguments.
-   - Run it with: `uv run pytest tests/eval -v`
+## 快速开始
 
-2. **LLM-as-a-Judge (Production Quality)**
-   - A standalone script (`scripts/llm_judge.py`) fetches real execution traces from Langfuse Cloud.
-   - It uses an LLM evaluator to score the conversational tone and RAG context quality (1-5), pushing those metrics back into the Langfuse UI.
-   - Run it with: `uv run python scripts/llm_judge.py <langfuse_trace_id>`
+### 前置条件
 
-Roadmap
-- LLM provider agnostic configuration
-- Deployment on container-native infrastructure
-- Connecting to WeChat
-- ... and more
+- Docker Compose 或 Podman Compose
+- 一个由 [BotFather](https://t.me/BotFather) 创建的 Telegram Bot Token
+- Google Gemini API Key（当前 API 默认使用 Google Provider）
+- 可选：本地 SOCKS5 代理和 Langfuse 账号
+
+### 1. 配置环境变量
+
+```bash
+cp .env.example .env
+```
+
+编辑 `.env`，至少设置：
+
+```dotenv
+GOOGLE_API_KEY=your-google-api-key
+TELEGRAM_BOT_TOKEN=your-telegram-bot-token
+```
+
+常用可选配置：
+
+| 变量 | 说明 |
+| --- | --- |
+| `TELEGRAM_PROXY` | Telegram Bot 使用的 SOCKS5 代理 |
+| `LLM_PROXY` | LLM 请求使用的代理 |
+| `LANGFUSE_HOST` | Langfuse 服务地址 |
+| `LANGFUSE_PUBLIC_KEY` | Langfuse Public Key |
+| `LANGFUSE_SECRET_KEY` | Langfuse Secret Key |
+| `LANGFUSE_CAPTURE_CONTENT` | 是否允许 Langfuse 保存 prompt/output；默认 `false` |
+| `CHECKPOINTER_DB_PATH` | LangGraph checkpoint SQLite 文件路径 |
+| `OBSERVABILITY_HASH_KEY` | 对用户标识和敏感内容生成稳定 keyed hash 的随机密钥 |
+
+Langfuse 是可选依赖。Tracing 初始化或导出失败时，系统会记录日志并自动降级，
+不会让 `/chat` 接口返回 500。
+
+### 2. 配置本地数据目录
+
+`docker-compose.yml` 默认挂载：
+
+- `~/.iron`：业务 SQLite 数据库
+- `./chroma.db`：食谱向量索引
+- `./runtime-data`：LangGraph 对话 checkpoint
+- `~/Documents/LifeOS/下厨房/`：本地食谱 Markdown 文件
+
+如果你的目录不同，请修改 Compose 文件中的 volume 路径。Checkpoint 应挂载目录
+`runtime-data/`，不要把一个不存在的宿主机文件直接绑定到
+`/app/data/checkpointer.db`，否则容器运行时可能将其创建成目录。
+
+### 3. 启动服务
+
+```bash
+docker compose up -d --build
+```
+
+使用 Podman：
+
+```bash
+podman-compose up -d --build
+```
+
+API 默认监听 `http://localhost:8000`，交互式接口文档位于
+`http://localhost:8000/docs`。
+
+检查运行状态和日志：
+
+```bash
+docker compose ps
+docker compose logs -f api bot
+```
+
+### 4. 验证聊天接口
+
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"user_id":"readme-smoke-test","message":"你好"}'
+```
+
+成功响应示例：
+
+```json
+{
+  "response": "你好！我是 ChatFit，你可以告诉我今天的训练或饮食。",
+  "pending_tools": null
+}
+```
+
+## API
+
+### `POST /chat`
+
+向 Agent Graph 发送一轮用户消息。同一个 `user_id` 会复用当前 thread 上下文。
+
+请求：
+
+```json
+{
+  "user_id": "telegram-user-id",
+  "message": "今天跑了 5 公里，用时 30 分钟"
+}
+```
+
+响应：
+
+```json
+{
+  "response": "准备保存本次跑步记录，请确认。",
+  "pending_tools": null
+}
+```
+
+### `POST /clear`
+
+为指定用户创建新的 thread，清除当前会话上下文；已保存的训练和饮食业务数据不会被删除。
+
+请求：
+
+```json
+{
+  "user_id": "telegram-user-id",
+  "message": "/clear"
+}
+```
+
+完整 OpenAPI Schema 可在服务启动后访问 `/openapi.json`。
+每次 `/chat` 响应还会返回 `X-Request-ID` 和 `X-Trace-ID`，用于关联日志与 trace。
+
+## 本地开发
+
+项目要求 Python 3.13+，依赖通过 [uv](https://docs.astral.sh/uv/) 管理。
+
+```bash
+uv sync --dev
+uv run uvicorn api:app --reload
+```
+
+也可以运行终端交互版本：
+
+```bash
+uv run python main.py
+```
+
+### 代码质量与测试
+
+```bash
+# Ruff、Black、MyPy、Bandit
+make quality
+
+# 默认测试集；自动排除 e2e
+make verify
+
+# 单独运行 API 回归测试
+uv run pytest tests/test_api.py -v
+
+# 显式运行端到端测试
+uv run pytest -m e2e -v
+```
+
+默认测试配置会排除标记为 `e2e` 的用例，避免普通验证意外调用外部 LLM、
+Langfuse 或 Telegram 服务。质量规范参见 [质量与验证](docs/quality.md)。
+
+## Agent Evaluation
+
+项目包含确定性和概率性两类 Evaluation：
+
+1. **Code Grader**：读取 `tests/eval/eval_cases.yaml`，确定性验证 Agent 是否调用了
+   正确路由、工具及参数。版本化 schema 和 Grader 位于 `evaluation/`。
+2. **LLM-as-a-Judge**：`scripts/llm_judge.py` 中的 `evaluate_trace` 接收 trace ID、
+   输入和输出，对回复的对话语气评分，并将 `conversational_tone` 分数写回 Langfuse。
+3. **Release Scorecard**：`scripts/eval_report.py` 聚合任务完成率、高风险用例、
+   tone、延迟和成本，未达到门禁时返回非零退出码。
+
+```bash
+# 离线 Evaluation schema、Grader 和 Scorecard 测试
+make eval
+
+# 显式运行 live-model Agent Evaluation
+make eval-live
+
+# 对真实输入和输出评分
+uv run python scripts/llm_judge.py <langfuse-trace-id> \
+  --input "用户输入" \
+  --output "Agent 回复"
+
+# 从实验结果生成发布报告；门禁失败时退出码为 1
+uv run python scripts/eval_report.py results.json --markdown report.md
+```
+
+## 数据与上下文
+
+ChatFit 将不同类型的数据分开保存：
+
+- **业务数据**：训练动作、训练组和饮食记录，默认位于 `~/.iron/iron.db`
+- **Thread 上下文**：LangGraph 消息与执行 checkpoint，位于
+  `runtime-data/checkpointer.db`
+- **压缩摘要**：长对话中的重要上下文，作为 LangGraph state 的一部分持久化
+- **RAG 数据**：从本地食谱生成的 Chroma 向量索引，位于 `chroma.db/`
+
+`/clear` 只切换当前用户的 thread，不会删除业务数据库或向量索引。
+
+## 项目结构
+
+```text
+ChatFit/
+├── agents/
+│   ├── roles/              # Supervisor 与专业 Agent
+│   ├── llm_factory.py      # LLM Provider 工厂
+│   ├── models.py           # Agent State 与业务模型
+│   ├── rag.py              # 食谱检索与向量库
+│   └── sqlite_handler.py   # 业务数据访问
+├── config/                 # 同义词等运行配置
+├── docs/                   # 架构、质量与设计文档
+├── evaluation/             # 数据集 schema、确定性 Grader 与 Scorecard
+├── scripts/                # Evaluation 等运维脚本
+├── tests/
+│   ├── eval/               # Agent Code Grader
+│   └── test_*.py           # 单元与 API 回归测试
+├── api.py                  # FastAPI 服务
+├── bot.py                  # Telegram Bot
+├── main.py                 # 本地终端入口
+├── docker-compose.yml      # API 与 Bot 容器编排
+├── Dockerfile
+└── Makefile
+```
+
+## 文档
+
+- [系统架构](docs/architecture.md)
+- [Agent Evaluation 设计](docs/evaluation.md)
+- [Agent 可观测性设计](docs/observability.md)
+- [质量与验证](docs/quality.md)
+- [早期 Evaluation Framework Spec](docs/superpowers/specs/2026-07-11-agent-evaluation-framework-design.md)
+- [Agent Verification Pipeline 设计](docs/superpowers/specs/2026-07-16-agent-verification-pipeline-design.md)
+
+## Roadmap
+
+- 将 LLM Provider 和模型选择完全配置化
+- 增加容器健康检查与生产就绪探针
+- 支持更多消息入口，例如微信
+- 扩展训练、营养和恢复指标

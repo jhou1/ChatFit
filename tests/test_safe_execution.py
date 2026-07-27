@@ -14,6 +14,7 @@ from tools.safe_execution import (
     MAX_OUTPUT_TOKENS,
     TRUNCATE_WARNINGS,
 )
+from agents.observability import InMemorySink, observation_sink, start_trace
 
 
 def test_is_transient_error():
@@ -118,9 +119,37 @@ async def test_execute_single_tool_safely_permanent_error(mock_sleep):
 
     assert result.status == "error"
     assert "Tool execution failed after retries" in result.content
-    assert "Invalid tool argument" in result.content
+    assert "Invalid tool argument" not in result.content
     # Should break immediately, no retries
     assert mock_tool.invoke.call_count == 1
+    mock_sleep.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("asyncio.sleep", new_callable=AsyncMock)
+async def test_failed_tool_message_marks_tool_span_error(mock_sleep):
+    mock_tool = Mock()
+    mock_tool.name = "test_tool"
+    mock_tool.invoke.side_effect = ValueError("Invalid tool argument")
+    tool_call = {"name": "test_tool", "args": {"input": "test"}, "id": "call_error"}
+    sink = InMemorySink()
+
+    with observation_sink(sink):
+        with start_trace(
+            "chat.request",
+            request_id="request-1",
+            session_id="session-1",
+            user_key="user-key",
+        ):
+            result = await _execute_single_tool_safely(tool_call, [mock_tool])
+
+    tool_span = next(
+        observation
+        for observation in sink.observations
+        if observation.signal == "span.end" and observation.name == "tool.test_tool"
+    )
+    assert result.status == "error"
+    assert tool_span.status == "error"
     mock_sleep.assert_not_called()
 
 
@@ -184,8 +213,34 @@ async def test_execute_llm_query_safely_exhausts_retries(mock_sleep):
     result = await _execute_llm_query_safely(mock_llm, [])
 
     assert "messages" in result
-    assert "LLM request timeout exceeded" in result["messages"].content
+    assert "LLM request failed after retries" in result["messages"].content
     assert mock_llm.ainvoke.call_count == MAX_RETRIES
+    assert mock_sleep.call_count == MAX_RETRIES
+
+
+@pytest.mark.asyncio
+@patch("asyncio.sleep", new_callable=AsyncMock)
+async def test_exhausted_llm_retries_mark_llm_span_error(mock_sleep):
+    mock_llm = AsyncMock()
+    mock_llm.ainvoke.side_effect = TimeoutError()
+    sink = InMemorySink()
+
+    with observation_sink(sink):
+        with start_trace(
+            "chat.request",
+            request_id="request-1",
+            session_id="session-1",
+            user_key="user-key",
+        ):
+            result = await _execute_llm_query_safely(mock_llm, [])
+
+    llm_span = next(
+        observation
+        for observation in sink.observations
+        if observation.signal == "span.end" and observation.name == "llm.request"
+    )
+    assert "[Error]" in result["messages"].content
+    assert llm_span.status == "error"
     assert mock_sleep.call_count == MAX_RETRIES
 
 
@@ -301,3 +356,151 @@ async def test_safe_tool_node_write_tool_rejected(mock_execute, mock_interrupt):
     assert rejected_message.status == "error"
     assert "User rejected the operation" in rejected_message.content
     assert rejected_message.tool_call_id == "call_3"
+
+
+@pytest.mark.asyncio
+@patch("tools.safe_execution.interrupt")
+@patch("tools.safe_execution._execute_single_tool_safely")
+async def test_safe_tool_node_rejects_every_parallel_write_tool(
+    mock_execute, mock_interrupt
+):
+    node = SafeToolNode(tools=[])
+    state = {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "log_meal", "args": {"food": "apple"}, "id": "meal-1"},
+                    {
+                        "name": "log_training_session",
+                        "args": {"exercise": "run"},
+                        "id": "training-1",
+                    },
+                ],
+            )
+        ]
+    }
+    mock_interrupt.return_value = {"approved": False}
+
+    result = await node(state)
+
+    mock_execute.assert_not_called()
+    assert [message.tool_call_id for message in result["messages"]] == [
+        "meal-1",
+        "training-1",
+    ]
+    assert all(message.status == "error" for message in result["messages"])
+
+
+@pytest.mark.asyncio
+@patch("tools.safe_execution.interrupt")
+@patch("tools.safe_execution._execute_single_tool_safely")
+async def test_safe_tool_node_rejects_write_and_executes_parallel_read_tool(
+    mock_execute, mock_interrupt
+):
+    node = SafeToolNode(tools=[])
+    write_call = {
+        "name": "log_meal",
+        "args": {"food": "apple"},
+        "id": "meal-1",
+    }
+    read_call = {
+        "name": "retrieve_training_sessions",
+        "args": {},
+        "id": "training-read-1",
+    }
+    state = {
+        "messages": [
+            AIMessage(content="", tool_calls=[write_call, read_call]),
+        ]
+    }
+    mock_interrupt.return_value = {"approved": False}
+    mock_execute.return_value = ToolMessage(
+        content="history",
+        tool_call_id="training-read-1",
+    )
+
+    result = await node(state)
+
+    mock_execute.assert_awaited_once()
+    assert mock_execute.await_args.args[0]["id"] == "training-read-1"
+    assert [message.tool_call_id for message in result["messages"]] == [
+        "meal-1",
+        "training-read-1",
+    ]
+    assert result["messages"][0].status == "error"
+    assert result["messages"][1].content == "history"
+
+
+@pytest.mark.asyncio
+@patch("tools.safe_execution.interrupt")
+@patch("tools.safe_execution._execute_single_tool_safely")
+async def test_resumed_hitl_execution_finishes_trace_ok_and_emits_executed(
+    mock_execute, mock_interrupt
+):
+    node = SafeToolNode(tools=[])
+    state = {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "log_meal", "args": {"food": "apple"}, "id": "call-1"}
+                ],
+            )
+        ]
+    }
+    mock_interrupt.return_value = {"approved": True}
+    mock_execute.return_value = ToolMessage(content="saved", tool_call_id="call-1")
+    sink = InMemorySink()
+
+    with observation_sink(sink):
+        with start_trace(
+            "chat.request",
+            request_id="request-1",
+            session_id="session-1",
+            user_key="user-key",
+        ):
+            await node(state)
+
+    root_end = next(
+        observation
+        for observation in sink.observations
+        if observation.signal == "span.end" and observation.name == "chat.request"
+    )
+    assert root_end.status == "ok"
+    assert any(observation.name == "hitl.executed" for observation in sink.observations)
+
+
+@pytest.mark.asyncio
+@patch("tools.safe_execution.interrupt")
+@patch("tools.safe_execution._execute_single_tool_safely")
+async def test_rejected_hitl_emits_cancelled_without_execution(
+    mock_execute, mock_interrupt
+):
+    node = SafeToolNode(tools=[])
+    state = {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "log_meal", "args": {"food": "apple"}, "id": "call-1"}
+                ],
+            )
+        ]
+    }
+    mock_interrupt.return_value = {"approved": False}
+    sink = InMemorySink()
+
+    with observation_sink(sink):
+        with start_trace(
+            "chat.request",
+            request_id="request-1",
+            session_id="session-1",
+            user_key="user-key",
+        ):
+            await node(state)
+
+    mock_execute.assert_not_called()
+    assert any(
+        observation.name == "hitl.cancelled" for observation in sink.observations
+    )

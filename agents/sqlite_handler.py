@@ -75,12 +75,10 @@ def add_training_session(input_data: TrainingInputRecorder, db_path: str) -> str
             set([s.practice_name.lower() for s in input_data.sessions])
         )
 
-        placeholders = ",".join(["?"] * len(incoming_practice_names))
-        cursor.execute(
-            f"SELECT lower(name) FROM practices WHERE lower(name) in ({placeholders})",  # nosec B608
-            incoming_practice_names,
-        )
-        existing_practices = [row[0] for row in cursor.fetchall()]
+        cursor.execute("SELECT lower(name) FROM practices")
+        existing_practices = [
+            row[0] for row in cursor.fetchall() if row[0] in incoming_practice_names
+        ]
         new_practices = [
             p for p in incoming_practice_names if p not in existing_practices
         ]
@@ -144,13 +142,16 @@ def get_training_sessions_of_last_n_days(n: int, db_path):
     """Get a list of training sessions of the last n days"""
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
-        cursor.execute(f"""
+        cursor.execute(
+            """
             SELECT *
             FROM training_sessions t, practices p, training_sets s
             WHERE t.practice_id = p.id AND t.id = s.training_session_id
-            AND date(t.date) >= date('now', '-{n} days')
+            AND date(t.date) >= date('now', ?)
             ORDER BY t.date DESC
-            """)  # nosec B608
+            """,
+            (f"-{n} days",),
+        )
         return cursor.fetchall()
 
 
@@ -187,7 +188,8 @@ def get_aggregated_training_data(n: int, db_path: str):
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute(f"""
+        cursor.execute(
+            """
             SELECT 
                 date(t.date) as training_date,
                 p.type as practice_type,
@@ -200,10 +202,12 @@ def get_aggregated_training_data(n: int, db_path: str):
             FROM training_sessions t
             JOIN practices p ON t.practice_id = p.id
             JOIN training_sets s ON t.id = s.training_session_id
-            WHERE date(t.date) >= date('now', '-{n} days')
+            WHERE date(t.date) >= date('now', ?)
             GROUP BY date(t.date), p.type
             ORDER BY date(t.date) ASC
-            """)  # nosec B608
+            """,
+            (f"-{n} days",),
+        )
         return [dict(row) for row in cursor.fetchall()]
 
 
@@ -211,10 +215,13 @@ def get_meal_records_of_last_n_days(n: int, db_path: str):
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute(f"""
+        cursor.execute(
+            """
             SELECT * FROM meal_records 
-            WHERE date(date) >= date('now', '-{n} days')
+            WHERE date(date) >= date('now', ?)
             ORDER BY date ASC
             LIMIT 50
-            """)  # nosec B608
+            """,
+            (f"-{n} days",),
+        )
         return [dict(row) for row in cursor.fetchall()]
