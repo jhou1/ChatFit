@@ -43,6 +43,50 @@ def apply_seed_fixture(db_path: str, fixture_name: str):
                 confirm_new_practices=True,
             )
             add_training_session(test_input, db_path)
+    if fixture_name == "basic_practices":
+        test_input = TrainingInputRecorder(
+            date=datetime.now().date(),
+            sessions=[
+                TrainingSession(
+                    practice_name="run",
+                    practice_type="distance",
+                    note="Testing",
+                    sets=[TrainingSet(set_number=1, distance=1, duration=1)],
+                ),
+                TrainingSession(
+                    practice_name="running",
+                    practice_type="distance",
+                    note="Testing",
+                    sets=[TrainingSet(set_number=1, distance=1, duration=1)],
+                ),
+                TrainingSession(
+                    practice_name="snatch",
+                    practice_type="weighted",
+                    note="Testing",
+                    sets=[TrainingSet(set_number=1, weight=16, reps=10)],
+                ),
+                TrainingSession(
+                    practice_name="kettlebell snatch",
+                    practice_type="weighted",
+                    note="Testing",
+                    sets=[TrainingSet(set_number=1, weight=16, reps=10)],
+                ),
+                TrainingSession(
+                    practice_name="snatched",
+                    practice_type="weighted",
+                    note="Testing",
+                    sets=[TrainingSet(set_number=1, weight=16, reps=10)],
+                ),
+                TrainingSession(
+                    practice_name="burger",
+                    practice_type="distance",
+                    note="Testing",
+                    sets=[TrainingSet(set_number=1, distance=1)],
+                )
+            ],
+            confirm_new_practices=True,
+        )
+        add_training_session(test_input, db_path)
 
 
 @pytest.fixture
@@ -97,12 +141,6 @@ async def test_agent_trajectory(case, mock_agent_env):
                     ):
                         routed_assistants.extend(node_output["assistant_names"])
                 if node_name == "__interrupt__":
-                    for interrupt in node_output:
-                        if hasattr(interrupt, "value") and isinstance(
-                            interrupt.value, dict
-                        ):
-                            for tc in interrupt.value.get("tool_calls", []):
-                                tool_calls_made.append(tc)
                     continue
 
                 if isinstance(node_output, dict):
@@ -141,12 +179,6 @@ async def test_agent_trajectory(case, mock_agent_env):
                         ):
                             routed_assistants.extend(node_output["assistant_names"])
                     if node_name == "__interrupt__":
-                        for interrupt in node_output:
-                            if hasattr(interrupt, "value") and isinstance(
-                                interrupt.value, dict
-                            ):
-                                for tc in interrupt.value.get("tool_calls", []):
-                                    tool_calls_made.append(tc)
                         continue
                     if isinstance(node_output, dict):
                         messages = node_output.get("messages", [])
@@ -155,6 +187,7 @@ async def test_agent_trajectory(case, mock_agent_env):
                     for msg in messages:
                         if hasattr(msg, "tool_calls"):
                             for tc in msg.tool_calls:
+                                print(f"Appending tool call: {tc['name']} from node {node_name}")
                                 tool_calls_made.append(tc)
                         if msg.type == "ai" and extract_text(msg).strip():
                             turn_response_text += extract_text(msg) + "\n"

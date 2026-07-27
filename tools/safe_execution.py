@@ -68,6 +68,7 @@ async def _execute_single_tool_safely(
             mark_current_span_status("error")
             return ToolMessage(
                 content="[Error] Tool tool_name not found.",
+                name=tool_name,
                 tool_call_id=tool_id,
                 status="error",
             )
@@ -94,7 +95,7 @@ async def _execute_single_tool_safely(
                         "tool.output_truncated": truncated,
                     },
                 )
-                return ToolMessage(content=result_str, tool_call_id=tool_id)
+                return ToolMessage(content=result_str, name=tool_name, tool_call_id=tool_id)
 
             except Exception as error:
                 retryable = _is_transient_tool_error(
@@ -119,7 +120,7 @@ async def _execute_single_tool_safely(
 
         mark_current_span_status("error")
         error_msg = "[Error] Tool execution failed after retries."
-        return ToolMessage(content=error_msg, tool_call_id=tool_id, status="error")
+        return ToolMessage(content=error_msg, name=tool_name, tool_call_id=tool_id, status="error")
 
 
 async def _execute_llm_query_safely(llm_with_tools, messages) -> dict:
@@ -268,6 +269,7 @@ class SafeToolNode:
                     "messages": [
                         (
                             ToolMessage(
+                                name=tool_call["name"],
                                 tool_call_id=tool_call["id"],
                                 content=(
                                     "User rejected the operation. "

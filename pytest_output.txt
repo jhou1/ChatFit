@@ -1,0 +1,20 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.13, pytest-9.1.0, pluggy-1.6.0 -- /Users/hjw/Projects/ChatFit/.worktrees/multimodal-input-design/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/hjw/Projects/ChatFit/.worktrees/multimodal-input-design
+configfile: pyproject.toml
+plugins: langsmith-0.8.16, anyio-4.14.0, cov-7.1.0, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 13 items
+
+tests/eval/test_code_grader.py::test_agent_trajectory[test_meal_extraction_01] FAILED [  7%]
+tests/eval/test_code_grader.py::test_agent_trajectory[test_greeting_no_tool] PASSED [ 15%]
+tests/eval/test_code_grader.py::test_agent_trajectory[test_meal_breakfast] FAILED [ 23%]
+tests/eval/test_code_grader.py::test_agent_trajectory[test_training_run] FAILED [ 30%]
+tests/eval/test_code_grader.py::test_agent_trajectory[test_training_multiple] FAILED [ 38%]
+tests/eval/test_code_grader.py::test_agent_trajectory[test_routing_meal_and_training] FAILED [ 46%]
+tests/eval/test_code_grader.py::test_agent_trajectory[test_routing_chatter] PASSED [ 53%]
+tests/eval/test_code_grader.py::test_agent_trajectory[test_routing_insights] FAILED [ 61%]
+tests/eval/test_code_grader.py::test_agent_trajectory[test_e2e_training_completion] FAILED [ 69%]
+tests/eval/test_code_grader.py::test_agent_trajectory[test_retrieve_training_completion] FAILED [ 76%]
+tests/eval/test_code_grader.py::test_agent_trajectory[test_e2e_training_duration] 
