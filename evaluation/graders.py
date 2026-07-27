@@ -152,21 +152,6 @@ def grade_turn(expected: EvaluationTurn, actual: Trajectory) -> TurnGrade:
             pass
 
 
-    # Check simple expected_response_eval text assertions if present
-    if expected.expected_response_eval and expected.expected_response_eval.must_contain_semantics:
-        req = expected.expected_response_eval.must_contain_semantics
-        if isinstance(req, str):
-            req = [req]
-        response_lower = actual.response.lower()
-        for required_text in req:
-            if required_text.lower() not in response_lower:
-                # Note: semantic check ideally uses an LLM judge, but we do a fallback string match here
-                # Or we skip and let llm_judge handle it? 
-                # Since the old code did exact substring matching, we keep it here as a warning or soft fail.
-                # Actually, our new jsonl has things like "确认目标已更新为65kg", which won't exactly match the AI's generation.
-                # For now, we won't strictly fail it here if it's meant for LLM judge.
-                pass
-
     return TurnGrade(
         passed=not failures,
         failures=failures
