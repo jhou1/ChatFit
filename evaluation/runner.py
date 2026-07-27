@@ -22,6 +22,7 @@ from evaluation.graders import Trajectory, grade_turn
 from evaluation.models import load_evaluation_cases
 from evaluation.report import (
     CaseResult,
+    DimensionStat,
     ExperimentMetadata,
     ExperimentReport,
     ReleaseThresholds,
@@ -37,7 +38,6 @@ class MockLangfuse:
 
 async def evaluate_case(case, llm_config, vector_store, sem, enable_llm_judge):
     async with sem:
-        print(f"--- Starting Case: {case.case_id} ---")
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "test_eval.db")
             init_db(db_path)
@@ -50,8 +50,7 @@ async def evaluate_case(case, llm_config, vector_store, sem, enable_llm_judge):
             failure_codes = []
             
             case_weighted_scores = []
-            case_clarity_scores = []
-            case_tone_scores = []
+            case_dimension_stats = []
 
             for turn_idx, turn in enumerate(case.turns):
                 user_input = turn.user_input
@@ -92,7 +91,6 @@ async def evaluate_case(case, llm_config, vector_store, sem, enable_llm_judge):
                             if msg.type == "ai" and extract_text(msg).strip():
                                 turn_response_text += extract_text(msg) + "\n"
 
-                # If the graph was interrupted (awaiting approval), approve it so it finishes DB writes
                 state = await app.aget_state(config)
                 iterations = 0
                 max_iterations = 5
@@ -186,10 +184,9 @@ async def evaluate_case(case, llm_config, vector_store, sem, enable_llm_judge):
                         )
                         case_weighted_scores.append(judge_result.overall_weighted_score)
                         for ev in judge_result.evaluations:
-                            if "一致性" in ev.dimension or "澄清" in ev.dimension or "合理性" in ev.dimension or "完成率" in ev.dimension:
-                                case_clarity_scores.append(ev.score)
-                            elif "交互质量" in ev.dimension or "安全边界" in ev.dimension:
-                                case_tone_scores.append(ev.score)
+                            case_dimension_stats.append(
+                                DimensionStat(dimension=ev.dimension, score=ev.score, weight=ev.weight)
+                            )
                     except Exception as e:
                         print(f"  [{case.case_id}] [Warn] LLM Judge failed: {e}")
 
@@ -203,7 +200,8 @@ async def evaluate_case(case, llm_config, vector_store, sem, enable_llm_judge):
                 case_id=case.case_id,
                 passed=case_passed,
                 tags=tags,
-                llm_score=avg_llm,
+                overall_llm_score=avg_llm,
+                dimension_stats=case_dimension_stats,
                 failure_codes=failure_codes
             )
 
@@ -223,10 +221,6 @@ async def main():
         sys.exit(1)
 
     enable_llm_judge = not args.no_judge
-
-    print(f"Loaded {len(cases)} cases from {args.dataset}")
-    print(f"Running with concurrency: {args.concurrency}")
-    print(f"LLM Judge Enabled: {enable_llm_judge}")
 
     llm_config = LLMConfig(provider=args.provider, model_name=args.model, temperature=0.0)
     vector_store = get_or_create_vector_store("./chroma_test_db")
