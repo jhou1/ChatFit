@@ -146,8 +146,10 @@ flowchart TD
 
 Responsibilities:
 
-- register separate handlers for text, `filters.VOICE`, and
-  `filters.PHOTO`;
+- register command handlers in the first handler group and one universal
+  non-command message handler in the next group;
+- classify every non-command Telegram message as text, voice-note, photo, or
+  unsupported, then delegate to the corresponding callback;
 - reject voice notes longer than 180 seconds before downloading;
 - select the highest useful photo size that remains under the configured byte
   limit;
@@ -164,6 +166,24 @@ It must not:
 - contain extraction prompts or business validation rules;
 - retain a downloaded media file after the API request finishes;
 - decide which business Agent should handle the input.
+
+The universal non-command handler is intentional. Registering only known media
+filters allows new or unsupported Telegram message types to disappear without
+a reply. Classification uses this precedence:
+
+```text
+command → dedicated command callback
+voice note → voice callback
+photo → photo callback
+text → text callback
+every other message → unsupported-input callback
+```
+
+The unsupported branch includes audio files, video, video notes, animation,
+documents, stickers, contacts, locations, venues, polls, dice, games, stories,
+paid media, and future message payloads that are not explicitly supported.
+Non-message updates such as membership changes are outside the user-message
+contract and have separately declared handling policy.
 
 The Telegram Bot API currently permits Bot downloads up to 20 MB. ChatFit uses
 a lower normalized-media limit so inline model requests remain bounded. See the
@@ -957,7 +977,85 @@ Every Provider adapter must pass the same suite:
 
 Default CI uses Fake Providers and performs no Gemini calls.
 
-### 15.3 Integration tests
+### 15.3 Telegram message dispatch contract tests
+
+The default verification suite must exercise the real Telegram dispatcher,
+not call message callbacks directly. Bot construction is extracted into a
+side-effect-free `build_telegram_application()` function so tests can inspect
+and run the same handler registry used in production.
+
+Tests create synthetic Telegram updates, pass them through
+`Application.process_update()`, and replace only network boundaries with
+fakes. They verify:
+
+- command handlers are registered before exactly one universal non-command
+  message handler;
+- command messages do not reach the universal handler;
+- the universal handler classifies text, voice-note, photo, and every other
+  message into mutually exclusive routes, with the unsupported route as the
+  total default branch;
+- each supported update reaches exactly one modality-specific callback;
+- text, voice-note, and photo callbacks each send an immediate processing
+  action before Provider invocation or application-service forwarding, and
+  before media download for media inputs;
+- each callback forwards exactly one correctly typed input envelope;
+- successful processing produces one terminal user reply;
+- uncertain processing produces one actionable clarification reply;
+- download, normalization, Provider, and application-service failures produce
+  one user-safe failure reply;
+- audio files, video, video notes, animation, documents, stickers, contacts,
+  locations, venues, polls, dice, games, stories, and paid media each receive
+  an explicit unsupported-input reply;
+- an unknown future message payload reaches the total unsupported default
+  branch rather than falling through the dispatcher;
+- if Telegram rejects a processing action or reply, a structured failure event
+  with the input and request correlation identifiers is emitted;
+- every supported update attempts an immediate processing action and then
+  produces either a terminal reply or a structured delivery-failure event;
+- every unsupported update produces either an unsupported-input reply or a
+  structured delivery-failure event. A processing action alone is never a
+  terminal outcome.
+
+The regression case for the current production defect is mandatory:
+
+```text
+synthetic Telegram voice-note update
+→ production dispatcher
+→ voice-note callback invoked
+→ processing action sent
+→ voice input forwarded
+→ terminal reply returned
+```
+
+The same test exists for a photo update. Removing the universal handler,
+removing a classification route, replacing it with a text-only filter, or
+failing to produce user-visible progress must make default verification fail.
+
+After this feature is implemented, default verification must use no live
+Telegram account and no cloud Provider. The implementation must add the
+synthetic dispatcher suite to the repository-level `make verify` command.
+These tests do not exist in the current text-only system; this section defines
+the required future gate rather than claiming current coverage.
+
+The implementation must also add a `make verify-container` target. Before the
+feature may be declared complete, every deployable container image must pass
+that target. It builds the exact image digest intended for deployment, runs
+`scripts/verify_telegram_message_routes.py` inside it, and is a required
+continuous-integration status before deployment. The script:
+
+1. constructs the production application through
+   `build_telegram_application()`;
+2. passes synthetic text, voice-note, photo, and unsupported updates through
+   `Application.process_update()`;
+3. verifies the production entry point calls that same factory;
+4. asserts the processing-action and terminal-outcome invariants.
+
+The script exits nonzero on any missing route or silent outcome. Live Telegram
+delivery is a separate, explicitly enabled deployment test and is not required
+for default verification. The current architecture-only branch does not yet
+contain this target, script, or the dispatcher tests.
+
+### 15.4 Integration tests
 
 - text input preserves existing `/chat` behavior;
 - missing, invalid, expired, or replayed Bot authentication returns 401/403
@@ -992,7 +1090,7 @@ Default CI uses Fake Providers and performs no Gemini calls.
 - no raw media or content appears in trace observations;
 - `LANGFUSE_CAPTURE_CONTENT=true` still exports no media-derived content.
 
-### 15.4 Evaluation dataset
+### 15.5 Evaluation dataset
 
 Versioned cases cover:
 
@@ -1011,8 +1109,19 @@ Versioned cases cover:
   after a business write but before the HTTP response;
 - cleanup unlink failure and crash-orphan scavenging.
 
-### 15.5 Release gates
+### 15.6 Release gates
 
+- 100% of production Telegram robot builds register command handling and the
+  universal non-command message handler.
+- 0 supported or unsupported Telegram messages are silently discarded.
+- 100% of supported message-dispatch cases attempt a processing action and
+  then produce a terminal reply or structured delivery-failure event.
+- 100% of unsupported message-dispatch cases produce an unsupported-input
+  reply or structured delivery-failure event.
+- Voice-note and photo dispatcher regression tests are part of the default
+  verification command and cannot be deselected.
+- Every deployable image digest passes the required `make verify-container`
+  status, including real production-factory dispatch and entry-point checks.
 - 100% of success and normally cleanable failure paths release all payloads
   before any Agent or clarification action.
 - 100% of forced cleanup failures fail closed, mark the worker unready, and
@@ -1058,8 +1167,12 @@ chatfit/
 ├── api.py
 ├── agents/
 ├── evaluation/
+├── scripts/
+│   └── verify_telegram_message_routes.py
 └── tests/
     ├── fixtures/media/
+    ├── test_telegram_message_dispatch.py
+    ├── test_bot_container_message_smoke.py
     ├── test_input_orchestrator.py
     ├── test_media_cleanup.py
     ├── test_provider_contract.py
@@ -1072,6 +1185,10 @@ chatfit/
 
 - add project-owned input and Provider contracts;
 - add registry and Fake Providers;
+- extract the side-effect-free production Telegram application factory;
+- replace the text-only filter with the universal non-command dispatcher while
+  preserving text behavior and explicit unsupported-message replies;
+- add the synthetic dispatcher test harness to `make verify`;
 - extract `ConversationService` from `/chat`;
 - route existing text behavior through the new service;
 - prove no text regression.
@@ -1079,6 +1196,8 @@ chatfit/
 ### Phase 2: voice
 
 - add Telegram voice handler and `/inputs` multipart support;
+- add the production-dispatcher voice regression test before implementing the
+  handler;
 - add audio validation and ephemeral conversion;
 - implement Gemini speech adapter;
 - add pre-Agent normalization clarification gating;
@@ -1088,6 +1207,8 @@ chatfit/
 ### Phase 3: photo
 
 - add Telegram photo handler;
+- add the production-dispatcher photo regression test before implementing the
+  handler;
 - add image safety validation;
 - implement Gemini image adapter with structured output;
 - add deterministic allowlisted photo-fact rendering;
@@ -1098,6 +1219,10 @@ chatfit/
 
 - add the input ledger, pending clarification repository, and idempotent write
   operation ledger;
+- add `scripts/verify_telegram_message_routes.py` and the
+  `make verify-container` target;
+- make container message-route verification a required deployment-pipeline
+  status and deploy the exact image digest that passed it;
 - complete spans, metrics, dashboards, and alerts;
 - add per-user rate limits and concurrency backpressure;
 - run budgeted Gemini E2E and establish quality baselines;
@@ -1138,3 +1263,9 @@ The feature is complete when:
 18. Bot-to-API authentication binds each accepted request to its signed user,
     input, modality, and payload; invalid or replayed requests cannot access
     ledger, Provider, Graph, or HITL state.
+19. The production Telegram dispatcher has tested text, voice-note, photo, and
+    total unsupported-message routes. Every supported user message receives
+    visible progress followed by a terminal reply or correlated
+    delivery-failure event; every unsupported message receives an explicit
+    terminal outcome. The exact container image selected for deployment must
+    pass the same dispatch contract.
