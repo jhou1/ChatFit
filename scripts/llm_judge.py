@@ -1,10 +1,11 @@
-"""Score a real Agent input/output pair and attach the score to a Langfuse trace."""
+"""Score a real Agent input/output pair using a rigorous Rubric-based LLM Judge."""
 
 from __future__ import annotations
 
 import argparse
+import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -14,40 +15,97 @@ from agents.llm_factory import LLMConfig, create_chat_model
 from agents.utils import extract_text
 
 JUDGE_PROMPT = """
-You are an expert conversational AI evaluator.
-Score the assistant's response on a scale of 1 to 5 for Conversational Tone.
-Tone definition:
-5 = Highly helpful, friendly, natural, and encouraging.
-1 = Robotic, unhelpful, or rude.
+You are an expert conversational AI evaluator for a Fitness & Nutrition Agent.
+Your task is to evaluate the assistant's response against a strict Rubric.
+The Rubric consists of Evaluation Dimensions, Score Levels (1-5), Criteria, and Evidence Requirements.
 
-Provide your output strictly in this format:
-SCORE: [1-5]
-REASON: [Brief explanation]
+RUBRIC:
+1. Dimension: Semantic Accuracy & Clarity (Weight: 0.6)
+   - Evidence Requirement: Extract quotes showing how the assistant addressed the core intent, extracted parameters, or asked for clarifications.
+   - Level 5: Addresses the intent perfectly with zero ambiguity. Clear, direct, and leaves no confusion. If clarification is needed, asks exactly the right questions.
+   - Level 4: Addresses the intent well, but slightly verbose or mildly indirect.
+   - Level 3: Partially addresses the intent. Missing some context but functionally acceptable.
+   - Level 2: Vague or confusing. Misses the point or hallucinates parameters.
+   - Level 1: Completely hallucinates or fails to address the user's intent.
+
+2. Dimension: Conversational Tone (Weight: 0.4)
+   - Evidence Requirement: Extract quotes showing empathy, encouragement, or robotic language.
+   - Level 5: Highly helpful, friendly, natural, and encouraging. Fits a premium fitness coach perfectly.
+   - Level 4: Polite and helpful, but slightly generic.
+   - Level 3: Neutral. Neither friendly nor rude. Just transactional.
+   - Level 2: Robotic, rigid, or slightly dismissive.
+   - Level 1: Rude, unhelpful, or completely inappropriate.
+
+Output strictly in valid JSON format matching the following structure exactly (NO markdown code blocks, just raw JSON):
+{
+  "evaluations": [
+    {
+      "dimension": "Semantic Accuracy & Clarity",
+      "evidence": "...",
+      "score": <int>,
+      "weight": 0.6
+    },
+    {
+      "dimension": "Conversational Tone",
+      "evidence": "...",
+      "score": <int>,
+      "weight": 0.4
+    }
+  ],
+  "overall_weighted_score": <float>,
+  "reasoning_summary": "<string>"
+}
 """
 
+@dataclass(frozen=True)
+class DimensionEval:
+    dimension: str
+    evidence: str
+    score: int
+    weight: float
 
 @dataclass(frozen=True)
 class JudgeResult:
-    score: int
-    reason: str
-
+    evaluations: list[DimensionEval]
+    overall_weighted_score: float
+    reasoning_summary: str
 
 def parse_judge_response(response_text: str) -> JudgeResult:
-    """Parse and validate the stable judge response contract."""
+    """Parse and validate the JSON judge response contract."""
+    # Strip markdown code blocks if the LLM adds them despite instructions
+    clean_text = response_text.strip()
+    if clean_text.startswith("```json"):
+        clean_text = clean_text[7:]
+    if clean_text.startswith("```"):
+        clean_text = clean_text[3:]
+    if clean_text.endswith("```"):
+        clean_text = clean_text[:-3]
+    clean_text = clean_text.strip()
 
-    match = re.fullmatch(
-        r"\s*SCORE:[ \t]*([1-5])[ \t]*\r?\n"
-        r"REASON:[ \t]*(\S(?:[^\r\n]*\S)?)[ \t]*\s*",
-        response_text,
-    )
-    if match is None:
-        raise ValueError(
-            "judge response must contain exactly SCORE: <1-5> and REASON: <text>"
+    try:
+        data = json.loads(clean_text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Judge response must be valid JSON. Error: {e}\nResponse: {clean_text}")
+
+    if "evaluations" not in data or "overall_weighted_score" not in data or "reasoning_summary" not in data:
+        raise ValueError("Judge response missing required fields.")
+
+    evaluations = []
+    for ev in data["evaluations"]:
+        evaluations.append(
+            DimensionEval(
+                dimension=ev["dimension"],
+                evidence=ev["evidence"],
+                score=int(ev["score"]),
+                weight=float(ev["weight"])
+            )
         )
-    score = int(match.group(1))
-    reason = match.group(2)
-    return JudgeResult(score=score, reason=reason)
 
+    return JudgeResult(
+        evaluations=evaluations,
+        overall_weighted_score=float(data["overall_weighted_score"]),
+        reasoning_summary=data["reasoning_summary"]
+    )
 
 async def evaluate_trace(
     trace_id: str,
@@ -57,7 +115,7 @@ async def evaluate_trace(
     judge_llm: Any | None = None,
     langfuse_client: Any | None = None,
 ) -> JudgeResult:
-    """Evaluate supplied content and write conversational_tone to a trace."""
+    """Evaluate supplied content using the Rubric and write to a trace."""
 
     if not trace_id.strip() or not input_msg.strip() or not output_msg.strip():
         raise ValueError("trace_id, input_msg, and output_msg are required")
@@ -75,14 +133,26 @@ async def evaluate_trace(
         [SystemMessage(content=JUDGE_PROMPT), HumanMessage(content=evaluation_content)]
     )
     result = parse_judge_response(extract_text(response))
-    langfuse_client.create_score(
-        trace_id=trace_id,
-        name="conversational_tone",
-        value=result.score,
-        comment=result.reason,
-    )
-    return result
+    
+    # Optional: Log to Langfuse
+    try:
+        langfuse_client.create_score(
+            trace_id=trace_id,
+            name="rubric_weighted_score",
+            value=result.overall_weighted_score,
+            comment=result.reasoning_summary,
+        )
+        for ev in result.evaluations:
+            langfuse_client.create_score(
+                trace_id=trace_id,
+                name=ev.dimension.replace(" ", "_").lower(),
+                value=ev.score,
+                comment=ev.evidence,
+            )
+    except Exception:
+        pass
 
+    return result
 
 async def _run_cli(args: argparse.Namespace) -> int:
     try:
@@ -94,9 +164,8 @@ async def _run_cli(args: argparse.Namespace) -> int:
     except Exception as error:
         print(f"Judge failed: {type(error).__name__}: {error}")
         return 1
-    print(f"Scored trace {args.trace_id}: {result.score}/5 — {result.reason}")
+    print(f"Scored trace {args.trace_id}: {result.overall_weighted_score}/5.0 — {result.reasoning_summary}")
     return 0
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -106,9 +175,7 @@ def main() -> int:
     args = parser.parse_args()
 
     import asyncio
-
     return asyncio.run(_run_cli(args))
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

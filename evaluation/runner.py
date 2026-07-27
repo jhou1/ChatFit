@@ -26,11 +26,16 @@ from evaluation.report import (
     ExperimentReport,
     ReleaseThresholds,
 )
+from scripts.llm_judge import evaluate_trace
 
 # Suppress asyncio's "Task was destroyed but it is pending" stderr prints
 logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 
-async def evaluate_case(case, llm_config, vector_store, sem):
+class MockLangfuse:
+    def create_score(self, **kwargs):
+        pass
+
+async def evaluate_case(case, llm_config, vector_store, sem, enable_llm_judge):
     async with sem:
         print(f"--- Starting Case: {case.case_id} ---")
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -43,6 +48,10 @@ async def evaluate_case(case, llm_config, vector_store, sem):
             config = {"configurable": {"thread_id": case.case_id}}
             case_passed = True
             failure_codes = []
+            
+            case_weighted_scores = []
+            case_clarity_scores = []
+            case_tone_scores = []
 
             for turn_idx, turn in enumerate(case.turns):
                 user_input = turn.user_input
@@ -156,15 +165,39 @@ async def evaluate_case(case, llm_config, vector_store, sem):
                                     code = "db_mismatch"
                                     failure_codes.append(code)
                                     print(f"  [{case.case_id}] [Fail] Turn {turn_idx}: {code} - DB query {state_check.query} returned {result}, expected {expected_val}")
+                
+                if enable_llm_judge and turn_response_text.strip():
+                    try:
+                        judge_result = await evaluate_trace(
+                            trace_id=f"{case.case_id}-{turn_idx}",
+                            input_msg=user_input,
+                            output_msg=turn_response_text,
+                            langfuse_client=MockLangfuse()
+                        )
+                        case_weighted_scores.append(judge_result.overall_weighted_score)
+                        for ev in judge_result.evaluations:
+                            if "Clarity" in ev.dimension:
+                                case_clarity_scores.append(ev.score)
+                            elif "Tone" in ev.dimension:
+                                case_tone_scores.append(ev.score)
+                    except Exception as e:
+                        print(f"  [{case.case_id}] [Warn] LLM Judge failed: {e}")
 
             if case_passed:
                 print(f"  [{case.case_id}] [Pass]")
+            
+            avg_llm = sum(case_weighted_scores) / len(case_weighted_scores) if case_weighted_scores else None
+            avg_clarity = sum(case_clarity_scores) / len(case_clarity_scores) if case_clarity_scores else None
+            avg_tone = sum(case_tone_scores) / len(case_tone_scores) if case_tone_scores else None
             
             tags = case.capability_tags if case.capability_tags else []
             return CaseResult(
                 case_id=case.case_id,
                 passed=case_passed,
                 tags=tags,
+                llm_score=avg_llm,
+                clarity_score=avg_clarity,
+                tone_score=avg_tone,
                 failure_codes=failure_codes
             )
 
@@ -174,6 +207,7 @@ async def main():
     parser.add_argument("--model", default="gemini-3.5-flash", help="LLM model name")
     parser.add_argument("--provider", default="google", help="LLM provider")
     parser.add_argument("--concurrency", type=int, default=5, help="Number of concurrent cases to run")
+    parser.add_argument("--no-judge", action="store_true", help="Disable LLM-as-a-judge for tone scoring")
     args = parser.parse_args()
 
     try:
@@ -182,17 +216,19 @@ async def main():
         print(f"Error loading dataset: {e}")
         sys.exit(1)
 
+    enable_llm_judge = not args.no_judge
+
     print(f"Loaded {len(cases)} cases from {args.dataset}")
     print(f"Running with concurrency: {args.concurrency}")
+    print(f"LLM Judge Enabled: {enable_llm_judge}")
 
     llm_config = LLMConfig(provider=args.provider, model_name=args.model, temperature=0.0)
     vector_store = get_or_create_vector_store("./chroma_test_db")
     
     sem = asyncio.Semaphore(args.concurrency)
     
-    # Run all cases concurrently
     tasks = [
-        evaluate_case(case, llm_config, vector_store, sem)
+        evaluate_case(case, llm_config, vector_store, sem, enable_llm_judge)
         for case in cases
     ]
     
@@ -209,7 +245,7 @@ async def main():
     )
     report = ExperimentReport(metadata=metadata, cases=case_results)
     
-    thresholds = ReleaseThresholds(require_tone_scores=False, minimum_high_risk_completion_rate=0.0)
+    thresholds = ReleaseThresholds(require_llm_scores=enable_llm_judge, minimum_high_risk_completion_rate=0.0)
     markdown_report = report.to_markdown(thresholds)
     
     report_file = Path("evaluation/latest_report.md")

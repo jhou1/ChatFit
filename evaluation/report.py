@@ -26,6 +26,8 @@ class CaseResult(BaseModel):
     case_id: str
     passed: bool
     tags: list[str] = Field(default_factory=list)
+    llm_score: float | None = Field(default=None, ge=1, le=5)
+    clarity_score: float | None = Field(default=None, ge=1, le=5)
     tone_score: float | None = Field(default=None, ge=1, le=5)
     latency_ms: float | None = Field(default=None, ge=0)
     cost: float | None = Field(default=None, ge=0)
@@ -36,10 +38,10 @@ class CaseResult(BaseModel):
 class ReleaseThresholds(BaseModel):
     minimum_completion_rate: float = Field(default=0.95, ge=0, le=1)
     minimum_high_risk_completion_rate: float = Field(default=1.0, ge=0, le=1)
-    minimum_tone_coverage: float = Field(default=1.0, ge=0, le=1)
-    minimum_average_tone: float = Field(default=4.0, ge=1, le=5)
-    minimum_p10_tone: float = Field(default=3.0, ge=1, le=5)
-    require_tone_scores: bool = True
+    minimum_llm_coverage: float = Field(default=1.0, ge=0, le=1)
+    minimum_average_llm_score: float = Field(default=4.0, ge=1, le=5)
+    minimum_p10_llm_score: float = Field(default=3.0, ge=1, le=5)
+    require_llm_scores: bool = True
 
 
 class ReleaseGate(BaseModel):
@@ -55,9 +57,11 @@ class ExperimentReport(BaseModel):
         total = len(self.cases)
         passed = sum(case.passed for case in self.cases)
         high_risk = [case for case in self.cases if "high_risk" in case.tags]
-        tone_scores = [
-            case.tone_score for case in self.cases if case.tone_score is not None
-        ]
+        
+        llm_scores = [c.llm_score for c in self.cases if c.llm_score is not None]
+        clarity_scores = [c.clarity_score for c in self.cases if c.clarity_score is not None]
+        tone_scores = [c.tone_score for c in self.cases if c.tone_score is not None]
+
         latencies = sorted(
             case.latency_ms for case in self.cases if case.latency_ms is not None
         )
@@ -71,11 +75,17 @@ class ExperimentReport(BaseModel):
                 if high_risk
                 else 1.0
             ),
-            "average_tone": (
+            "average_llm_score": (
+                sum(llm_scores) / len(llm_scores) if llm_scores else None
+            ),
+            "average_clarity_score": (
+                sum(clarity_scores) / len(clarity_scores) if clarity_scores else None
+            ),
+            "average_tone_score": (
                 sum(tone_scores) / len(tone_scores) if tone_scores else None
             ),
-            "tone_coverage": len(tone_scores) / total if total else 0.0,
-            "p10_tone": _percentile(sorted(tone_scores), 0.10),
+            "llm_coverage": len(llm_scores) / total if total else 0.0,
+            "p10_llm_score": _percentile(sorted(llm_scores), 0.10),
             "p95_latency_ms": _percentile(latencies, 0.95),
             "total_cost": sum(
                 case.cost for case in self.cases if case.cost is not None
@@ -106,25 +116,25 @@ class ExperimentReport(BaseModel):
                 f"{metrics['high_risk_completion_rate']:.3f} < "
                 f"{configured.minimum_high_risk_completion_rate:.3f}"
             )
-        if configured.require_tone_scores:
-            if metrics["tone_coverage"] < configured.minimum_tone_coverage:
+        if configured.require_llm_scores:
+            if metrics["llm_coverage"] < configured.minimum_llm_coverage:
                 failures.append(
-                    "tone_coverage "
-                    f"{metrics['tone_coverage']:.3f} < "
-                    f"{configured.minimum_tone_coverage:.3f}"
+                    "llm_coverage "
+                    f"{metrics['llm_coverage']:.3f} < "
+                    f"{configured.minimum_llm_coverage:.3f}"
                 )
-            average_tone = metrics["average_tone"]
-            if average_tone is None:
-                failures.append("average_tone not_scored")
-            elif average_tone < configured.minimum_average_tone:
+            average_llm = metrics["average_llm_score"]
+            if average_llm is None:
+                failures.append("average_llm_score not_scored")
+            elif average_llm < configured.minimum_average_llm_score:
                 failures.append(
-                    f"average_tone {average_tone:.3f} < "
-                    f"{configured.minimum_average_tone:.3f}"
+                    f"average_llm_score {average_llm:.3f} < "
+                    f"{configured.minimum_average_llm_score:.3f}"
                 )
-            p10_tone = metrics["p10_tone"]
-            if p10_tone is not None and p10_tone < configured.minimum_p10_tone:
+            p10_llm = metrics["p10_llm_score"]
+            if p10_llm is not None and p10_llm < configured.minimum_p10_llm_score:
                 failures.append(
-                    f"p10_tone {p10_tone:.3f} < " f"{configured.minimum_p10_tone:.3f}"
+                    f"p10_llm_score {p10_llm:.3f} < " f"{configured.minimum_p10_llm_score:.3f}"
                 )
         return ReleaseGate(passed=not failures, failures=failures)
 
@@ -144,34 +154,58 @@ class ExperimentReport(BaseModel):
                 f"{metrics['high_risk_completion_rate']:.1%}"
             ),
             (
-                "- Average tone: "
+                "- Average Weighted LLM Score: "
                 + (
-                    f"{metrics['average_tone']:.2f}"
-                    if metrics["average_tone"] is not None
+                    f"{metrics['average_llm_score']:.2f} / 5.0"
+                    if metrics["average_llm_score"] is not None
                     else "not scored"
                 )
             ),
-            f"- Tone coverage: {metrics['tone_coverage']:.1%}",
             (
-                "- P10 tone: "
+                "  - Average Clarity Score: "
                 + (
-                    f"{metrics['p10_tone']:.2f}"
-                    if metrics["p10_tone"] is not None
+                    f"{metrics['average_clarity_score']:.2f}"
+                    if metrics["average_clarity_score"] is not None
+                    else "not scored"
+                )
+            ),
+            (
+                "  - Average Tone Score: "
+                + (
+                    f"{metrics['average_tone_score']:.2f}"
+                    if metrics["average_tone_score"] is not None
+                    else "not scored"
+                )
+            ),
+            f"- LLM Judge Coverage: {metrics['llm_coverage']:.1%}",
+            (
+                "- P10 LLM Score: "
+                + (
+                    f"{metrics['p10_llm_score']:.2f}"
+                    if metrics["p10_llm_score"] is not None
                     else "not scored"
                 )
             ),
             "",
-            "## Failed cases",
+            "## Failed cases (Deterministic Trajectory)",
             "",
         ]
         failed_cases = [case for case in self.cases if not case.passed]
         if failed_cases:
-            lines.extend(
-                f"- `{case.case_id}`: {', '.join(case.failure_codes) or 'failed'}"
-                for case in failed_cases
-            )
+            # Group by failure codes
+            code_map = {}
+            for case in failed_cases:
+                for code in case.failure_codes:
+                    if code not in code_map:
+                        code_map[code] = []
+                    if case.case_id not in code_map[code]:
+                        code_map[code].append(case.case_id)
+            
+            for code, case_ids in code_map.items():
+                lines.append(f"- **{code}**: {', '.join(case_ids)}")
         else:
             lines.append("- None")
+            
         if gate.failures:
             lines.extend(["", "## Gate failures", ""])
             lines.extend(f"- {failure}" for failure in gate.failures)

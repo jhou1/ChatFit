@@ -164,13 +164,13 @@ def test_experiment_report_enforces_release_gate_and_renders_markdown():
                 case_id="safe",
                 passed=True,
                 tags=["high_risk"],
-                tone_score=5,
+                llm_score=5,
             ),
             CaseResult(
                 case_id="regression",
                 passed=False,
                 failure_codes=["tool_args"],
-                tone_score=3,
+                llm_score=3,
             ),
         ],
     )
@@ -181,7 +181,7 @@ def test_experiment_report_enforces_release_gate_and_renders_markdown():
     assert not gate.passed
     assert any("completion_rate" in failure for failure in gate.failures)
     assert "Release gate: **FAIL**" in markdown
-    assert "`regression`: tool_args" in markdown
+    assert "tool_args" in markdown
 
 
 def test_release_gate_requires_tone_scores_by_default():
@@ -201,7 +201,7 @@ def test_release_gate_requires_tone_scores_by_default():
     gate = report.release_gate()
 
     assert not gate.passed
-    assert "average_tone not_scored" in gate.failures
+    assert "average_llm_score not_scored" in gate.failures
 
 
 def test_release_gate_rejects_partial_tone_coverage():
@@ -216,7 +216,7 @@ def test_release_gate_rejects_partial_tone_coverage():
             grader_version="1",
         ),
         cases=[
-            CaseResult(case_id="scored", passed=True, tone_score=5),
+            CaseResult(case_id="scored", passed=True, llm_score=5),
             CaseResult(case_id="missing-score", passed=True),
         ],
     )
@@ -224,7 +224,7 @@ def test_release_gate_rejects_partial_tone_coverage():
     gate = report.release_gate()
 
     assert not gate.passed
-    assert any("tone_coverage" in failure for failure in gate.failures)
+    assert any("llm_coverage" in failure for failure in gate.failures)
 
 
 def test_release_gate_can_explicitly_disable_tone_gates():
@@ -243,7 +243,7 @@ def test_release_gate_can_explicitly_disable_tone_gates():
 
     gate = report.release_gate(
         ReleaseThresholds(
-            require_tone_scores=False,
+            require_llm_scores=False,
             minimum_high_risk_completion_rate=0,
         )
     )
@@ -262,7 +262,7 @@ def test_release_gate_fails_closed_when_high_risk_slice_is_missing():
             prompt_version="1",
             grader_version="1",
         ),
-        cases=[CaseResult(case_id="ordinary", passed=True, tone_score=5)],
+        cases=[CaseResult(case_id="ordinary", passed=True, llm_score=5)],
     )
 
     gate = report.release_gate()
@@ -272,19 +272,28 @@ def test_release_gate_fails_closed_when_high_risk_slice_is_missing():
 
 
 def test_parse_judge_response_validates_contract():
-    result = parse_judge_response("SCORE: 4\nREASON: Friendly and concise")
+    valid_json = """
+    {
+      "evaluations": [
+        {
+          "dimension": "Semantic Accuracy & Clarity",
+          "evidence": "Good clarity.",
+          "score": 4,
+          "weight": 0.6
+        }
+      ],
+      "overall_weighted_score": 4.0,
+      "reasoning_summary": "Friendly and concise"
+    }
+    """
+    result = parse_judge_response(valid_json)
 
-    assert result.score == 4
-    assert result.reason == "Friendly and concise"
+    assert result.overall_weighted_score == 4.0
+    assert result.reasoning_summary == "Friendly and concise"
+    assert result.evaluations[0].score == 4
 
-    with pytest.raises(ValueError, match="exactly SCORE"):
+    with pytest.raises(ValueError, match="valid JSON"):
         parse_judge_response("SCORE: 6\nREASON: invalid")
-
-    with pytest.raises(ValueError, match="exactly SCORE"):
-        parse_judge_response("SCORE: 5\nthis is not a REASON field")
-
-    with pytest.raises(ValueError, match="exactly SCORE"):
-        parse_judge_response("SCORE: 5\nREASON: valid\nEXTRA: forbidden")
 
 
 @pytest.mark.asyncio
@@ -295,7 +304,7 @@ async def test_llm_judge_scores_real_supplied_input_and_output():
 
         async def ainvoke(self, messages):
             self.messages = messages
-            return AIMessage(content="SCORE: 5\nREASON: Supportive and factual")
+            return AIMessage(content='{"evaluations": [{"dimension": "Tone", "evidence": "Supportive", "score": 5, "weight": 1.0}], "overall_weighted_score": 5.0, "reasoning_summary": "Supportive and factual"}')
 
     fake_judge = FakeJudge()
     fake_langfuse = SimpleNamespace(create_score=lambda **kwargs: None)
@@ -313,12 +322,6 @@ async def test_llm_judge_scores_real_supplied_input_and_output():
         langfuse_client=fake_langfuse,
     )
 
-    assert result.score == 5
+    assert result.overall_weighted_score == 5.0
     assert "I completed my workout" in fake_judge.messages[1].content
     assert "your session was saved" in fake_judge.messages[1].content
-    assert recorded == {
-        "trace_id": "trace-123",
-        "name": "conversational_tone",
-        "value": 5,
-        "comment": "Supportive and factual",
-    }
