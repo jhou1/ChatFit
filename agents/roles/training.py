@@ -127,22 +127,20 @@ def make_training_agent_graph(llm_config: LLMConfig, db_path: str):
         prompt_template = PromptTemplate.from_template(
             INSTRUCTION_FOR_RECORDING_TRAINING_SESSIONS
         )
-        system_prompt = prompt_template.format(current_time=datetime.now().isoformat())
+        system_prompt = prompt_template.format(
+            current_time=datetime.now().date().isoformat()
+        )
         # adding summary as context
-        if state.get("summary"):
-            system_prompt += (
-                f"\n\n[Historical Conversation Summary:]\n{state['summary']}"
-            )
+        if summary := state.get("summary"):
+            system_prompt += f"\n\n[Historical Conversation Summary:]\n{summary}"
         messages = [SystemMessage(content=system_prompt)] + state["messages"]
         return await _execute_llm_query_safely(llm_with_tools, messages)
 
     async def retrieve_training_node(state: AgentState):
         system_prompt = INSTRUCTION_FOR_RETRIEVING_TRAINING_SESSIONS
         # adding summary as context
-        if state.get("summary"):
-            system_prompt += (
-                f"\n\n[Historical Conversation Summary:]\n{state['summary']}"
-            )
+        if summary := state.get("summary"):
+            system_prompt += f"\n\n[Historical Conversation Summary:]\n{summary}"
         messages = [SystemMessage(content=system_prompt)] + state["messages"]
         return await _execute_llm_query_safely(llm_with_tools, messages)
 

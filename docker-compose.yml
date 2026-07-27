@@ -11,10 +11,11 @@ services:
     - "~/Documents/LifeOS/\u4E0B\u53A8\u623F/:/root/Documents/LifeOS/\u4E0B\u53A8\u623F\
       /"
     - ./chroma.db:/app/chroma.db
-    - ./chatfit.db:/app/chatfit.db
-    - ./checkpointer.db:/app/checkpointer.db
+    - ./runtime-data:/app/data
     env_file:
     - .env
+    environment:
+    - CHECKPOINTER_DB_PATH=/app/data/checkpointer.db
     extra_hosts:
     - host.docker.internal:host-gateway
 

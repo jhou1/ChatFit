@@ -1,5 +1,4 @@
 import os
-import yaml
 import pytest
 import logging
 import sqlite3
@@ -13,6 +12,8 @@ from agents.sqlite_handler import init_db, add_training_session
 from agents.models import TrainingInputRecorder, TrainingSession, TrainingSet
 from datetime import datetime, timedelta
 from agents.utils import extract_text
+from evaluation.graders import Trajectory, grade_turn
+from evaluation.models import EvaluationTurn, load_evaluation_cases
 
 # Suppress asyncio's "Task was destroyed but it is pending" stderr prints
 # caused by underlying unawaited google-genai client teardown.
@@ -21,8 +22,9 @@ logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 
 def load_eval_cases():
     yaml_path = os.path.join(os.path.dirname(__file__), "eval_cases.yaml")
-    with open(yaml_path, "r") as f:
-        return yaml.safe_load(f)
+    return [
+        case.model_dump(exclude_none=True) for case in load_evaluation_cases(yaml_path)
+    ]
 
 
 def apply_seed_fixture(db_path: str, fixture_name: str):
@@ -41,6 +43,50 @@ def apply_seed_fixture(db_path: str, fixture_name: str):
                 confirm_new_practices=True,
             )
             add_training_session(test_input, db_path)
+    if fixture_name == "basic_practices":
+        test_input = TrainingInputRecorder(
+            date=datetime.now().date(),
+            sessions=[
+                TrainingSession(
+                    practice_name="run",
+                    practice_type="distance",
+                    note="Testing",
+                    sets=[TrainingSet(set_number=1, distance=1, duration=1)],
+                ),
+                TrainingSession(
+                    practice_name="running",
+                    practice_type="distance",
+                    note="Testing",
+                    sets=[TrainingSet(set_number=1, distance=1, duration=1)],
+                ),
+                TrainingSession(
+                    practice_name="snatch",
+                    practice_type="weighted",
+                    note="Testing",
+                    sets=[TrainingSet(set_number=1, weight=16, reps=10)],
+                ),
+                TrainingSession(
+                    practice_name="kettlebell snatch",
+                    practice_type="weighted",
+                    note="Testing",
+                    sets=[TrainingSet(set_number=1, weight=16, reps=10)],
+                ),
+                TrainingSession(
+                    practice_name="snatched",
+                    practice_type="weighted",
+                    note="Testing",
+                    sets=[TrainingSet(set_number=1, weight=16, reps=10)],
+                ),
+                TrainingSession(
+                    practice_name="burger",
+                    practice_type="distance",
+                    note="Testing",
+                    sets=[TrainingSet(set_number=1, distance=1)],
+                ),
+            ],
+            confirm_new_practices=True,
+        )
+        add_training_session(test_input, db_path)
 
 
 @pytest.fixture
@@ -76,10 +122,6 @@ async def test_agent_trajectory(case, mock_agent_env):
 
     for turn_idx, turn in enumerate(turns):
         user_input = turn["user"]
-        expected_tools = turn.get("expected_tools", None)
-        expected_tools_count = turn.get("expected_tools_count", None)
-        expected_routes = turn.get("expected_routes", None)
-        expected_response_contains = turn.get("expected_response_contains", [])
         expected_db_state = turn.get("expected_db_state", [])
 
         tool_calls_made = []
@@ -99,12 +141,6 @@ async def test_agent_trajectory(case, mock_agent_env):
                     ):
                         routed_assistants.extend(node_output["assistant_names"])
                 if node_name == "__interrupt__":
-                    for interrupt in node_output:
-                        if hasattr(interrupt, "value") and isinstance(
-                            interrupt.value, dict
-                        ):
-                            for tc in interrupt.value.get("tool_calls", []):
-                                tool_calls_made.append(tc)
                     continue
 
                 if isinstance(node_output, dict):
@@ -143,12 +179,6 @@ async def test_agent_trajectory(case, mock_agent_env):
                         ):
                             routed_assistants.extend(node_output["assistant_names"])
                     if node_name == "__interrupt__":
-                        for interrupt in node_output:
-                            if hasattr(interrupt, "value") and isinstance(
-                                interrupt.value, dict
-                            ):
-                                for tc in interrupt.value.get("tool_calls", []):
-                                    tool_calls_made.append(tc)
                         continue
                     if isinstance(node_output, dict):
                         messages = node_output.get("messages", [])
@@ -157,44 +187,28 @@ async def test_agent_trajectory(case, mock_agent_env):
                     for msg in messages:
                         if hasattr(msg, "tool_calls"):
                             for tc in msg.tool_calls:
+                                print(
+                                    f"Appending tool call: {tc['name']} from node {node_name}"
+                                )
                                 tool_calls_made.append(tc)
                         if msg.type == "ai" and extract_text(msg).strip():
                             turn_response_text += extract_text(msg) + "\n"
             state = await mock_agent_graph.aget_state(config)
             iterations += 1
 
-        # Evaluate expected tools for this turn
-        actual_tool_names = [tc["name"] for tc in tool_calls_made]
-
-        if expected_tools_count is not None:
-            assert (
-                len(tool_calls_made) == expected_tools_count
-            ), f"Turn {turn_idx}: Expected {expected_tools_count} tools, got {len(tool_calls_made)} ({actual_tool_names})"
-
-        if expected_tools is not None:
-            if len(expected_tools) == 0:
-                assert (
-                    len(tool_calls_made) == 0
-                ), f"Turn {turn_idx}: Expected no tools, got {actual_tool_names}"
-            else:
-                for expected in expected_tools:
-                    assert (
-                        expected["name"] in actual_tool_names
-                    ), f"Turn {turn_idx}: Expected tool {expected['name']} not called."
-                    # Find the specific tool call
-                    for tc in tool_calls_made:
-                        if tc["name"] == expected["name"]:
-                            for arg_val in expected.get("args_contain", []):
-                                assert (
-                                    arg_val.lower() in str(tc["args"]).lower()
-                                ), f"Turn {turn_idx}: Expected '{arg_val}' in arguments."
-
-        if expected_routes is not None:
-            # We use set intersection/issubset because the router might route to multiple but we only check for expected ones
-            for route in expected_routes:
-                assert (
-                    route in routed_assistants
-                ), f"Turn {turn_idx}: Expected route {route} not found in {routed_assistants}"
+        grade = grade_turn(
+            EvaluationTurn.model_validate(turn),
+            Trajectory(
+                tool_calls=tool_calls_made,
+                routes=routed_assistants,
+                response=turn_response_text,
+            ),
+        )
+        assert (
+            grade.passed
+        ), f"Turn {turn_idx} deterministic grading failed: " + "; ".join(
+            f"{failure.code}: {failure.message}" for failure in grade.failures
+        )
 
         if expected_db_state:
             with sqlite3.connect(db_path) as conn:
@@ -210,8 +224,3 @@ async def test_agent_trajectory(case, mock_agent_env):
                     assert (
                         result == expected_val
                     ), f"Turn {turn_idx}: DB query {state_check['query']} returned {result}, expected {expected_val}"
-
-        for text_part in expected_response_contains:
-            assert (
-                text_part.lower() in turn_response_text.lower()
-            ), f"Turn {turn_idx}: Expected '{text_part}' in response:\n{turn_response_text}"

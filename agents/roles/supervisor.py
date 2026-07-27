@@ -17,6 +17,7 @@ from agents.roles.insights import make_insights_agent_graph
 
 from tools.safe_execution import _execute_llm_query_safely
 from agents.utils import extract_text
+from agents.observability import content_attributes, emit_event, observe_span
 
 INSTRUCTION_FOR_ROUTING_SUBAGENTS = """
 You skilled at assigning user input to the correct subagents.
@@ -105,26 +106,32 @@ def make_agent_graph(
     insights_recorder_node = make_insights_agent_graph(llm_config, db_path)
 
     async def training_wrapper(state: AgentState):
-        result = await training_recorder_node.ainvoke(state)
-        return {"messages": result["messages"]}
+        with observe_span("agent.training"):
+            result = await training_recorder_node.ainvoke(state)
+            return {"messages": result["messages"]}
 
     async def meal_wrapper(state: AgentState):
-        result = await meal_recorder_node.ainvoke(state)
-        return {"messages": result["messages"]}
+        with observe_span("agent.meal"):
+            result = await meal_recorder_node.ainvoke(state)
+            return {"messages": result["messages"]}
 
     async def insights_wrapper(state: AgentState):
-        result = await insights_recorder_node.ainvoke(state)
-        return {"messages": result["messages"]}
+        with observe_span("agent.insights"):
+            result = await insights_recorder_node.ainvoke(state)
+            return {"messages": result["messages"]}
 
     async def chatter_node(state: AgentState):
-        llm = create_chat_model(llm_config)
-        system_msg = "You are ChatFit, a friendly fitness and nutrition assistant. Answer general questions, say hello, and be helpful."
-        # adding previous conversation summary as context
-        if state.get("summary"):
-            system_msg += f"\n\n[Historical Conversation Summary]:\n{state['summary']}"
-        messages = [SystemMessage(content=system_msg)] + state["messages"]
-        response = await _execute_llm_query_safely(llm, messages)
-        return {"messages": [response["messages"]]}
+        with observe_span("agent.chatter"):
+            llm = create_chat_model(llm_config)
+            system_msg = "You are ChatFit, a friendly fitness and nutrition assistant. Answer general questions, say hello, and be helpful."
+            # adding previous conversation summary as context
+            if state.get("summary"):
+                system_msg += (
+                    f"\n\n[Historical Conversation Summary]:\n{state['summary']}"
+                )
+            messages = [SystemMessage(content=system_msg)] + state["messages"]
+            response = await _execute_llm_query_safely(llm, messages)
+            return {"messages": [response["messages"]]}
 
     async def context_governance_node(state: AgentState):
         """cut off the messages when its length exceeds max length
@@ -133,49 +140,77 @@ def make_agent_graph(
         then shift the cut off index dynamically to prevent cutting off tool messages
         """
         messages = state["messages"]
-        MAX_MESSAGES_LENGTH = 20
-        if len(messages) < MAX_MESSAGES_LENGTH:
-            return
+        with observe_span(
+            "context_governance",
+            {
+                "context.messages.before": len(messages),
+                "context.summary.present": bool(state.get("summary")),
+            },
+        ):
+            MAX_MESSAGES_LENGTH = 20
+            if len(messages) < MAX_MESSAGES_LENGTH:
+                emit_event("context.governance_skipped", {"reason": "below_limit"})
+                return
 
-        message_cutoff_index = 10
-        while message_cutoff_index < len(messages):
-            msg = messages[message_cutoff_index]
-            if isinstance(msg, ToolMessage):
-                message_cutoff_index += 1
-            elif isinstance(msg, AIMessage) and getattr(msg, "tool_calls", []):
-                message_cutoff_index += 1
-            else:
-                break
-        messages_to_compress = messages[:message_cutoff_index]
+            message_cutoff_index = 10
+            while message_cutoff_index < len(messages):
+                msg = messages[message_cutoff_index]
+                if isinstance(msg, ToolMessage):
+                    message_cutoff_index += 1
+                elif isinstance(msg, AIMessage) and getattr(msg, "tool_calls", []):
+                    message_cutoff_index += 1
+                else:
+                    break
+            messages_to_compress = messages[:message_cutoff_index]
 
-        summary_text = ""
-        for message in messages_to_compress:
-            text = extract_text(message)
-            if text.strip():
-                summary_text += f"{type(message).__name__}: {text}\n"
+            summary_text = ""
+            for message in messages_to_compress:
+                text = extract_text(message)
+                if text.strip():
+                    summary_text += f"{type(message).__name__}: {text}\n"
 
-        existing_summary = state["summary"] if state.get("summary") else ""
-        prompt_template = PromptTemplate.from_template(CONTEXT_GOVERNANCE_PROMPT)
-        prompt = prompt_template.format(
-            existing_summary=existing_summary, summary_text=summary_text
-        )
+            existing_summary = state["summary"] if state.get("summary") else ""
+            prompt_template = PromptTemplate.from_template(CONTEXT_GOVERNANCE_PROMPT)
+            prompt = prompt_template.format(
+                existing_summary=existing_summary, summary_text=summary_text
+            )
 
-        llm = create_chat_model(llm_config)
-        response = await _execute_llm_query_safely(llm, [HumanMessage(content=prompt)])
+            llm = create_chat_model(llm_config)
+            response = await _execute_llm_query_safely(
+                llm, [HumanMessage(content=prompt)]
+            )
 
-        new_summary = extract_text(response["messages"])
+            new_summary = extract_text(response["messages"])
+            emit_event(
+                "context.governance_completed",
+                {
+                    "context.messages.removed": len(messages_to_compress),
+                    **content_attributes(new_summary, "context.summary"),
+                },
+            )
 
-        delete_cmd = [
-            RemoveMessage(id=message.id)
-            for message in messages_to_compress
-            if message.id
-        ]
-        return {"summary": new_summary, "messages": delete_cmd}
+            delete_cmd = [
+                RemoveMessage(id=message.id)
+                for message in messages_to_compress
+                if message.id
+            ]
+            return {"summary": new_summary, "messages": delete_cmd}
 
     # routing node
     async def assistant_selector_node(state: AgentState):
-        decision = await route_assistant_on_relevance(llm_config, state["messages"])
-        return {"assistant_names": decision}
+        with observe_span(
+            "assistant_selector",
+            {"context.messages": len(state["messages"])},
+        ):
+            decision = await route_assistant_on_relevance(llm_config, state["messages"])
+            emit_event(
+                "agent.route.decided",
+                {
+                    "route.selected_agents": decision,
+                    "route.fallback_used": decision == ["chatter"],
+                },
+            )
+            return {"assistant_names": decision}
 
     # routing callable
     def route_decision(state: AgentState):
