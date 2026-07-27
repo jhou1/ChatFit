@@ -27,8 +27,6 @@ class CaseResult(BaseModel):
     passed: bool
     tags: list[str] = Field(default_factory=list)
     llm_score: float | None = Field(default=None, ge=1, le=5)
-    clarity_score: float | None = Field(default=None, ge=1, le=5)
-    tone_score: float | None = Field(default=None, ge=1, le=5)
     latency_ms: float | None = Field(default=None, ge=0)
     cost: float | None = Field(default=None, ge=0)
     failure_codes: list[str] = Field(default_factory=list)
@@ -86,9 +84,10 @@ class ExperimentReport(BaseModel):
         err = sum(c.passed for c in recovery_cases) / len(recovery_cases) if recovery_cases else 1.0
         
         llm_scores = [c.llm_score for c in self.cases if c.llm_score is not None]
-        clarity_scores = [c.clarity_score for c in self.cases if c.clarity_score is not None]
-        tone_scores = [c.tone_score for c in self.cases if c.tone_score is not None]
 
+        latencies = sorted(
+            case.latency_ms for case in self.cases if case.latency_ms is not None
+        )
         return {
             "total_cases": total,
             "passed_cases": passed,
@@ -105,14 +104,12 @@ class ExperimentReport(BaseModel):
             "average_llm_score": (
                 sum(llm_scores) / len(llm_scores) if llm_scores else None
             ),
-            "average_clarity_score": (
-                sum(clarity_scores) / len(clarity_scores) if clarity_scores else None
-            ),
-            "average_tone_score": (
-                sum(tone_scores) / len(tone_scores) if tone_scores else None
-            ),
             "llm_coverage": len(llm_scores) / total if total else 0.0,
             "p10_llm_score": _percentile(sorted(llm_scores), 0.10),
+            "p95_latency_ms": _percentile(latencies, 0.95),
+            "total_cost": sum(
+                case.cost for case in self.cases if case.cost is not None
+            ),
         }
 
     def release_gate(self, thresholds: ReleaseThresholds | None = None) -> ReleaseGate:
@@ -210,16 +207,6 @@ class ExperimentReport(BaseModel):
                 f"- **总体 Rubric 综合得分**: **{metrics['average_llm_score']:.2f} / 5.0**"
                 if metrics["average_llm_score"] is not None
                 else "- Average Weighted LLM Score: not scored"
-            ),
-            (
-                f"  - **语义准确与清晰度 (Clarity)**: {metrics['average_clarity_score']:.2f} / 5.0"
-                if metrics["average_clarity_score"] is not None
-                else "  - Average Clarity Score: not scored"
-            ),
-            (
-                f"  - **对话口吻 (Tone)**: {metrics['average_tone_score']:.2f} / 5.0"
-                if metrics["average_tone_score"] is not None
-                else "  - Average Tone Score: not scored"
             ),
             f"- **LLM 裁判覆盖率**: {metrics['llm_coverage']:.1%}",
             "",

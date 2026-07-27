@@ -72,10 +72,7 @@ def test_deterministic_grader_rejects_unexpected_routes():
                     "eval_type": "routing",
                     "expected_agent": "training_agent"
                 }
-            ],
-            "expected_response_eval": {
-                "must_contain_semantics": "saved"
-            }
+            ]
         }
     )
     trajectory = Trajectory(
@@ -283,14 +280,12 @@ def test_parse_judge_response_validates_contract():
           "weight": 0.6
         }
       ],
-      "overall_weighted_score": 4.0,
-      "reasoning_summary": "Friendly and concise"
+      "overall_weighted_score": 4.0
     }
     """
     result = parse_judge_response(valid_json)
 
     assert result.overall_weighted_score == 4.0
-    assert result.reasoning_summary == "Friendly and concise"
     assert result.evaluations[0].score == 4
 
     with pytest.raises(ValueError, match="valid JSON"):
@@ -305,7 +300,7 @@ async def test_llm_judge_scores_real_supplied_input_and_output():
 
         async def ainvoke(self, messages):
             self.messages = messages
-            return AIMessage(content='{"evaluations": [{"dimension": "Tone", "evidence": "Supportive", "score": 5, "weight": 1.0}], "overall_weighted_score": 5.0, "reasoning_summary": "Supportive and factual"}')
+            return AIMessage(content='{"evaluations": [{"dimension": "Tone", "evidence": "Supportive", "score": 5, "weight": 1.0}], "overall_weighted_score": 5.0}')
 
     fake_judge = FakeJudge()
     fake_langfuse = SimpleNamespace(create_score=lambda **kwargs: None)
@@ -319,6 +314,7 @@ async def test_llm_judge_scores_real_supplied_input_and_output():
         "trace-123",
         "I completed my workout",
         "Great work—your session was saved.",
+        [{"dimension_name": "Tone", "criteria_description": "d", "evidence_requirement": "e", "weight": 1.0}],
         judge_llm=fake_judge,
         langfuse_client=fake_langfuse,
     )
