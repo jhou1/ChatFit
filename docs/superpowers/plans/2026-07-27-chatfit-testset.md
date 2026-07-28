@@ -1,0 +1,176 @@
+# ChatFit Golden Test Set Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Create a 30-item JSONL golden test set for evaluating ChatFit's multi-agent capabilities based on the approved design spec.
+
+**Architecture:** We will create a single `evaluation/chatfit_golden_test_set.jsonl` file. We will incrementally build the dataset by category, ensuring every case has rigorous `expected_trajectory_eval` assertions.
+
+**Tech Stack:** JSONL format
+
+---
+
+### Task 1: Initialize Test Set and Ambiguity Cases (4 Cases)
+
+**Files:**
+- Create: `evaluation/chatfit_golden_test_set.jsonl`
+
+- [ ] **Step 1: Write Ambiguity & Clarification Cases**
+Write the following JSON strings (each on a single line, presented here formatted for readability but MUST be appended as single lines) to the file.
+
+```bash
+mkdir -p evaluation
+cat << 'EOF' > evaluation/chatfit_golden_test_set.jsonl
+{"case_id":"test_A_01","category":"ambiguity_clarification","description":"Missing baseline stats","turns":[{"turn_id":1,"user_input":"我想开始健身，帮我排个计划","expected_trajectory_eval":[{"eval_type":"clarification_trigger","expected_behavior":"Ask for height, weight, and specific goals"}],"expected_response_eval":{"must_contain_semantics":"询问用户的身高、体重、健身目标"}}]}
+{"case_id":"test_A_02","category":"ambiguity_clarification","description":"Vague dietary preference","turns":[{"turn_id":1,"user_input":"给我推荐一点吃的","expected_trajectory_eval":[{"eval_type":"clarification_trigger","expected_behavior":"Ask for dietary restrictions and goals"}],"expected_response_eval":{"must_contain_semantics":"询问是否有过敏史、偏好以及当前目标"}}]}
+{"case_id":"test_A_03","category":"ambiguity_clarification","description":"Unclear training frequency","turns":[{"turn_id":1,"user_input":"我每周能练几次？","expected_trajectory_eval":[{"eval_type":"clarification_trigger","expected_behavior":"Ask for user's schedule and recovery capacity"}],"expected_response_eval":{"must_contain_semantics":"询问时间安排和恢复能力"}}]}
+{"case_id":"test_A_04","category":"ambiguity_clarification","description":"Ambiguous data request","turns":[{"turn_id":1,"user_input":"我最近练得怎么样？","expected_trajectory_eval":[{"eval_type":"routing","expected_agent":"AnalystAgent"},{"eval_type":"clarification_trigger","expected_behavior":"Ask for specific time range"}],"expected_response_eval":{"must_contain_semantics":"询问具体想看哪段时间或什么指标的数据"}}]}
+EOF
+```
+
+- [ ] **Step 2: Verify JSONL format**
+```bash
+python -c "import json; [json.loads(line) for line in open('evaluation/chatfit_golden_test_set.jsonl')]"
+```
+
+- [ ] **Step 3: Commit**
+```bash
+git add evaluation/chatfit_golden_test_set.jsonl
+git commit -m "test: add 4 ambiguity clarification test cases"
+```
+
+### Task 2: Add Memory & State Override Cases (5 Cases)
+
+**Files:**
+- Modify: `evaluation/chatfit_golden_test_set.jsonl`
+
+- [ ] **Step 1: Write Memory Override Cases**
+```bash
+cat << 'EOF' >> evaluation/chatfit_golden_test_set.jsonl
+{"case_id":"test_B_01","category":"memory_and_override","description":"Update target weight","turns":[{"turn_id":1,"user_input":"我之前的目标是70kg，我现在想改成65kg。","expected_trajectory_eval":[{"eval_type":"routing","expected_agent":"TrainingAgent"},{"eval_type":"tool_call","expected_tool":"update_user_profile","expected_params_include":{"target_weight":65}},{"eval_type":"tool_avoidance","avoid_tool":"create_user_profile"}],"expected_response_eval":{"must_contain_semantics":"确认目标已更新为65kg"}}]}
+{"case_id":"test_B_02","category":"memory_and_override","description":"Fix typo in height","turns":[{"turn_id":1,"user_input":"刚才我说错了，我身高是175cm不是185cm。","expected_trajectory_eval":[{"eval_type":"tool_call","expected_tool":"update_user_profile","expected_params_include":{"height":175}}],"expected_response_eval":{"must_contain_semantics":"确认身高已更正为175cm"}}]}
+{"case_id":"test_B_03","category":"memory_and_override","description":"Override dietary restriction","turns":[{"turn_id":1,"user_input":"我原来不吃海鲜，但现在我开始吃鱼了。","expected_trajectory_eval":[{"eval_type":"routing","expected_agent":"DietAgent"},{"eval_type":"tool_call","expected_tool":"update_dietary_preferences","expected_params_include":{"allowed_foods":["fish"]}}],"expected_response_eval":{"must_contain_semantics":"确认饮食偏好已更新，允许吃鱼"}}]}
+{"case_id":"test_B_04","category":"memory_and_override","description":"Change workout days","turns":[{"turn_id":1,"user_input":"我以后周三不练了，改成周四练。","expected_trajectory_eval":[{"eval_type":"routing","expected_agent":"TrainingAgent"},{"eval_type":"tool_call","expected_tool":"update_schedule","expected_params_include":{"remove_day":"Wednesday","add_day":"Thursday"}}],"expected_response_eval":{"must_contain_semantics":"确认训练日程已从周三调整到周四"}}]}
+{"case_id":"test_B_05","category":"memory_and_override","description":"Cancel current plan","turns":[{"turn_id":1,"user_input":"我觉得现在的计划太累了，全部取消，我要休息一周。","expected_trajectory_eval":[{"eval_type":"tool_call","expected_tool":"suspend_plan","expected_params_include":{"duration":"1_week"}}],"expected_response_eval":{"must_contain_semantics":"确认计划已暂停，建议好好休息"}}]}
+EOF
+```
+
+- [ ] **Step 2: Verify JSONL format**
+```bash
+python -c "import json; [json.loads(line) for line in open('evaluation/chatfit_golden_test_set.jsonl')]"
+```
+
+- [ ] **Step 3: Commit**
+```bash
+git add evaluation/chatfit_golden_test_set.jsonl
+git commit -m "test: add 5 memory and state override cases"
+```
+
+### Task 3: Add Multi-Agent Collaboration Cases (7 Cases)
+
+**Files:**
+- Modify: `evaluation/chatfit_golden_test_set.jsonl`
+
+- [ ] **Step 1: Write Multi-Agent Cases**
+```bash
+cat << 'EOF' >> evaluation/chatfit_golden_test_set.jsonl
+{"case_id":"test_C_01","category":"multi_agent_collaboration","description":"Diet to Training handoff","turns":[{"turn_id":1,"user_input":"我刚吃了一个全家桶。","expected_trajectory_eval":[{"eval_type":"routing","expected_agent":"DietAgent"},{"eval_type":"tool_call","expected_tool":"record_food"}],"expected_response_eval":{"must_contain_semantics":"记录热量"}},{"turn_id":2,"user_input":"那我该怎么练才能消耗掉？","expected_trajectory_eval":[{"eval_type":"routing","expected_agent":"TrainingAgent"},{"eval_type":"tool_call","expected_tool":"generate_workout"}],"expected_response_eval":{"must_contain_semantics":"针对高热量摄入的高强度训练建议"}}]}
+{"case_id":"test_C_02","category":"multi_agent_collaboration","description":"Training to Analyst handoff","turns":[{"turn_id":1,"user_input":"我今天练了5组深蹲，每组100kg。","expected_trajectory_eval":[{"eval_type":"routing","expected_agent":"TrainingAgent"},{"eval_type":"tool_call","expected_tool":"record_workout"}],"expected_response_eval":{"must_contain_semantics":"记录训练成功"}},{"turn_id":2,"user_input":"这比我上个月的平均水平进步了多少？","expected_trajectory_eval":[{"eval_type":"routing","expected_agent":"AnalystAgent"},{"eval_type":"tool_call","expected_tool":"compare_metrics"}],"expected_response_eval":{"must_contain_semantics":"对比上个月的数据并给出进步百分比"}}]}
+{"case_id":"test_C_03","category":"multi_agent_collaboration","description":"Analyst to Diet handoff","turns":[{"turn_id":1,"user_input":"看看我这周体重掉没掉。","expected_trajectory_eval":[{"eval_type":"routing","expected_agent":"AnalystAgent"}],"expected_response_eval":{"must_contain_semantics":"分析体重趋势"}},{"turn_id":2,"user_input":"如果没掉，你帮我调整一下下周的食谱。","expected_trajectory_eval":[{"eval_type":"routing","expected_agent":"DietAgent"}],"expected_response_eval":{"must_contain_semantics":"更新或生成新的减脂食谱"}}]}
+{"case_id":"test_C_04","category":"multi_agent_collaboration","description":"Simultaneous Diet and Training intent","turns":[{"turn_id":1,"user_input":"我要一份下周的增肌训练计划，顺便配上高蛋白食谱。","expected_trajectory_eval":[{"eval_type":"routing","expected_agent":"TrainingAgent"},{"eval_type":"routing","expected_agent":"DietAgent"}],"expected_response_eval":{"must_contain_semantics":"同时包含训练计划和饮食建议"}}]}
+{"case_id":"test_C_05","category":"multi_agent_collaboration","description":"Analyst context used by Training","turns":[{"turn_id":1,"user_input":"帮我总结一下过去三个月我最薄弱的肌群。","expected_trajectory_eval":[{"eval_type":"routing","expected_agent":"AnalystAgent"}],"expected_response_eval":{"must_contain_semantics":"分析出薄弱肌群"}},{"turn_id":2,"user_input":"那针对这个肌群设计个强化方案。","expected_trajectory_eval":[{"eval_type":"routing","expected_agent":"TrainingAgent"}],"expected_response_eval":{"must_contain_semantics":"针对刚刚指出的薄弱肌群的训练计划"}}]}
+{"case_id":"test_C_06","category":"multi_agent_collaboration","description":"Diet to Analyst handoff","turns":[{"turn_id":1,"user_input":"我最近每天都吃鸡胸肉。","expected_trajectory_eval":[{"eval_type":"routing","expected_agent":"DietAgent"}],"expected_response_eval":{"must_contain_semantics":"记录饮食习惯"}},{"turn_id":2,"user_input":"这样吃下去，我的蛋白质摄入量达标了吗？","expected_trajectory_eval":[{"eval_type":"routing","expected_agent":"AnalystAgent"}],"expected_response_eval":{"must_contain_semantics":"分析蛋白质摄入与目标的差距"}}]}
+{"case_id":"test_C_07","category":"multi_agent_collaboration","description":"Training failure to Diet compensation","turns":[{"turn_id":1,"user_input":"我今天太累了，没力气去健身房了。","expected_trajectory_eval":[{"eval_type":"routing","expected_agent":"TrainingAgent"}],"expected_response_eval":{"must_contain_semantics":"安抚并建议休息"}},{"turn_id":2,"user_input":"既然没练，晚餐是不是得少吃点？","expected_trajectory_eval":[{"eval_type":"routing","expected_agent":"DietAgent"}],"expected_response_eval":{"must_contain_semantics":"根据未训练调整晚餐热量建议"}}]}
+EOF
+```
+
+- [ ] **Step 2: Verify JSONL format**
+```bash
+python -c "import json; [json.loads(line) for line in open('evaluation/chatfit_golden_test_set.jsonl')]"
+```
+
+- [ ] **Step 3: Commit**
+```bash
+git add evaluation/chatfit_golden_test_set.jsonl
+git commit -m "test: add 7 multi-agent collaboration cases"
+```
+
+### Task 4: Add Tool Calling & Edge Cases (5 Cases)
+
+**Files:**
+- Modify: `evaluation/chatfit_golden_test_set.jsonl`
+
+- [ ] **Step 1: Write Edge Cases**
+```bash
+cat << 'EOF' >> evaluation/chatfit_golden_test_set.jsonl
+{"case_id":"test_D_01","category":"tool_edge_case","description":"Wrong parameter format (text instead of number)","turns":[{"turn_id":1,"user_input":"我体重一百八十斤","expected_trajectory_eval":[{"eval_type":"tool_call","expected_tool":"update_user_profile","expected_params_include":{"weight":90}}],"expected_response_eval":{"must_contain_semantics":"成功转换单位为90kg并记录"}}]}
+{"case_id":"test_D_02","category":"tool_edge_case","description":"Sequential tool calling","turns":[{"turn_id":1,"user_input":"查一下我昨天消耗了多少，然后今天给我安排个能多消耗两百大卡的运动。","expected_trajectory_eval":[{"eval_type":"tool_call","expected_tool":"get_daily_summary"},{"eval_type":"tool_call","expected_tool":"generate_workout"}],"expected_response_eval":{"must_contain_semantics":"输出昨天的消耗并提供今天加码的运动"}}]}
+{"case_id":"test_D_03","category":"tool_edge_case","description":"Missing mandatory fields handled by tool rejection","turns":[{"turn_id":1,"user_input":"记一下我刚才跑了步。","expected_trajectory_eval":[{"eval_type":"clarification_trigger","expected_behavior":"Tool rejects due to missing distance/time, agent asks user"}],"expected_response_eval":{"must_contain_semantics":"询问跑步的距离或时长"}}]}
+{"case_id":"test_D_04","category":"tool_edge_case","description":"Out of bounds parameters","turns":[{"turn_id":1,"user_input":"我今天跑了1000公里","expected_trajectory_eval":[{"eval_type":"tool_avoidance","avoid_tool":"record_workout"},{"eval_type":"clarification_trigger","expected_behavior":"Question the unrealistic input"}],"expected_response_eval":{"must_contain_semantics":"质疑数据不合理，要求确认"}}]}
+{"case_id":"test_D_05","category":"tool_edge_case","description":"Multiple entities in one call","turns":[{"turn_id":1,"user_input":"我早饭吃了2个鸡蛋，1片吐司，一杯牛奶。","expected_trajectory_eval":[{"eval_type":"tool_call","expected_tool":"record_food","expected_params_include":{"items":["鸡蛋","吐司","牛奶"]}}],"expected_response_eval":{"must_contain_semantics":"成功记录三种食物并计算总热量"}}]}
+EOF
+```
+
+- [ ] **Step 2: Verify JSONL format**
+```bash
+python -c "import json; [json.loads(line) for line in open('evaluation/chatfit_golden_test_set.jsonl')]"
+```
+
+- [ ] **Step 3: Commit**
+```bash
+git add evaluation/chatfit_golden_test_set.jsonl
+git commit -m "test: add 5 tool calling edge cases"
+```
+
+### Task 5: Add Cross-turn Coreference Cases (5 Cases)
+
+**Files:**
+- Modify: `evaluation/chatfit_golden_test_set.jsonl`
+
+- [ ] **Step 1: Write Coreference Cases**
+```bash
+cat << 'EOF' >> evaluation/chatfit_golden_test_set.jsonl
+{"case_id":"test_E_01","category":"cross_turn_coreference","description":"Referencing 3 turns ago","turns":[{"turn_id":1,"user_input":"我下周要去海边，想突击练一下腹肌。","expected_trajectory_eval":[],"expected_response_eval":{"must_contain_semantics":"好的"}},{"turn_id":2,"user_input":"我每天最多只能抽出20分钟。","expected_trajectory_eval":[],"expected_response_eval":{"must_contain_semantics":"好的"}},{"turn_id":3,"user_input":"我不喜欢做仰卧起坐。","expected_trajectory_eval":[],"expected_response_eval":{"must_contain_semantics":"好的"}},{"turn_id":4,"user_input":"那你根据我上面说的，排个计划吧。","expected_trajectory_eval":[{"eval_type":"tool_call","expected_tool":"generate_workout","expected_params_include":{"focus":"abs","duration":20,"exclude":["sit-ups"]}}],"expected_response_eval":{"must_contain_semantics":"20分钟的无仰卧起坐腹肌训练"}}]}
+{"case_id":"test_E_02","category":"cross_turn_coreference","description":"Modifying previous proposal","turns":[{"turn_id":1,"user_input":"给我一周的晚餐食谱。","expected_trajectory_eval":[{"eval_type":"routing","expected_agent":"DietAgent"}],"expected_response_eval":{"must_contain_semantics":"提供食谱"}},{"turn_id":2,"user_input":"把里面的牛肉全换成鸡肉。","expected_trajectory_eval":[{"eval_type":"tool_call","expected_tool":"update_meal_plan"}],"expected_response_eval":{"must_contain_semantics":"更新食谱，将牛肉替换为鸡肉"}}]}
+{"case_id":"test_E_03","category":"cross_turn_coreference","description":"Implicit temporal reference","turns":[{"turn_id":1,"user_input":"我昨天下雨没去跑步。","expected_trajectory_eval":[],"expected_response_eval":{"must_contain_semantics":"好的"}},{"turn_id":2,"user_input":"今天天晴了，我把那天的量补回来。","expected_trajectory_eval":[{"eval_type":"tool_call","expected_tool":"generate_workout","expected_params_include":{"type":"running","intensity":"double"}}],"expected_response_eval":{"must_contain_semantics":"安排补偿性的跑步训练"}}]}
+{"case_id":"test_E_04","category":"cross_turn_coreference","description":"Pronoun resolution across domains","turns":[{"turn_id":1,"user_input":"我刚吃了块蛋糕。","expected_trajectory_eval":[{"eval_type":"routing","expected_agent":"DietAgent"}],"expected_response_eval":{"must_contain_semantics":"记录蛋糕"}},{"turn_id":2,"user_input":"它热量多少？需要跳多久的绳？","expected_trajectory_eval":[{"eval_type":"routing","expected_agent":"AnalystAgent"},{"eval_type":"routing","expected_agent":"TrainingAgent"}],"expected_response_eval":{"must_contain_semantics":"回答蛋糕热量，并给出跳绳时长"}}]}
+{"case_id":"test_E_05","category":"cross_turn_coreference","description":"Reverting an action","turns":[{"turn_id":1,"user_input":"记一下我中午吃了汉堡。","expected_trajectory_eval":[{"eval_type":"tool_call","expected_tool":"record_food"}],"expected_response_eval":{"must_contain_semantics":"记录成功"}},{"turn_id":2,"user_input":"算了，删掉刚刚那条记录，我记错了，是沙拉。","expected_trajectory_eval":[{"eval_type":"tool_call","expected_tool":"delete_food_record"},{"eval_type":"tool_call","expected_tool":"record_food","expected_params_include":{"item":"沙拉"}}],"expected_response_eval":{"must_contain_semantics":"删除汉堡记录，替换为沙拉"}}]}
+EOF
+```
+
+- [ ] **Step 2: Verify JSONL format**
+```bash
+python -c "import json; [json.loads(line) for line in open('evaluation/chatfit_golden_test_set.jsonl')]"
+```
+
+- [ ] **Step 3: Commit**
+```bash
+git add evaluation/chatfit_golden_test_set.jsonl
+git commit -m "test: add 5 cross-turn coreference cases"
+```
+
+### Task 6: Add Complex Composite Cases (4 Cases)
+
+**Files:**
+- Modify: `evaluation/chatfit_golden_test_set.jsonl`
+
+- [ ] **Step 1: Write Composite Cases**
+```bash
+cat << 'EOF' >> evaluation/chatfit_golden_test_set.jsonl
+{"case_id":"test_F_01","category":"complex_composite","description":"Tool + Multi-Agent + Context","turns":[{"turn_id":1,"user_input":"我接下来三个月的目标从增肌改成了减脂。我的膝盖昨天受了点伤，最近不能做深蹲和跑步。帮我分析一下这样怎么调整饮食和训练。","expected_trajectory_eval":[{"eval_type":"tool_call","expected_tool":"update_user_profile","expected_params_include":{"goal":"fat_loss","injuries":["knee"]}},{"eval_type":"routing","expected_agent":"DietAgent"},{"eval_type":"routing","expected_agent":"TrainingAgent"}],"expected_response_eval":{"must_contain_semantics":"确认目标改为减脂并记录膝伤，提供减脂饮食建议，以及避免膝盖承重的训练方案"}}]}
+{"case_id":"test_F_02","category":"complex_composite","description":"Sequential tool failures, overrides and multi-agent","turns":[{"turn_id":1,"user_input":"我昨晚吃了8000大卡的烤肉，看看我本周的赤字还有救吗？如果有救，这周末我拼了命也要练回来。","expected_trajectory_eval":[{"eval_type":"tool_call","expected_tool":"record_food"},{"eval_type":"routing","expected_agent":"AnalystAgent"},{"eval_type":"tool_call","expected_tool":"calculate_weekly_deficit"},{"eval_type":"routing","expected_agent":"TrainingAgent"}],"expected_response_eval":{"must_contain_semantics":"记录热量，计算赤字情况，并给出周末高强度补救训练"}}]}
+{"case_id":"test_F_03","category":"complex_composite","description":"Clarification leading to cross-agent routing","turns":[{"turn_id":1,"user_input":"给我个方案。","expected_trajectory_eval":[{"eval_type":"clarification_trigger","expected_behavior":"Ask what kind of plan"}],"expected_response_eval":{"must_contain_semantics":"询问是需要饮食方案还是训练方案"}},{"turn_id":2,"user_input":"两个都要，针对我上个月减脂失败的原因来定。","expected_trajectory_eval":[{"eval_type":"routing","expected_agent":"AnalystAgent"},{"eval_type":"tool_call","expected_tool":"analyze_failure_reason"},{"eval_type":"routing","expected_agent":"DietAgent"},{"eval_type":"routing","expected_agent":"TrainingAgent"}],"expected_response_eval":{"must_contain_semantics":"分析上月数据，据此给出针对性的双料方案"}}]}
+{"case_id":"test_F_04","category":"complex_composite","description":"Long contextual constraint modification","turns":[{"turn_id":1,"user_input":"生成下周的极速减脂计划。","expected_trajectory_eval":[{"eval_type":"tool_call","expected_tool":"generate_plan"}],"expected_response_eval":{"must_contain_semantics":"提供极速减脂计划"}},{"turn_id":2,"user_input":"等一下，忘了说我乳糖不耐受，而且只能早起练。","expected_trajectory_eval":[{"eval_type":"tool_call","expected_tool":"update_user_profile"},{"eval_type":"tool_call","expected_tool":"regenerate_plan"}],"expected_response_eval":{"must_contain_semantics":"更新偏好，重新生成剔除乳制品并安排在早晨的计划"}},{"turn_id":3,"user_input":"那如果把周三的早起改成晚上呢，会有影响吗？","expected_trajectory_eval":[{"eval_type":"routing","expected_agent":"AnalystAgent"},{"eval_type":"routing","expected_agent":"TrainingAgent"}],"expected_response_eval":{"must_contain_semantics":"分析影响，并修改周三的计划到晚上"}}]}
+EOF
+```
+
+- [ ] **Step 2: Verify final JSONL count and format**
+```bash
+python -c "import json; lines = [json.loads(line) for line in open('evaluation/chatfit_golden_test_set.jsonl')]; assert len(lines) == 30, f'Expected 30 lines, got {len(lines)}'"
+```
+
+- [ ] **Step 3: Commit**
+```bash
+git add evaluation/chatfit_golden_test_set.jsonl
+git commit -m "test: add 4 complex composite cases and complete 30-item test set"
+```
