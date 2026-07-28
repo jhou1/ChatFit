@@ -1,4 +1,6 @@
 import os
+from typing import Any
+
 import httpx
 import mistune
 import telegram.error
@@ -138,7 +140,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for voice messages."""
-    if not update.message or not update.effective_user or not update.effective_chat or not update.message.voice:
+    if (
+        not update.message
+        or not update.effective_user
+        or not update.effective_chat
+        or not update.message.voice
+    ):
         return
     user_id = str(update.effective_user.id)
 
@@ -153,7 +160,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         # Download voice file
         voice_file = await context.bot.get_file(update.message.voice.file_id)
-        
+
         import tempfile
         import os
         from google import genai
@@ -161,27 +168,28 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
             tmp_path = tmp.name
-            
+
         await voice_file.download_to_drive(tmp_path)
-        
+
         # Transcribe voice using Gemini
         api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
         client = genai.Client(api_key=api_key)
-        
+
         with open(tmp_path, "rb") as f:
             audio_bytes = f.read()
-            
+
+        contents: Any = [
+            "Transcribe this voice message exactly as spoken in its original language. Do not add any extra commentary or text.",
+            types.Part.from_bytes(data=audio_bytes, mime_type="audio/ogg"),
+        ]
         response = await client.aio.models.generate_content(
-            model='gemini-3.5-flash',
-            contents=[
-                "Transcribe this voice message exactly as spoken in its original language. Do not add any extra commentary or text.",
-                types.Part.from_bytes(data=audio_bytes, mime_type="audio/ogg")
-            ]
+            model="gemini-3.5-flash",
+            contents=contents,
         )
-        
-        user_message = response.text.strip()
+
+        user_message = (response.text or "").strip()
         os.remove(tmp_path)
-        
+
         if not user_message:
             bot_reply = "Could not transcribe the voice message."
         else:
@@ -195,7 +203,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 bot_reply = data.get("response")
 
                 if not bot_reply:
-                    bot_reply = "Sorry, I processed that but didn't generate a response."
+                    bot_reply = (
+                        "Sorry, I processed that but didn't generate a response."
+                    )
 
     except httpx.HTTPError as e:
         bot_reply = (

@@ -7,12 +7,7 @@ from langchain_core.messages import AIMessage
 from pydantic import ValidationError
 
 from evaluation.graders import Trajectory, grade_turn
-from evaluation.models import (
-    EvaluationTurn, 
-    ExpectedTrajectoryAssertion,
-    ExpectedResponseEval,
-    load_evaluation_cases
-)
+from evaluation.models import EvaluationTurn, load_evaluation_cases
 from evaluation.report import (
     CaseResult,
     ExperimentMetadata,
@@ -33,8 +28,10 @@ def test_repository_evaluation_dataset_is_valid_and_unique():
 def test_evaluation_dataset_rejects_duplicate_ids(tmp_path: Path):
     dataset = tmp_path / "duplicate.jsonl"
     dataset.write_text(
-        json.dumps({"case_id": "duplicate", "turns": [{"user_input": "hello"}]}) + "\n" +
-        json.dumps({"case_id": "duplicate", "turns": [{"user_input": "goodbye"}]}) + "\n",
+        json.dumps({"case_id": "duplicate", "turns": [{"user_input": "hello"}]})
+        + "\n"
+        + json.dumps({"case_id": "duplicate", "turns": [{"user_input": "goodbye"}]})
+        + "\n",
         encoding="utf-8",
     )
 
@@ -55,7 +52,10 @@ def test_evaluation_dataset_rejects_empty_case_list(tmp_path: Path):
     [
         {"user_input": "hello", "expected_trajectory_eval": [{"eval_type": ""}]},
         {"user_input": "   "},
-        {"user_input": "hello", "expected_response_eval": {"rubrics": [{"dimension_name": ""}]}},
+        {
+            "user_input": "hello",
+            "expected_response_eval": {"rubrics": [{"dimension_name": ""}]},
+        },
     ],
 )
 def test_evaluation_schema_rejects_unknown_fields_and_empty_contracts(invalid_turn):
@@ -68,11 +68,8 @@ def test_deterministic_grader_rejects_unexpected_routes():
         {
             "user_input": "log my run",
             "expected_trajectory_eval": [
-                {
-                    "eval_type": "routing",
-                    "expected_agent": "training_agent"
-                }
-            ]
+                {"eval_type": "routing", "expected_agent": "training_agent"}
+            ],
         }
     )
     trajectory = Trajectory(
@@ -97,11 +94,8 @@ def test_deterministic_grader_rejects_missing_tools():
         {
             "user_input": "log my run",
             "expected_trajectory_eval": [
-                {
-                    "eval_type": "tool_call",
-                    "expected_tool": "log_training_session"
-                }
-            ]
+                {"eval_type": "tool_call", "expected_tool": "log_training_session"}
+            ],
         }
     )
     trajectory = Trajectory(
@@ -117,19 +111,15 @@ def test_deterministic_grader_rejects_missing_tools():
 
 
 def test_deterministic_grader_returns_actionable_failures():
-    expected = EvaluationTurn.model_validate({
-        "user_input": "hello",
-        "expected_trajectory_eval": [
-            {
-                "eval_type": "routing",
-                "expected_agent": "chatter"
-            },
-            {
-                "eval_type": "tool_avoidance",
-                "avoid_tool": "log_meal"
-            }
-        ]
-    })
+    expected = EvaluationTurn.model_validate(
+        {
+            "user_input": "hello",
+            "expected_trajectory_eval": [
+                {"eval_type": "routing", "expected_agent": "chatter"},
+                {"eval_type": "tool_avoidance", "avoid_tool": "log_meal"},
+            ],
+        }
+    )
 
     grade = grade_turn(
         expected,
@@ -299,7 +289,9 @@ async def test_llm_judge_scores_real_supplied_input_and_output():
 
         async def ainvoke(self, messages):
             self.messages = messages
-            return AIMessage(content='{"evaluations": [{"dimension": "Tone", "evidence": "Supportive", "score": 5, "weight": 1.0}], "overall_weighted_score": 5.0}')
+            return AIMessage(
+                content='{"evaluations": [{"dimension": "Tone", "evidence": "Supportive", "score": 5, "weight": 1.0}], "overall_weighted_score": 5.0}'
+            )
 
     fake_judge = FakeJudge()
     fake_langfuse = SimpleNamespace(create_score=lambda **kwargs: None)
@@ -313,7 +305,14 @@ async def test_llm_judge_scores_real_supplied_input_and_output():
         "trace-123",
         "I completed my workout",
         "Great work—your session was saved.",
-        [{"dimension_name": "Tone", "criteria_description": "d", "evidence_requirement": "e", "weight": 1.0}],
+        [
+            {
+                "dimension_name": "Tone",
+                "criteria_description": "d",
+                "evidence_requirement": "e",
+                "weight": 1.0,
+            }
+        ],
         judge_llm=fake_judge,
         langfuse_client=fake_langfuse,
     )

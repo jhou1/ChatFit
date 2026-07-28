@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any
 
 from evaluation.models import EvaluationTurn
 
@@ -38,13 +37,16 @@ def grade_turn(expected: EvaluationTurn, actual: Trajectory) -> TurnGrade:
 
     for assertion in expected.expected_trajectory_eval:
         if assertion.eval_type == "routing":
-            if assertion.expected_agent and assertion.expected_agent not in actual.routes:
+            if (
+                assertion.expected_agent
+                and assertion.expected_agent not in actual.routes
+            ):
                 # We could have a loose match since agents might have different node names.
                 # E.g. "TrainingAgent" in "training_node"
                 # Let's do a loose check.
                 match_found = any(
-                    assertion.expected_agent.lower() in route.lower() or 
-                    route.lower() in assertion.expected_agent.lower()
+                    assertion.expected_agent.lower() in route.lower()
+                    or route.lower() in assertion.expected_agent.lower()
                     for route in actual.routes
                 )
                 if not match_found and assertion.expected_agent not in actual.routes:
@@ -54,11 +56,12 @@ def grade_turn(expected: EvaluationTurn, actual: Trajectory) -> TurnGrade:
                             message=f"expected route to {assertion.expected_agent}, but actual routes were {actual.routes}",
                         )
                     )
-        
+
         elif assertion.eval_type == "tool_call":
             if assertion.expected_tool:
                 matching_calls = [
-                    call for call in actual.tool_calls
+                    call
+                    for call in actual.tool_calls
                     if call.get("name") == assertion.expected_tool
                 ]
                 if not matching_calls:
@@ -69,7 +72,7 @@ def grade_turn(expected: EvaluationTurn, actual: Trajectory) -> TurnGrade:
                         )
                     )
                     continue
-                
+
                 # Check args contain (legacy support)
                 if assertion.expected_args_contain:
                     serialized_args = " ".join(
@@ -95,7 +98,7 @@ def grade_turn(expected: EvaluationTurn, actual: Trajectory) -> TurnGrade:
                         args = call.get("args", {})
                         if not isinstance(args, dict):
                             continue
-                        
+
                         match = True
                         for k, v in assertion.expected_params_include.items():
                             if k not in args:
@@ -109,11 +112,11 @@ def grade_turn(expected: EvaluationTurn, actual: Trajectory) -> TurnGrade:
                             elif args[k] != v:
                                 match = False
                                 break
-                                
+
                         if match:
                             param_matched = True
                             break
-                            
+
                     if not param_matched:
                         failures.append(
                             GradeFailure(
@@ -146,13 +149,9 @@ def grade_turn(expected: EvaluationTurn, actual: Trajectory) -> TurnGrade:
                         message=f"expected clarification, but tools were called: {actual_tool_names}",
                     )
                 )
-        
+
         elif assertion.eval_type == "db_state":
             # DB state is evaluated separately in the test runner
             pass
 
-
-    return TurnGrade(
-        passed=not failures,
-        failures=failures
-    )
+    return TurnGrade(passed=not failures, failures=failures)

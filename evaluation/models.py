@@ -44,7 +44,9 @@ class ExpectedResponseEval(StrictEvaluationModel):
 class EvaluationTurn(StrictEvaluationModel):
     turn_id: int | None = None
     user_input: NonEmptyString
-    expected_trajectory_eval: list[ExpectedTrajectoryAssertion] = Field(default_factory=list)
+    expected_trajectory_eval: list[ExpectedTrajectoryAssertion] = Field(
+        default_factory=list
+    )
     expected_response_eval: ExpectedResponseEval | None = None
     expected_trajectory: list[str] | None = None
     expected_result: str | None = None
@@ -74,7 +76,7 @@ def load_evaluation_cases(path: str | Path) -> list[EvaluationCase]:
             if not line:
                 continue
             raw_cases.append(json.loads(line))
-            
+
     if not raw_cases:
         raise ValueError("evaluation dataset must contain at least one case")
 

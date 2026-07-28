@@ -1,5 +1,6 @@
 import re
 
+
 def update_readme():
     with open("README.md", "r", encoding="utf-8") as f:
         content = f.read()
@@ -40,8 +41,10 @@ uv run python evaluation/runner.py --concurrency 10 --no-judge
 
     # Replace the old Agent Evaluation section
     # Use regex to find everything from "## Agent Evaluation" to the next "## "
-    pattern_eval = re.compile(r"## Agent Evaluation.*?((?=\n## Data|## 数据)|(?=\n## ))", re.DOTALL)
-    
+    pattern_eval = re.compile(
+        r"## Agent Evaluation.*?((?=\n## Data|## 数据)|(?=\n## ))", re.DOTALL
+    )
+
     if pattern_eval.search(content):
         content = pattern_eval.sub(new_eval_section + "\n\n", content)
     else:
@@ -49,11 +52,14 @@ uv run python evaluation/runner.py --concurrency 10 --no-judge
         return
 
     # Update directory tree
-    content = content.replace("├── evaluation/             # 数据集 schema、确定性 Grader 与 Scorecard\n├── scripts/                # Evaluation 等运维脚本\n├── tests/\n│   ├── eval/               # Agent Code Grader\n│   └── test_*.py           # 单元与 API 回归测试",
-                              "├── evaluation/             # JSONL测试集、动态Rubric、Runner与评分器\n├── scripts/                # 运维脚本\n├── tests/                  # 工程质量(单元与API测试，与Agent能力评测解耦)")
+    content = content.replace(
+        "├── evaluation/             # 数据集 schema、确定性 Grader 与 Scorecard\n├── scripts/                # Evaluation 等运维脚本\n├── tests/\n│   ├── eval/               # Agent Code Grader\n│   └── test_*.py           # 单元与 API 回归测试",
+        "├── evaluation/             # JSONL测试集、动态Rubric、Runner与评分器\n├── scripts/                # 运维脚本\n├── tests/                  # 工程质量(单元与API测试，与Agent能力评测解耦)",
+    )
 
     with open("README.md", "w", encoding="utf-8") as f:
         f.write(content)
+
 
 if __name__ == "__main__":
     update_readme()
