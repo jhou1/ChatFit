@@ -1,4 +1,4 @@
-name: CI Auto-Merge Pipeline
+name: CI Pipeline
 
 on:
   pull_request:
@@ -50,18 +50,3 @@ jobs:
 
       - name: Run Verification
         run: make verify
-
-  automerge:
-    name: Enable Auto-Merge
-    needs: [quality, verify]
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-      contents: write
-    steps:
-      - name: Enable Auto-Merge
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-        run: |
-          gh pr merge --auto --merge "$PR_URL"
