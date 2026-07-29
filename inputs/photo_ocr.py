@@ -1,10 +1,9 @@
 import os
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 from google import genai
 from google.genai import types
-
 
 DEFAULT_GEMINI_PHOTO_OCR_MODEL = "gemini-3.5-flash"
 PHOTO_OCR_PROMPT = (
@@ -40,12 +39,13 @@ class GeminiPhotoTextExtractor:
         self, image_bytes: bytes, mime_type: str
     ) -> PhotoTextExtractionResult:
         client = genai.Client(api_key=self.api_key)
+        contents: Any = [
+            PHOTO_OCR_PROMPT,
+            types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+        ]
         response = await client.aio.models.generate_content(
             model=self.model_name,
-            contents=[
-                PHOTO_OCR_PROMPT,
-                types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-            ],
+            contents=contents,
         )
         return PhotoTextExtractionResult(text=response.text or "")
 

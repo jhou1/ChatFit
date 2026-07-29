@@ -1,4 +1,5 @@
 import os
+from collections.abc import Sequence
 from typing import Any
 
 import httpx
@@ -16,6 +17,8 @@ from telegram.ext import (
 )
 from telegram.request import BaseRequest, HTTPXRequest
 from dotenv import load_dotenv
+
+from inputs.photo_ocr import PhotoTextExtractor, build_photo_text_extractor_from_env
 
 
 class TelegramRenderer(mistune.HTMLRenderer):
@@ -75,9 +78,12 @@ load_dotenv()
 api_port = os.environ.get("PORT", "8000")
 API_URL = os.environ.get("API_URL", f"http://127.0.0.1:{api_port}/chat")
 API_CLEAR_URL = os.environ.get("API_CLEAR_URL", f"http://127.0.0.1:{api_port}/clear")
-PHOTO_UNSUPPORTED_REPLY = (
-    "我现在还不能可靠地识别图片内容。"
-    "请先把训练或饮食内容用文字发给我，我会继续处理。"
+NO_TEXT_IN_PHOTO_REPLY = (
+    "我没有从这张图片里识别到可处理的文字。"
+    "请换一张更清晰的图片，或者直接把内容打出来。"
+)
+PHOTO_READ_FAILED_REPLY = (
+    "我读取这张图片时遇到了问题。" "请重发一次，或者直接把训练或饮食内容打出来。"
 )
 UNSUPPORTED_INPUT_REPLY = (
     "我现在只能处理文字、语音和图片消息。请把训练或饮食内容用这些方式发给我。"
@@ -86,6 +92,36 @@ UNSUPPORTED_INPUT_REPLY = (
 
 def get_telegram_proxy_url() -> str | None:
     return os.environ.get("TELEGRAM_PROXY")
+
+
+def build_ocr_agent_message(extracted_text: str) -> str:
+    return (
+        "请根据这张图片中识别出的内容继续处理。图片文字如下：\n"
+        f"{extracted_text.strip()}"
+    )
+
+
+def select_largest_photo(photo_sizes: Sequence[Any]) -> Any:
+    return max(
+        photo_sizes,
+        key=lambda photo: (
+            photo.width * photo.height,
+            photo.file_size or 0,
+        ),
+    )
+
+
+async def post_message_to_api(user_id: str, message: str) -> str:
+    async with httpx.AsyncClient(timeout=120.0, proxy=None) as client:
+        response = await client.post(
+            API_URL,
+            json={"user_id": user_id, "message": message},
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data.get("response") or (
+            "Sorry, I processed that but didn't generate a response."
+        )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -242,7 +278,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler for photo messages until image understanding is wired end-to-end."""
+    """Handler for photo messages."""
     if (
         not update.message
         or not update.effective_user
@@ -250,11 +286,51 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         or not update.message.photo
     ):
         return
+    user_id = str(update.effective_user.id)
 
     try:
-        await update.message.reply_text(PHOTO_UNSUPPORTED_REPLY)
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id, action="typing"
+        )
     except telegram.error.NetworkError as ne:
-        print(f"Network error while sending photo unsupported reply: {ne}")
+        print(f"Network error while sending photo typing action: {ne}")
+
+    try:
+        extractor = context.application.bot_data.get("photo_text_extractor")
+        if extractor is None:
+            raise RuntimeError("photo_text_extractor is not configured")
+
+        selected_photo = select_largest_photo(update.message.photo)
+        photo_file = await context.bot.get_file(selected_photo.file_id)
+        image_bytes = bytes(await photo_file.download_as_bytearray())
+        extraction = await extractor.extract_text(image_bytes, "image/jpeg")
+
+        if not extraction.text:
+            await update.message.reply_text(NO_TEXT_IN_PHOTO_REPLY)
+            return
+
+        bot_reply = await post_message_to_api(
+            user_id, build_ocr_agent_message(extraction.text)
+        )
+
+    except httpx.HTTPError as e:
+        bot_reply = (
+            f"Sorry, I'm having trouble connecting to the backend right now. Error: {e}"
+        )
+    except Exception as e:
+        print(f"Photo OCR processing failed: {e}")
+        bot_reply = PHOTO_READ_FAILED_REPLY
+
+    try:
+        html_reply = str(markdown_to_tg_html(bot_reply)).strip()
+        await update.message.reply_text(html_reply, parse_mode=ParseMode.HTML)
+    except telegram.error.BadRequest:
+        try:
+            await update.message.reply_text(bot_reply)
+        except telegram.error.NetworkError as ne:
+            print(f"Network error during photo fallback reply: {ne}")
+    except telegram.error.NetworkError as ne:
+        print(f"Network error while sending photo reply to Telegram: {ne}")
 
 
 async def handle_unsupported_message(
@@ -275,6 +351,7 @@ def build_telegram_application(
     *,
     proxy_url: str | None = None,
     request: BaseRequest | None = None,
+    photo_text_extractor: PhotoTextExtractor | None = None,
 ) -> Application[Any, Any, Any, Any, Any, Any]:
     builder = ApplicationBuilder().token(token)
 
@@ -291,6 +368,7 @@ def build_telegram_application(
         builder = builder.request(telegram_request).get_updates_request(updates_request)
 
     app = builder.build()
+    app.bot_data["photo_text_extractor"] = photo_text_extractor
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clear", clear_context))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
@@ -312,7 +390,10 @@ def main():
     print("Initializing Telegram Bot...")
 
     proxy_url = get_telegram_proxy_url()
-    app = build_telegram_application(token, proxy_url=proxy_url)
+    photo_text_extractor = build_photo_text_extractor_from_env()
+    app = build_telegram_application(
+        token, proxy_url=proxy_url, photo_text_extractor=photo_text_extractor
+    )
 
     print("Bot is polling for messages. Press Ctrl+C to stop.")
     app.run_polling()

@@ -1,6 +1,5 @@
 import json
 from io import BytesIO
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -14,6 +13,7 @@ import bot
 class FakeApplication:
     def __init__(self) -> None:
         self.handlers: list[Any] = []
+        self.bot_data: dict[str, Any] = {}
         self.polling_started = False
         self.polling_kwargs: dict[str, Any] = {}
 
@@ -70,6 +70,10 @@ class FakeTelegramRequest(BaseRequest):
         connect_timeout: Any = None,
         pool_timeout: Any = None,
     ) -> tuple[int, bytes]:
+        if "/file/bot" in url and url.endswith("photos/photo-file-id.jpg"):
+            self.calls.append({"method": "downloadFile", "parameters": {}})
+            return 200, synthetic_jpeg_bytes()
+
         telegram_method = url.rsplit("/", maxsplit=1)[-1]
         parameters = request_data.parameters if request_data else {}
         self.calls.append({"method": telegram_method, "parameters": parameters})
@@ -81,6 +85,13 @@ class FakeTelegramRequest(BaseRequest):
                 "first_name": "ChatFit",
                 "username": "chatfit_test_bot",
             },
+            "getFile": {
+                "file_id": parameters.get("file_id", "photo-file-id"),
+                "file_unique_id": "photo-unique-id",
+                "file_size": len(synthetic_jpeg_bytes()),
+                "file_path": "photos/photo-file-id.jpg",
+            },
+            "sendChatAction": True,
             "sendMessage": {
                 "message_id": 321,
                 "date": 0,
@@ -135,6 +146,38 @@ def synthetic_jpeg_bytes() -> bytes:
     return buffer.getvalue()
 
 
+class FakePhotoTextExtractor:
+    def __init__(self, text: str = "深蹲 5x5 100kg") -> None:
+        self.calls: list[tuple[bytes, str]] = []
+        self.text = text
+
+    async def extract_text(self, image_bytes: bytes, mime_type: str):
+        from inputs.photo_ocr import PhotoTextExtractionResult
+
+        self.calls.append((image_bytes, mime_type))
+        return PhotoTextExtractionResult(text=self.text)
+
+
+class FailingPhotoTextExtractor:
+    async def extract_text(self, image_bytes: bytes, mime_type: str):
+        raise RuntimeError("provider unavailable")
+
+
+def patch_backend_post(
+    monkeypatch: pytest.MonkeyPatch,
+    backend_posts: list[dict[str, Any]],
+    *,
+    response_text: str = "已记录深蹲",
+) -> None:
+    async def fake_post_message_to_api(user_id: str, message: str) -> str:
+        backend_posts.append(
+            {"url": bot.API_URL, "json": {"user_id": user_id, "message": message}}
+        )
+        return response_text
+
+    monkeypatch.setattr(bot, "post_message_to_api", fake_post_message_to_api)
+
+
 def test_main_registers_photo_message_handler(monkeypatch):
     app = FakeApplication()
 
@@ -142,6 +185,9 @@ def test_main_registers_photo_message_handler(monkeypatch):
     monkeypatch.delenv("TELEGRAM_PROXY", raising=False)
     monkeypatch.delenv("LLM_PROXY", raising=False)
     monkeypatch.setattr(bot, "ApplicationBuilder", lambda: FakeApplicationBuilder(app))
+    monkeypatch.setattr(
+        bot, "build_photo_text_extractor_from_env", FakePhotoTextExtractor
+    )
 
     bot.main()
 
@@ -189,9 +235,17 @@ def test_telegram_proxy_configures_polling_request(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_actual_jpeg_photo_update_e2e_reaches_photo_route_through_dispatcher():
+async def test_photo_update_extracts_text_and_forwards_to_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     request = FakeTelegramRequest()
-    application = bot.build_telegram_application("123:ABC", request=request)
+    extractor = FakePhotoTextExtractor()
+    backend_posts: list[dict[str, Any]] = []
+    patch_backend_post(monkeypatch, backend_posts)
+
+    application = bot.build_telegram_application(
+        "123:ABC", request=request, photo_text_extractor=extractor
+    )
     await application.initialize()
 
     try:
@@ -200,13 +254,89 @@ async def test_actual_jpeg_photo_update_e2e_reaches_photo_route_through_dispatch
 
         await application.process_update(update)
 
+        assert len(extractor.calls) == 1
+        assert extractor.calls[0][0] == synthetic_jpeg_bytes()
+        assert extractor.calls[0][1] == "image/jpeg"
+        assert backend_posts == [
+            {
+                "url": bot.API_URL,
+                "json": {
+                    "user_id": "123",
+                    "message": (
+                        "请根据这张图片中识别出的内容继续处理。图片文字如下：\n"
+                        "深蹲 5x5 100kg"
+                    ),
+                },
+            }
+        ]
         update_calls = request.calls[calls_after_initialize:]
         call_methods = [call["method"] for call in update_calls]
-        assert call_methods == ["sendMessage"]
-        assert update_calls[0]["parameters"]["chat_id"] == 456
-        assert update_calls[0]["parameters"]["text"] == (
-            "我现在还不能可靠地识别图片内容。"
-            "请先把训练或饮食内容用文字发给我，我会继续处理。"
+        assert call_methods == [
+            "sendChatAction",
+            "getFile",
+            "downloadFile",
+            "sendMessage",
+        ]
+        assert update_calls[-1]["parameters"]["chat_id"] == 456
+        assert update_calls[-1]["parameters"]["text"] == "已记录深蹲"
+    finally:
+        await application.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_photo_update_with_empty_ocr_replies_without_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = FakeTelegramRequest()
+    extractor = FakePhotoTextExtractor(text="   ")
+    backend_posts: list[dict[str, Any]] = []
+    patch_backend_post(monkeypatch, backend_posts)
+
+    application = bot.build_telegram_application(
+        "123:ABC", request=request, photo_text_extractor=extractor
+    )
+    await application.initialize()
+
+    try:
+        calls_after_initialize = len(request.calls)
+        update = Update.de_json(photo_update_payload(), application.bot)
+
+        await application.process_update(update)
+
+        assert backend_posts == []
+        update_calls = request.calls[calls_after_initialize:]
+        assert update_calls[-1]["parameters"]["text"] == (
+            "我没有从这张图片里识别到可处理的文字。"
+            "请换一张更清晰的图片，或者直接把内容打出来。"
+        )
+    finally:
+        await application.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_photo_update_with_ocr_failure_replies_without_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = FakeTelegramRequest()
+    backend_posts: list[dict[str, Any]] = []
+    patch_backend_post(monkeypatch, backend_posts)
+
+    application = bot.build_telegram_application(
+        "123:ABC", request=request, photo_text_extractor=FailingPhotoTextExtractor()
+    )
+    await application.initialize()
+
+    try:
+        calls_after_initialize = len(request.calls)
+        update = Update.de_json(photo_update_payload(), application.bot)
+
+        await application.process_update(update)
+
+        assert backend_posts == []
+        update_calls = request.calls[calls_after_initialize:]
+        assert update_calls[-1]["parameters"]["text"] == (
+            "我读取这张图片时遇到了问题。"
+            "请重发一次，或者直接把训练或饮食内容打出来。"
         )
     finally:
         await application.shutdown()
@@ -235,25 +365,7 @@ async def test_unsupported_non_command_update_gets_explicit_reply():
         await application.shutdown()
 
 
-@pytest.mark.asyncio
-async def test_photo_message_gets_explicit_unsupported_reply():
-    replies = []
-
-    async def reply_text(text: str) -> None:
-        replies.append(text)
-
-    message = SimpleNamespace(
-        photo=[SimpleNamespace(file_id="photo-file-id")],
-        reply_text=reply_text,
+def test_build_ocr_agent_message_marks_text_as_photo_derived():
+    assert bot.build_ocr_agent_message("  深蹲 5x5 100kg  ") == (
+        "请根据这张图片中识别出的内容继续处理。图片文字如下：\n" "深蹲 5x5 100kg"
     )
-    update = SimpleNamespace(
-        message=message,
-        effective_user=SimpleNamespace(id=123),
-        effective_chat=SimpleNamespace(id=456),
-    )
-
-    await bot.handle_photo(update, SimpleNamespace())
-
-    assert replies == [
-        "我现在还不能可靠地识别图片内容。请先把训练或饮食内容用文字发给我，我会继续处理。"
-    ]
