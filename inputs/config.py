@@ -1,6 +1,11 @@
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import gettempdir
+
+
+def default_ephemeral_directory() -> Path:
+    return Path(gettempdir()) / "chatfit-media"
 
 
 @dataclass(frozen=True)
@@ -14,7 +19,7 @@ class MediaSettings:
     speech_provider: str = "gemini"
     image_provider: str = "gemini"
     gemini_media_model: str = ""
-    ephemeral_directory: Path = Path("/tmp/chatfit-media")  # nosec B108
+    ephemeral_directory: Path = default_ephemeral_directory()
 
     @classmethod
     def from_env(cls) -> "MediaSettings":
@@ -36,8 +41,8 @@ class MediaSettings:
             gemini_media_model=os.getenv("GEMINI_MEDIA_MODEL", ""),
             ephemeral_directory=Path(
                 os.getenv(
-                    "MEDIA_EPHEMERAL_DIRECTORY", "/tmp/chatfit-media"
-                )  # nosec B108
+                    "MEDIA_EPHEMERAL_DIRECTORY", str(default_ephemeral_directory())
+                )
             ),
         )
 

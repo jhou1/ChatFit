@@ -7,13 +7,14 @@ import telegram.error
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (
+    Application,
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
     filters,
     ContextTypes,
 )
-from telegram.request import HTTPXRequest
+from telegram.request import BaseRequest, HTTPXRequest
 from dotenv import load_dotenv
 
 
@@ -74,6 +75,17 @@ load_dotenv()
 api_port = os.environ.get("PORT", "8000")
 API_URL = os.environ.get("API_URL", f"http://127.0.0.1:{api_port}/chat")
 API_CLEAR_URL = os.environ.get("API_CLEAR_URL", f"http://127.0.0.1:{api_port}/clear")
+PHOTO_UNSUPPORTED_REPLY = (
+    "我现在还不能可靠地识别图片内容。"
+    "请先把训练或饮食内容用文字发给我，我会继续处理。"
+)
+UNSUPPORTED_INPUT_REPLY = (
+    "我现在只能处理文字、语音和图片消息。请把训练或饮食内容用这些方式发给我。"
+)
+
+
+def get_telegram_proxy_url() -> str | None:
+    return os.environ.get("TELEGRAM_PROXY")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -229,6 +241,67 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"Network error while sending reply to Telegram: {ne}")
 
 
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler for photo messages until image understanding is wired end-to-end."""
+    if (
+        not update.message
+        or not update.effective_user
+        or not update.effective_chat
+        or not update.message.photo
+    ):
+        return
+
+    try:
+        await update.message.reply_text(PHOTO_UNSUPPORTED_REPLY)
+    except telegram.error.NetworkError as ne:
+        print(f"Network error while sending photo unsupported reply: {ne}")
+
+
+async def handle_unsupported_message(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    """Handler for non-command Telegram updates that ChatFit cannot process yet."""
+    if not update.message:
+        return
+
+    try:
+        await update.message.reply_text(UNSUPPORTED_INPUT_REPLY)
+    except telegram.error.NetworkError as ne:
+        print(f"Network error while sending unsupported input reply: {ne}")
+
+
+def build_telegram_application(
+    token: str,
+    *,
+    proxy_url: str | None = None,
+    request: BaseRequest | None = None,
+) -> Application[Any, Any, Any, Any, Any, Any]:
+    builder = ApplicationBuilder().token(token)
+
+    if request is not None:
+        builder = builder.request(request)
+    elif proxy_url:
+        print(f"Using proxy: {proxy_url}")
+        telegram_request = HTTPXRequest(
+            proxy=proxy_url, connect_timeout=30.0, read_timeout=30.0
+        )
+        updates_request = HTTPXRequest(
+            proxy=proxy_url, connect_timeout=30.0, read_timeout=30.0
+        )
+        builder = builder.request(telegram_request).get_updates_request(updates_request)
+
+    app = builder.build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("clear", clear_context))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(
+        MessageHandler(filters.ALL & (~filters.COMMAND), handle_unsupported_message)
+    )
+    return app
+
+
 def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -238,20 +311,8 @@ def main():
 
     print("Initializing Telegram Bot...")
 
-    proxy_url = os.environ.get("TELEGRAM_PROXY", None)
-
-    if proxy_url:
-        print(f"Using proxy: {proxy_url}")
-        # We also want to give Telegram's internal httpx client a longer timeout
-        request = HTTPXRequest(proxy=proxy_url, connect_timeout=30.0, read_timeout=30.0)
-        app = ApplicationBuilder().token(token).request(request).build()
-    else:
-        app = ApplicationBuilder().token(token).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("clear", clear_context))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    proxy_url = get_telegram_proxy_url()
+    app = build_telegram_application(token, proxy_url=proxy_url)
 
     print("Bot is polling for messages. Press Ctrl+C to stop.")
     app.run_polling()
