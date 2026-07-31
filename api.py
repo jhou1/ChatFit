@@ -222,35 +222,6 @@ async def generate_conversational_approval(
         return "⚠️ I'm about to write save the records to database, is it OK?"
 
 
-async def _classify_approval_intent(
-    user_message: str, llm_config: LLMConfig
-) -> tuple[bool, str]:
-    llm = create_chat_model(llm_config)
-    prompt = f"""
-    The system is waiting for the user to approve a database write operation (like saving a training or meal record).
-    The user's response is: "{user_message}"
-
-    Determine if the user is approving the operation.
-    - If they say yes, ok, go ahead, please do, or similar, it's an approval.
-    - If they say no, wait, change something, or ask a completely different question, it's a rejection.
-
-    Output ONLY a JSON object with this exact format:
-    {{"approved": true/false, "feedback": "extract the user's message here as feedback"}}
-    """
-    try:
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
-        text = extract_text(response)
-        import json
-
-        text = text.replace("```json", "").replace("```", "").strip()
-        data = json.loads(text)
-        return data.get("approved", False), data.get("feedback", user_message)
-    except Exception as e:
-        print("Intent classification failed:", e)
-        # default to rejection for safety if parsing fails
-        return False, user_message
-
-
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(req: ChatRequest, request: Request, response: Response):
     # Use the Telegram user_id to resolve the current LangGraph session.
@@ -308,21 +279,15 @@ async def chat_endpoint(req: ChatRequest, request: Request, response: Response):
                     interrupts.extend(task.interrupts)
 
         if interrupts:
-            # The graph is paused, treat this message as an approval/rejection.
-            is_approved, feedback = await _classify_approval_intent(
-                req.message, request.app.state.llm_config
-            )
             emit_event(
-                "hitl.resumed",
+                "hitl.reply_received",
                 {
-                    "decision": "approved" if is_approved else "rejected",
                     "interrupt.count": len(interrupts),
                     "interrupt.ids": [str(intr.id) for intr in interrupts],
                 },
             )
             resume_data = {
-                intr.id: {"approved": is_approved, "feedback": feedback}
-                for intr in interrupts
+                intr.id: {"user_message": req.message} for intr in interrupts
             }
             action_command: Command[Any] | dict[str, Any] = Command(resume=resume_data)
         else:

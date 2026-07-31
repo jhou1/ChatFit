@@ -54,6 +54,13 @@ class FakeResumeAgent(FakeAgent):
             tasks=[SimpleNamespace(interrupts=[pending])],
         )
 
+    async def astream(self, action, *, config, stream_mode):
+        self.action = action
+        async for event in super().astream(
+            action, config=config, stream_mode=stream_mode
+        ):
+            yield event
+
 
 class FakeParallelInterruptAgent(FakeAgent):
     async def astream(self, action, *, config, stream_mode):
@@ -205,12 +212,8 @@ async def test_chat_interrupt_trace_contains_interrupt_id_and_interrupted_status
 
 
 @pytest.mark.asyncio
-async def test_chat_resume_trace_reuses_interrupt_id(monkeypatch):
-    async def approved_intent(message, llm_config):
-        return True, message
-
+async def test_chat_passes_complete_revision_reply_to_pending_interrupt(monkeypatch):
     monkeypatch.setattr(api_module, "CallbackHandler", lambda **kwargs: object())
-    monkeypatch.setattr(api_module, "_classify_approval_intent", approved_intent)
     agent = FakeResumeAgent()
     api_module.app.state.agent = agent
     api_module.app.state.llm_config = object()
@@ -223,17 +226,20 @@ async def test_chat_resume_trace_reuses_interrupt_id(monkeypatch):
             transport=transport, base_url="http://testserver"
         ) as client:
             response = await client.post(
-                "/chat", json={"user_id": "test-user", "message": "yes"}
+                "/chat",
+                json={"user_id": "test-user", "message": "保存，同时 RPE 7"},
             )
 
     assert response.status_code == 200
-    resumed = next(
+    assert agent.action.resume == {
+        "interrupt-123": {"user_message": "保存，同时 RPE 7"}
+    }
+    reply_received = next(
         observation
         for observation in sink.observations
-        if observation.name == "hitl.resumed"
+        if observation.name == "hitl.reply_received"
     )
-    assert resumed.attributes == {
-        "decision": "approved",
+    assert reply_received.attributes == {
         "interrupt.count": 1,
         "interrupt.ids": ["interrupt-123"],
     }
