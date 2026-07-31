@@ -1,4 +1,4 @@
-# HITL Approval Amendments and Idempotent Training Writes
+# HITL Approval Revisions and Idempotent Training Writes
 
 ## Problem
 
@@ -12,99 +12,105 @@ second call creates a duplicate record.
 
 ## Decision
 
-Implement structured approval amendments at the HITL boundary and add an
+Implement approval-aware revision handling at the HITL boundary and add an
 idempotency key to training writes.
 
-The approval classifier receives both the user's reply and the pending tool
-calls. It returns one of four intents:
+An approval is valid only for the exact draft shown to the user. The approval
+resolver receives both the user's reply and the pending tool calls and returns
+one of three intents:
 
-- `approve`: execute the pending write unchanged.
-- `approve_with_patch`: merge an allowlisted, typed patch into the pending write
-  and execute the resulting arguments.
+- `approve`: the reply is a pure approval, so execute the pending write
+  unchanged.
+- `revise`: the reply contains any new, corrected, or removed business data.
+  Supersede the pending write, send the complete reply back to the agent, build a
+  revised draft, and request approval again.
 - `reject`: reject the pending write and preserve the user's feedback.
-- `new_request`: reject the pending write and preserve the message for a future
-  request. The current change does not automatically dispatch that future
-  request.
 
-For this iteration, amendment patches support the optional training-session
-fields `rpe`, `warm_up`, and `cool_down`. Patches identify a session by its
-zero-based position in the pending `sessions` list. Unknown fields, invalid
-indices, or values that fail `TrainingInputRecorder` validation cause a safe
-rejection; the original write is not executed.
+Any additional information invalidates the old approval, including optional
+fields such as `rpe`, `warm_up`, or `cool_down`, corrections to an existing
+value, removal requests, or an additional practice. The resolver does not merge
+individual fields. The training agent receives the complete revision and
+rebuilds typed tool arguments from the existing conversation plus the new
+information.
 
-The user's explicit approval applies to the merged draft. Therefore
-`保存，同时 RPE 7` performs one write in the same turn without requesting a
-second confirmation.
+Therefore `保存，同时 RPE 7` performs no write in that turn. The agent adds RPE
+7 to the pending record, presents the revised record, and asks for approval
+again. A subsequent pure `保存` executes the revised write exactly once.
 
 ## Alternatives Considered
 
 ### Prompt-only context guidance
 
-Add instructions telling the training agent to merge confirmation replies into
-the pending record. This cannot work reliably because the paused graph consumes
-the reply in the API layer before the training agent sees it. Prompt changes may
-improve ordinary clarification turns but cannot repair this data-flow break.
+Tell the training agent to merge confirmation replies into the pending record.
+This cannot work reliably while the API consumes the reply before the training
+agent sees it. Prompt changes cannot repair that data-flow break by themselves.
 
-### Cancel and restart the graph with the reply
+### Approve and mutate the paused call
 
-Reject the pending write, append the reply as a new human message, and ask the
-agent to build a replacement tool call. This avoids mutating a paused call but
-usually produces a second approval prompt and remains dependent on model
-inference. It is safe but gives a worse experience for a reply that explicitly
-approves the amended record.
+Merge new fields into the paused call and treat the same reply as approval of
+the result. This is efficient, but it permits a write whose final representation
+was never shown to the user. It does not satisfy the requirement that every
+changed draft receive fresh approval.
 
 ### General persisted draft repository
 
 Introduce a generic draft state machine and repository for every writable agent.
-This is a useful future direction, especially for multimodal clarification, but
-is larger than needed for this production defect. The structured HITL decision
-provides a bounded seam that can later be backed by a draft repository.
+This remains a useful future direction, especially for multimodal clarification,
+but is larger than needed for this defect. The approval resolver creates a
+bounded seam that can later be backed by a persisted draft repository.
 
 ## Components
 
-### Approval decision model
+### Approval resolver
 
-Add Pydantic models for the classifier output:
+Add an injectable LLM-backed resolver with a narrow interface:
 
-- `ApprovalIntent`: the four literal intent values.
-- `TrainingSessionPatch`: `session_index` plus optional `rpe`, `warm_up`, and
-  `cool_down` values.
-- `ApprovalDecision`: intent, feedback, and a list of training patches.
+```python
+class ApprovalResolver:
+    async def resolve(
+        self,
+        user_message: str,
+        pending_tool_calls: list[dict],
+    ) -> ApprovalDecision: ...
+```
 
-The classifier prompt must require strict JSON and include a concise view of the
-pending tool calls. Parsing or validation failures produce a `reject` decision.
-Raw message content remains excluded from observability attributes.
+`ApprovalDecision` contains
+`intent: Literal["approve", "revise", "reject"]` and `feedback: str`. The
+resolver prompt requires strict JSON and includes a concise view of the pending
+tool calls. Parsing or validation failures produce a `reject` decision. Raw
+message content remains excluded from observability attributes.
 
-### Patch application
+The API no longer interprets the reply as business data. It passes the raw reply
+into the graph's resume payload. `SafeToolNode` invokes the resolver because it
+owns the exact pending tool calls and the execution boundary.
 
-Create a deterministic helper that takes pending tool calls and an
-`ApprovalDecision`, copies the arguments, applies allowlisted patches, and
-validates amended `log_training_session` arguments with
-`TrainingInputRecorder`.
+### Revision handling
 
-The helper returns amended tool calls without mutating checkpoint-owned message
-objects. The API includes those amended calls in the resume payload. The safe
-tool node executes the amended calls only when the decision is approved; pure
-approvals continue to execute the checkpointed calls.
+For `revise`, `SafeToolNode` must not execute any pending write. It returns one
+error `ToolMessage` per superseded write call, followed by a `HumanMessage`
+containing the user's complete revision. This ordering satisfies the tool-call
+protocol and lets the training agent see the additional information.
 
-### Conversation continuity
+The training agent merges the revision with the prior draft, validates the
+result through `TrainingInputRecorder`, and issues a replacement
+`log_training_session` call. That replacement reaches `SafeToolNode` as a new
+pending write and always triggers a new approval request. Approval from a
+superseded call is never carried to a replacement call.
 
-The resume payload includes the user's reply. After executing an approved write,
-the safe tool node emits the tool outputs followed by a `HumanMessage` containing
-that reply, so the tool-call protocol remains valid and subsequent LLM reasoning
-sees the supplied RPE. Rejection keeps the existing error `ToolMessage` feedback
-behavior.
+Pure approval may execute without adding a redundant human message because it
+contains no new business context. Rejection keeps the existing error
+`ToolMessage` feedback behavior.
 
 ### Idempotent training write
 
-Add an optional `operation_id` to `TrainingInputRecorder`. The API derives a
-stable operation ID from the interrupted tool call ID and injects it into the
-amended or unchanged call before execution.
+Add an optional `operation_id` to `TrainingInputRecorder`. `SafeToolNode` derives
+a stable operation ID from the approved tool call ID and injects it immediately
+before execution. Superseded calls receive no operation ID because they never
+write.
 
 Persist operation IDs in a lazily created `write_operations` table with a unique
-primary key. Lazy creation makes the change compatible with existing production
-databases that are not passed through `init_db`. Within the same SQLite
-transaction:
+primary key. Lazy creation supports existing production databases that are not
+passed through `init_db`. Within the same SQLite transaction:
 
 1. insert the operation ID for `log_training_session`;
 2. if it already exists, return the prior successful result without inserting
@@ -112,46 +118,49 @@ transaction:
 3. otherwise insert all training data and commit both the operation marker and
    business records atomically.
 
-Direct callers that omit `operation_id` preserve the existing non-idempotent
-behavior for backward compatibility. New HITL writes always receive one.
+Direct callers that omit `operation_id` preserve existing behavior for backward
+compatibility. Executed HITL writes always receive one.
 
 ## Data Flow
 
 1. The training agent creates `log_training_session` arguments and pauses at
    `SafeToolNode`.
-2. The API reads the pending tool calls and classifies the user reply.
-3. For `approve_with_patch`, the API applies and validates the patch.
-4. The API resumes the interrupt with the decision, amended calls, reply, and
-   stable operation IDs.
-5. `SafeToolNode` substitutes amended calls by matching tool call ID, adds the
-   reply to message history, and executes each approved call once.
-6. SQLite atomically records the operation and training rows. A replay with the
-   same operation ID returns success without adding rows.
+2. The API resumes the interrupt with the complete raw user reply.
+3. `SafeToolNode` resolves the reply against the exact pending tool calls.
+4. For pure approval, the node adds stable operation IDs and executes the
+   unchanged calls.
+5. For a revision, the node executes no writes, marks the old calls superseded,
+   and adds the reply to graph history.
+6. The training agent produces revised typed arguments, which create a new
+   approval interrupt.
+7. SQLite records the operation and training rows only after a later pure
+   approval. Replaying that operation ID adds no rows.
 
 ## Error Handling
 
-- Classifier timeout, malformed JSON, or schema failure: reject safely.
-- Patch references a missing session or unsupported tool: reject safely.
-- Patch fails `TrainingInputRecorder` validation: reject safely and expose a
-  concise explanation to the agent through the tool error message.
-- Operation marker insert succeeds but a business insert fails: transaction
-  rollback removes both.
-- A repeated successful operation ID: return the original success message with
-  no additional rows.
+- Resolver timeout, malformed JSON, or schema failure: reject safely.
+- A reply classified as `revise`: execute no writes, even when it also contains
+  approval language.
+- Revised arguments fail `TrainingInputRecorder` validation: ask for
+  clarification and do not produce an executable write.
+- Operation marker insert succeeds but a business insert fails: roll back both.
+- A repeated successful operation ID: return success with no additional rows.
 
 ## Tests
 
 Add deterministic tests for:
 
-- classifier parsing of `保存，同时 RPE 7` into `approve_with_patch`;
-- API resume payload containing amended RPE, user reply, and stable operation ID;
-- safe tool execution substituting the amended call and preserving the human
-  reply in graph history;
-- invalid amendments never executing the original write;
-- two `add_training_session` calls with the same operation ID creating one
-  session and one set collection;
+- resolving `保存，同时 RPE 7` as `revise`;
+- the API resume payload preserving the complete reply without interpreting it;
+- revision handling executing no writes and preserving the reply in history;
+- the training agent producing replacement arguments with RPE 7;
+- the replacement call creating a second approval interrupt;
+- a later pure approval executing the replacement once;
+- two `add_training_session` calls with one operation ID creating one session
+  and one set collection;
 - calls without an operation ID retaining existing behavior;
-- the full regression shape asserting one write and `rpe = 7`.
+- the full regression shape asserting zero writes after the mixed reply and one
+  write with `rpe = 7` after the second approval.
 
 Run focused tests first, then the full non-E2E suite and `make quality`. An
 independent verification agent must run the quality instructions in
@@ -159,17 +168,17 @@ independent verification agent must run the quality instructions in
 
 ## Documentation
 
-Update `README.md` and `docs/index.html` only if their public behavior
-description would otherwise become inaccurate. The existing documentation says
-writes require approval; that remains true. Add a concise note that an approval
-reply may amend the pending record and that retries are idempotent.
+Update `README.md` and `docs/index.html` with a concise note that any amendment
+supersedes pending approval, requires fresh approval, and remains idempotent
+after execution.
 
 ## Acceptance Criteria
 
-- `保存，同时 RPE 7` executes exactly one training write.
-- The saved training session has `rpe = 7`.
-- The agent does not ask for RPE again for that committed session.
-- Replaying the same approved interrupt does not add database rows.
+- `保存，同时 RPE 7` executes no training write.
+- The agent presents a revised draft containing `rpe = 7` and asks again.
+- A later pure approval creates exactly one training session with `rpe = 7`.
+- The agent does not ask for RPE again after that session is committed.
+- Replaying the approved interrupt does not add database rows.
 - Pure approval and rejection behavior remain compatible.
 - All tests and static-quality checks complete with no errors, failures, or
   warnings.
