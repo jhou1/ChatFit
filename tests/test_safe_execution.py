@@ -517,6 +517,53 @@ async def test_raw_rejection_preserves_complete_feedback(mock_interrupt):
 
 
 @pytest.mark.asyncio
+@patch("tools.safe_execution.interrupt")
+async def test_resumed_hitl_emits_resolved_revision_without_raw_reply(mock_interrupt):
+    user_reply = "保存，同时 RPE 7"
+    resolver = FakeApprovalResolver(
+        ApprovalDecision(intent="revise", feedback=user_reply)
+    )
+    node = SafeToolNode(tools=[], approval_resolver=resolver)
+    mock_interrupt.return_value = {"user_message": user_reply}
+    sink = InMemorySink()
+
+    with observation_sink(sink):
+        with start_trace(
+            "chat.request",
+            request_id="request-1",
+            session_id="session-1",
+            user_key="user-key",
+        ):
+            await node(
+                {
+                    "messages": [
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "log_training_session",
+                                    "args": {},
+                                    "id": "training-1",
+                                }
+                            ],
+                        )
+                    ]
+                }
+            )
+
+    resumed = next(
+        observation
+        for observation in sink.observations
+        if observation.name == "hitl.resumed"
+    )
+    assert resumed.attributes == {
+        "decision": "revised",
+        "tool.count": 1,
+        "tool.call_ids": ["training-1"],
+    }
+
+
+@pytest.mark.asyncio
 @patch("tools.safe_execution._execute_llm_query_safely")
 @patch("tools.safe_execution.create_chat_model")
 async def test_approval_resolver_returns_revision_and_preserves_full_feedback(
@@ -656,7 +703,17 @@ async def test_resumed_hitl_execution_finishes_trace_ok_and_emits_executed(
         for observation in sink.observations
         if observation.signal == "span.end" and observation.name == "chat.request"
     )
+    resumed = next(
+        observation
+        for observation in sink.observations
+        if observation.name == "hitl.resumed"
+    )
     assert root_end.status == "ok"
+    assert resumed.attributes == {
+        "decision": "approved",
+        "tool.count": 1,
+        "tool.call_ids": ["call-1"],
+    }
     assert any(observation.name == "hitl.executed" for observation in sink.observations)
 
 

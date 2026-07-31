@@ -171,7 +171,7 @@ source ID hash。
 一次确认流程至少产生：
 
 1. `hitl.requested`：待确认工具数量和类别
-2. `hitl.resumed`：`approved/rejected/expired`，不记录用户完整回复
+2. `hitl.resumed`：`approved/revised/rejected/expired`，不记录用户完整回复
 3. `hitl.executed` 或 `hitl.cancelled`
 
 关键指标包括等待时间、批准率、拒绝后副作用数和重复执行数。拒绝后副作用数必须为 0。

@@ -288,17 +288,6 @@ class SafeToolNode:
             except GraphInterrupt:
                 mark_current_span_status("interrupted")
                 raise
-            emit_event(
-                "hitl.resumed",
-                {
-                    "decision": (
-                        "approved" if decision.get("approved") else "rejected"
-                    ),
-                    "tool.count": len(write_tools),
-                    "tool.call_ids": write_tool_call_ids,
-                },
-            )
-
             user_message = decision.get("user_message")
             if self.approval_resolver and isinstance(user_message, str):
                 pending_tool_calls = [
@@ -309,6 +298,14 @@ class SafeToolNode:
                     user_message, pending_tool_calls
                 )
                 if approval.intent == "revise":
+                    emit_event(
+                        "hitl.resumed",
+                        {
+                            "decision": "revised",
+                            "tool.count": len(write_tools),
+                            "tool.call_ids": write_tool_call_ids,
+                        },
+                    )
                     write_tool_call_id_set = set(write_tool_call_ids)
                     read_tool_calls = [
                         tool_call
@@ -346,6 +343,15 @@ class SafeToolNode:
                     "approved": approval.intent == "approve",
                     "feedback": approval.feedback,
                 }
+
+            emit_event(
+                "hitl.resumed",
+                {
+                    "decision": "approved" if decision.get("approved") else "rejected",
+                    "tool.count": len(write_tools),
+                    "tool.call_ids": write_tool_call_ids,
+                },
+            )
 
             if not decision.get("approved"):
                 feedback = decision.get("feedback", "No feedback provided.")

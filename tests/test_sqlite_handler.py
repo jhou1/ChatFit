@@ -82,6 +82,75 @@ def test_add_training_session_is_idempotent_with_operation_id(tmp_path):
         )
 
 
+def test_add_training_session_creates_operation_ledger_for_pre_ledger_database(
+    tmp_path,
+):
+    db_path = tmp_path / "pre_ledger_training_session_test.db"
+    init_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TABLE write_operations")
+
+    test_input = TrainingInputRecorder(
+        operation_id="hitl:pre-ledger-1",
+        date=datetime.now().date(),
+        sessions=[
+            TrainingSession(
+                practice_name="Squat",
+                practice_type="weighted",
+                note="Testing legacy database",
+                sets=[TrainingSet(set_number=1, weight=100, reps=10)],
+            )
+        ],
+        confirm_new_practices=True,
+    )
+
+    assert (
+        add_training_session(test_input, db_path) == "Training log saved successfully!"
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT operation_id FROM write_operations").fetchone() == (
+            "hitl:pre-ledger-1",
+        )
+
+
+def test_add_training_session_rolls_back_operation_marker_after_business_failure(
+    tmp_path,
+):
+    db_path = tmp_path / "training_session_test.db"
+    init_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("""
+            CREATE TRIGGER fail_training_session_insert
+            BEFORE INSERT ON training_sessions
+            BEGIN
+                SELECT RAISE(ABORT, 'forced mid-write business failure');
+            END
+            """)
+
+    test_input = TrainingInputRecorder(
+        operation_id="hitl:rollback-1",
+        date=datetime.now().date(),
+        sessions=[
+            TrainingSession(
+                practice_name="Squat",
+                practice_type="weighted",
+                note="This write must roll back",
+                sets=[TrainingSet(set_number=1, weight=100, reps=10)],
+            )
+        ],
+        confirm_new_practices=True,
+    )
+
+    result = add_training_session(test_input, db_path)
+
+    assert "forced mid-write business failure" in result
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM write_operations").fetchone() == (0,)
+        assert conn.execute("SELECT COUNT(*) FROM practices").fetchone() == (0,)
+        assert conn.execute("SELECT COUNT(*) FROM training_sessions").fetchone() == (0,)
+
+
 def test_add_training_session_without_operation_id_creates_each_session(tmp_path):
     db_path = tmp_path / "training_session_test.db"
     init_db(db_path)
