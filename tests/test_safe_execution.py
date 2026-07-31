@@ -399,6 +399,35 @@ async def test_revision_supersedes_write_and_preserves_reply(
 
 
 @pytest.mark.asyncio
+@patch("tools.safe_execution.interrupt")
+async def test_raw_rejection_preserves_complete_feedback(mock_interrupt):
+    resolver = FakeApprovalResolver(
+        ApprovalDecision(intent="reject", feedback="不要保存，今天其实没训练")
+    )
+    node = SafeToolNode(tools=[], approval_resolver=resolver)
+    mock_interrupt.return_value = {"user_message": "不要保存，今天其实没训练"}
+
+    result = await node(
+        {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "log_training_session",
+                            "args": {},
+                            "id": "training-1",
+                        }
+                    ],
+                )
+            ]
+        }
+    )
+
+    assert "不要保存，今天其实没训练" in result["messages"][0].content
+
+
+@pytest.mark.asyncio
 @patch("tools.safe_execution._execute_llm_query_safely")
 @patch("tools.safe_execution.create_chat_model")
 async def test_approval_resolver_returns_revision_and_preserves_full_feedback(

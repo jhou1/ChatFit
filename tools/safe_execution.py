@@ -342,7 +342,10 @@ class SafeToolNode:
                         ]
                         + [HumanMessage(content=approval.feedback)]
                     }
-                decision = {"approved": approval.intent == "approve"}
+                decision = {
+                    "approved": approval.intent == "approve",
+                    "feedback": approval.feedback,
+                }
 
             if not decision.get("approved"):
                 feedback = decision.get("feedback", "No feedback provided.")
