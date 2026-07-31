@@ -390,9 +390,23 @@ class SafeToolNode:
                     ]
                 }
 
+        executable_tool_calls = last_message.tool_calls
+        if write_tools:
+            executable_tool_calls = []
+            for tool_call in last_message.tool_calls:
+                executable_call = {
+                    **tool_call,
+                    "args": dict(tool_call["args"]),
+                }
+                if executable_call["name"] == "log_training_session":
+                    executable_call["args"][
+                        "operation_id"
+                    ] = f"hitl:{executable_call['id']}"
+                executable_tool_calls.append(executable_call)
+
         tasks = [
             _execute_single_tool_safely(call, self.tools)
-            for call in last_message.tool_calls
+            for call in executable_tool_calls
         ]
 
         # await all tool calls

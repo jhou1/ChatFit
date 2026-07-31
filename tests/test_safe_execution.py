@@ -339,6 +339,29 @@ async def test_safe_tool_node_write_tool_approved(mock_execute, mock_interrupt):
 @pytest.mark.asyncio
 @patch("tools.safe_execution.interrupt")
 @patch("tools.safe_execution._execute_single_tool_safely")
+async def test_pure_approval_injects_operation_id_without_mutating_pending_call(
+    mock_execute, mock_interrupt
+):
+    resolver = FakeApprovalResolver(ApprovalDecision(intent="approve", feedback="保存"))
+    node = SafeToolNode(tools=[], approval_resolver=resolver)
+    pending = {
+        "name": "log_training_session",
+        "args": {"note": "test"},
+        "id": "training-1",
+    }
+    mock_interrupt.return_value = {"user_message": "保存"}
+    mock_execute.return_value = ToolMessage(content="Saved", tool_call_id="training-1")
+
+    await node({"messages": [AIMessage(content="", tool_calls=[pending])]})
+
+    executed = mock_execute.await_args.args[0]
+    assert executed["args"]["operation_id"] == "hitl:training-1"
+    assert "operation_id" not in pending["args"]
+
+
+@pytest.mark.asyncio
+@patch("tools.safe_execution.interrupt")
+@patch("tools.safe_execution._execute_single_tool_safely")
 async def test_safe_tool_node_write_tool_rejected(mock_execute, mock_interrupt):
     # Setup
     node = SafeToolNode(tools=[])

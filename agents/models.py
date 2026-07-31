@@ -67,6 +67,10 @@ class TrainingInputRecorder(BaseModel):
     """
 
     date: _date = Field(description="Date of the training session")
+    operation_id: Optional[str] = Field(
+        default=None,
+        description="System-owned idempotency key for an approved write",
+    )
     sessions: list[TrainingSession] = Field(
         description="A list of practices and their sets performed in this session"
     )

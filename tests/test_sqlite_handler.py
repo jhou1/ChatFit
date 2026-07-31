@@ -47,6 +47,71 @@ def test_add_training_session(tmp_path):
         assert practice["type"].lower() == "weighted"
 
 
+def test_add_training_session_is_idempotent_with_operation_id(tmp_path):
+    db_path = tmp_path / "training_session_test.db"
+    init_db(db_path)
+    test_input = TrainingInputRecorder(
+        operation_id="hitl:training-1",
+        date=datetime.now().date(),
+        sessions=[
+            TrainingSession(
+                practice_name="Squat",
+                practice_type="weighted",
+                note="Testing",
+                sets=[TrainingSet(set_number=1, weight=100, reps=10)],
+            )
+        ],
+        confirm_new_practices=True,
+    )
+
+    assert (
+        add_training_session(test_input, db_path) == "Training log saved successfully!"
+    )
+    assert (
+        add_training_session(test_input, db_path) == "Training log saved successfully!"
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
+        assert (
+            cursor.execute("SELECT COUNT(*) FROM training_sessions").fetchone()[0] == 1
+        )
+        assert cursor.execute("SELECT COUNT(*) FROM training_sets").fetchone()[0] == 1
+        assert (
+            cursor.execute("SELECT COUNT(*) FROM write_operations").fetchone()[0] == 1
+        )
+
+
+def test_add_training_session_without_operation_id_creates_each_session(tmp_path):
+    db_path = tmp_path / "training_session_test.db"
+    init_db(db_path)
+    test_input = TrainingInputRecorder(
+        date=datetime.now().date(),
+        sessions=[
+            TrainingSession(
+                practice_name="Squat",
+                practice_type="weighted",
+                note="Testing",
+                sets=[TrainingSet(set_number=1, weight=100, reps=10)],
+            )
+        ],
+        confirm_new_practices=True,
+    )
+
+    assert (
+        add_training_session(test_input, db_path) == "Training log saved successfully!"
+    )
+    assert (
+        add_training_session(test_input, db_path) == "Training log saved successfully!"
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
+        assert (
+            cursor.execute("SELECT COUNT(*) FROM training_sessions").fetchone()[0] == 2
+        )
+
+
 def test_get_training_sessiosn_of_last_n_days(tmp_path):
     db_path = tmp_path / "training_session_test.db"
     init_db(db_path)

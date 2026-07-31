@@ -14,6 +14,15 @@ def init_db(db_path):
         cursor.execute("DROP TABLE IF EXISTS training_sessions")
 
         cursor.execute("""
+            CREATE TABLE IF NOT EXISTS write_operations (
+                operation_id TEXT PRIMARY KEY,
+                tool_name TEXT NOT NULL,
+                result TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """)
+
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS practices (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
@@ -70,6 +79,14 @@ def add_training_session(input_data: TrainingInputRecorder, db_path: str) -> str
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute("PRAGMA foreign_keys = ON")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS write_operations (
+                operation_id TEXT PRIMARY KEY,
+                tool_name TEXT NOT NULL,
+                result TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """)
 
         incoming_practice_names = list(
             set([s.practice_name.lower() for s in input_data.sessions])
@@ -90,6 +107,22 @@ def add_training_session(input_data: TrainingInputRecorder, db_path: str) -> str
                     """
 
         try:
+            result = "Training log saved successfully!"
+            if input_data.operation_id:
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO write_operations (operation_id, tool_name, result)
+                    VALUES (?, ?, ?)
+                    """,
+                    (input_data.operation_id, "log_training_session", result),
+                )
+                if cursor.rowcount == 0:
+                    cursor.execute(
+                        "SELECT result FROM write_operations WHERE operation_id = ?",
+                        (input_data.operation_id,),
+                    )
+                    return cursor.fetchone()[0]
+
             for session in input_data.sessions:
                 cursor.execute(
                     "SELECT id FROM practices WHERE lower(name)= ?",
@@ -132,7 +165,7 @@ def add_training_session(input_data: TrainingInputRecorder, db_path: str) -> str
                     )
 
             conn.commit()
-            return "Training log saved successfully!"
+            return result
         except Exception as e:
             conn.rollback()
             return f"Database error occurred: {str(e)}"
