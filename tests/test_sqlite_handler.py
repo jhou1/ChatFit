@@ -40,7 +40,7 @@ def seed_training_and_meal(db_path, target_date: date, label: str) -> None:
 
 
 def test_explicit_date_reads_do_not_use_sqlite_now(tmp_path):
-    """Breaks if a requested calendar date is ignored for SQLite's current date."""
+    """Breaks if a requested calendar date is ignored and all rows are returned."""
     temp_db_path = tmp_path / "explicit_date.db"
     init_db(temp_db_path)
     add_meal_log(
@@ -68,6 +68,7 @@ def test_explicit_date_reads_do_not_use_sqlite_now(tmp_path):
         ),
         str(temp_db_path),
     )
+    seed_training_and_meal(temp_db_path, date(2026, 7, 25), "not-target")
 
     meals = sqlite_handler.get_meal_records_for_date(
         date(2026, 8, 1), str(temp_db_path)
