@@ -45,7 +45,7 @@ def test_explicit_date_reads_do_not_use_sqlite_now(tmp_path):
     init_db(temp_db_path)
     add_meal_log(
         MealInfo(
-            date=date(2026, 8, 1),
+            date=date(2026, 7, 31),
             meal_type="dinner",
             items="rice and fish",
             note="post-training",
@@ -54,7 +54,7 @@ def test_explicit_date_reads_do_not_use_sqlite_now(tmp_path):
     )
     add_training_session(
         TrainingInputRecorder(
-            date=date(2026, 8, 1),
+            date=date(2026, 7, 31),
             sessions=[
                 TrainingSession(
                     practice_name="Squat",
@@ -71,16 +71,16 @@ def test_explicit_date_reads_do_not_use_sqlite_now(tmp_path):
     seed_training_and_meal(temp_db_path, date(2026, 7, 25), "not-target")
 
     meals = sqlite_handler.get_meal_records_for_date(
-        date(2026, 8, 1), str(temp_db_path)
+        date(2026, 7, 31), str(temp_db_path)
     )
     training = sqlite_handler.get_training_records_for_date(
-        date(2026, 8, 1), str(temp_db_path)
+        date(2026, 7, 31), str(temp_db_path)
     )
 
     assert [row["items"] for row in meals] == ["rice and fish"]
     assert training == [
         {
-            "training_date": "2026-08-01",
+            "training_date": "2026-07-31",
             "practice_name": "Squat",
             "rpe": 7,
             "note": "comfortable",
