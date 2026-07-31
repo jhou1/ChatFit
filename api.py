@@ -3,6 +3,7 @@ import uuid
 import logging
 import re
 from collections.abc import Awaitable, Callable
+from datetime import date
 from typing import Any
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -21,6 +22,7 @@ from langfuse.langchain import CallbackHandler  # type: ignore
 from agents.sqlite_handler import init_db
 from agents.roles.supervisor import make_agent_graph
 from agents.rag import get_or_create_vector_store
+from agents.roles.insights import generate_weekly_insights
 from agents.utils import extract_text
 from agents.observability import (
     content_attributes,
@@ -31,6 +33,7 @@ from agents.observability import (
     observe_span,
     start_trace,
 )
+from proactive_reviews import build_proactive_review, today_in_shanghai
 
 
 class ChatRequest(BaseModel):
@@ -41,6 +44,11 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
     pending_tools: list[dict] | None = None
+
+
+class ProactiveReviewResponse(BaseModel):
+    should_send: bool
+    message: str | None
 
 
 user_sessions: dict[str, str] = {}
@@ -138,6 +146,7 @@ async def startup_event(fastapi_app: FastAPI):
 
     if not os.path.exists(db_path):
         init_db(db_path)
+    fastapi_app.state.db_path = db_path
 
     print("Initializing Vector Store...")
     vector_store = get_or_create_vector_store(
@@ -346,6 +355,25 @@ async def chat_endpoint(req: ChatRequest, request: Request, response: Response):
             content_attributes(final_response.strip(), "response.message"),
         )
         return ChatResponse(response=final_response.strip())
+
+
+@app.post("/proactive-review", response_model=ProactiveReviewResponse)
+async def proactive_review_endpoint(request: Request) -> ProactiveReviewResponse:
+    async def weekly_summary(start_date: date, end_date: date) -> str:
+        return await generate_weekly_insights(
+            request.app.state.llm_config,
+            request.app.state.db_path,
+            start_date,
+            end_date,
+        )
+
+    result = await build_proactive_review(
+        today_in_shanghai(), request.app.state.db_path, weekly_summary
+    )
+    return ProactiveReviewResponse(
+        should_send=result.should_send,
+        message=result.message,
+    )
 
 
 @app.post("/clear")

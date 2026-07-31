@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from datetime import date
 
 import httpx
 import pytest
@@ -7,6 +8,15 @@ from langchain_core.messages import AIMessage
 
 import api as api_module
 from agents.observability import InMemorySink, observation_sink
+from agents.models import MealInfo, TrainingInputRecorder, TrainingSession, TrainingSet
+from agents.sqlite_handler import add_meal_log, add_training_session, init_db
+
+
+@pytest.fixture
+def temp_db_path(tmp_path):
+    db_path = tmp_path / "proactive_review.db"
+    init_db(db_path)
+    return db_path
 
 
 class FakeAgent:
@@ -81,6 +91,147 @@ class FakeParallelInterruptAgent(FakeAgent):
                 ),
             ]
         }
+
+
+@pytest.mark.asyncio
+async def test_proactive_review_returns_typed_daily_result_without_thread_changes(
+    monkeypatch, temp_db_path
+):
+    monkeypatch.setattr(
+        api_module,
+        "today_in_shanghai",
+        lambda: date(2026, 7, 31),
+        raising=False,
+    )
+    api_module.app.state.db_path = str(temp_db_path)
+    api_module.app.state.llm_config = object()
+    api_module.user_sessions.clear()
+
+    transport = httpx.ASGITransport(app=api_module.app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        response = await client.post("/proactive-review")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "should_send": True,
+        "message": "今天还没有看到饮食或训练记录。今天吃了什么，练了什么？",
+    }
+    assert api_module.user_sessions == {}
+
+
+@pytest.mark.asyncio
+async def test_proactive_review_returns_no_send_when_daily_categories_are_complete(
+    monkeypatch, temp_db_path
+):
+    target_date = date(2026, 7, 31)
+    add_meal_log(
+        MealInfo(
+            date=target_date,
+            meal_type="dinner",
+            items="米饭和鱼",
+            note="训练后",
+        ),
+        str(temp_db_path),
+    )
+    add_training_session(
+        TrainingInputRecorder(
+            date=target_date,
+            sessions=[
+                TrainingSession(
+                    practice_name="深蹲",
+                    practice_type="weighted",
+                    rpe=7,
+                    note="状态舒适",
+                    sets=[TrainingSet(set_number=1, weight=100, reps=5)],
+                )
+            ],
+            confirm_new_practices=True,
+        ),
+        str(temp_db_path),
+    )
+    monkeypatch.setattr(
+        api_module, "today_in_shanghai", lambda: target_date, raising=False
+    )
+    api_module.app.state.db_path = str(temp_db_path)
+    api_module.app.state.llm_config = object()
+    api_module.user_sessions.clear()
+
+    transport = httpx.ASGITransport(app=api_module.app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        response = await client.post("/proactive-review")
+
+    assert response.status_code == 200
+    assert response.json() == {"should_send": False, "message": None}
+    assert api_module.user_sessions == {}
+
+
+@pytest.mark.asyncio
+async def test_proactive_review_uses_api_state_for_saturday_weekly_summary(
+    monkeypatch, temp_db_path
+):
+    target_date = date(2026, 8, 1)
+    llm_config = object()
+    add_meal_log(
+        MealInfo(
+            date=target_date,
+            meal_type="dinner",
+            items="米饭和鱼",
+            note="训练后",
+        ),
+        str(temp_db_path),
+    )
+    add_training_session(
+        TrainingInputRecorder(
+            date=target_date,
+            sessions=[
+                TrainingSession(
+                    practice_name="深蹲",
+                    practice_type="weighted",
+                    rpe=7,
+                    note="状态舒适",
+                    sets=[TrainingSet(set_number=1, weight=100, reps=5)],
+                )
+            ],
+            confirm_new_practices=True,
+        ),
+        str(temp_db_path),
+    )
+
+    async def fake_weekly_insights(config, db_path, start_date, end_date):
+        assert config is llm_config
+        assert db_path == str(temp_db_path)
+        assert (start_date, end_date) == (date(2026, 7, 26), target_date)
+        return "## 本周总结\n\n本周训练和饮食保持稳定。"
+
+    monkeypatch.setattr(
+        api_module, "today_in_shanghai", lambda: target_date, raising=False
+    )
+    monkeypatch.setattr(
+        api_module,
+        "generate_weekly_insights",
+        fake_weekly_insights,
+        raising=False,
+    )
+    api_module.app.state.db_path = str(temp_db_path)
+    api_module.app.state.llm_config = llm_config
+    api_module.user_sessions.clear()
+
+    transport = httpx.ASGITransport(app=api_module.app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        response = await client.post("/proactive-review")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "should_send": True,
+        "message": "## 本周总结\n\n本周训练和饮食保持稳定。",
+    }
+    assert api_module.user_sessions == {}
 
 
 @pytest.mark.asyncio
