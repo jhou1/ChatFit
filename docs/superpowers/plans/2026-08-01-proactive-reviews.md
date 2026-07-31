@@ -305,11 +305,12 @@ def test_weekly_bounds_are_sunday_through_saturday():
     )
 ```
 
-Add async tests that monkeypatch the Task 1 repository functions in the
-`proactive_reviews` module. Verify Saturday returns one message, puts the weekly
-summary before the daily question, omits the question when both categories
-exist, calls the generator with July 26/August 1, retries a failing generator
-exactly twice, and then uses this exact heading and notice:
+Add async tests that seed the real temporary SQLite database through
+`add_training_session` and `add_meal_log`; mock only the external weekly summary
+generator. Verify Saturday returns one message, puts the weekly summary before
+the daily question, omits the question when both categories exist, calls the
+generator with July 26/August 1, retries a failing generator exactly twice, and
+then uses this exact heading and notice:
 
 ```python
 WEEKLY_FAILURE = (
@@ -592,21 +593,17 @@ git commit -m "feat: add fixed-window weekly insights"
 
 - [ ] **Step 1: Add failing endpoint contract and isolation tests**
 
-Use the existing ASGI transport and set only the state needed by the endpoint:
+Use the existing ASGI transport and a real temporary SQLite database. Patch only
+the Shanghai clock for a Sunday-through-Friday request; the real endpoint,
+orchestration, and repository code must produce the response:
 
 ```python
 @pytest.mark.asyncio
 async def test_proactive_review_returns_typed_daily_result_without_thread_changes(
-    monkeypatch,
+    monkeypatch, temp_db_path
 ):
-    async def fake_build(as_of, db_path, generator):
-        assert as_of == date(2026, 7, 31)
-        assert db_path == "/tmp/chatfit.db"
-        return ProactiveReviewResult(True, "今天练了什么？")
-
     monkeypatch.setattr(api_module, "today_in_shanghai", lambda: date(2026, 7, 31))
-    monkeypatch.setattr(api_module, "build_proactive_review", fake_build)
-    api_module.app.state.db_path = "/tmp/chatfit.db"
+    api_module.app.state.db_path = str(temp_db_path)
     api_module.app.state.llm_config = object()
     api_module.user_sessions.clear()
 
@@ -617,14 +614,19 @@ async def test_proactive_review_returns_typed_daily_result_without_thread_change
         response = await client.post("/proactive-review")
 
     assert response.status_code == 200
-    assert response.json() == {"should_send": True, "message": "今天练了什么？"}
+    assert response.json() == {
+        "should_send": True,
+        "message": "今天还没有看到饮食或训练记录。今天吃了什么，练了什么？",
+    }
     assert api_module.user_sessions == {}
 ```
 
-Add a no-send response test and a Saturday test whose fake builder invokes its
-generator and verifies `generate_weekly_insights` receives the API state's LLM
-config, database path, and exact reporting dates. Assert no test calls
-`get_thread_id`.
+Add a no-send response test by persisting both categories on the target date.
+For the Saturday test, persist the daily rows and patch only
+`generate_weekly_insights`, the external LLM boundary; its replacement verifies
+the API state's LLM config, database path, and exact reporting dates before
+returning a literal summary. Assert `user_sessions` remains unchanged in every
+case.
 
 - [ ] **Step 2: Run the endpoint tests and verify RED**
 
