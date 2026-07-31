@@ -1,17 +1,21 @@
 import asyncio
-from typing import Sequence, Any
+import json
+from typing import Any, Literal, Protocol, Sequence
 
-from langchain_core.messages import ToolMessage, AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.errors import GraphInterrupt
 from langgraph.types import interrupt
+from pydantic import BaseModel, ValidationError
 
+from agents.llm_factory import LLMConfig, create_chat_model
 from agents.observability import (
     emit_event,
     error_attributes,
     mark_current_span_status,
     observe_span,
 )
+from agents.utils import extract_text
 
 MAX_RETRIES = 3
 MAX_TOOL_TOKENS = 5000
@@ -21,6 +25,51 @@ MAX_OUTPUT_TOKENS = 500
 TRUNCATE_WARNINGS = "\n[OUTPUT TRUNCATED - the tool returned more data than can be processed. Please ask a more specific question]"
 HITL_TIMEOUT_SECONDS = 300.0  # 5 minutes for human-in-the-loop timeout
 HITL_TOOL_CALLS = ["log_training_session", "log_meal"]
+
+
+class ApprovalDecision(BaseModel):
+    intent: Literal["approve", "revise", "reject"]
+    feedback: str
+
+
+class ApprovalResolverProtocol(Protocol):
+    async def resolve(
+        self, user_message: str, pending_tool_calls: list[dict]
+    ) -> ApprovalDecision: ...
+
+
+class ApprovalIntentModel(BaseModel):
+    intent: Literal["approve", "revise", "reject"]
+
+
+class ApprovalResolver:
+    def __init__(self, llm_config: LLMConfig):
+        self.llm = create_chat_model(llm_config)
+
+    async def resolve(
+        self, user_message: str, pending_tool_calls: list[dict]
+    ) -> ApprovalDecision:
+        instruction = (
+            "Classify a reply to a pending database-write approval. Return "
+            "approve only when it purely approves the exact pending data. "
+            "Return revise when it adds, corrects, removes, or replaces any "
+            "business data, even if it also says approve. Return reject when "
+            "it declines the write. Output only JSON with one intent field."
+        )
+        context = json.dumps(pending_tool_calls, ensure_ascii=False, default=str)
+        resolver_messages = [
+            SystemMessage(content=instruction),
+            HumanMessage(
+                content=f"Pending tool calls: {context}\nUser reply: {user_message}"
+            ),
+        ]
+        response = await _execute_llm_query_safely(self.llm, resolver_messages)
+        try:
+            payload = json.loads(extract_text(response["messages"]))
+            intent = ApprovalIntentModel.model_validate(payload).intent
+        except (ValueError, TypeError, ValidationError):
+            intent = "reject"
+        return ApprovalDecision(intent=intent, feedback=user_message)
 
 
 def _is_transient_tool_error(error: Exception) -> bool:
@@ -196,8 +245,13 @@ class SafeToolNode:
     """Callable, wraps safe tool call and can be used like a LangGraph ToolNode"""
 
     # using Sequence to accept list or tuple of tools
-    def __init__(self, tools: Sequence[Any]):
+    def __init__(
+        self,
+        tools: Sequence[Any],
+        approval_resolver: ApprovalResolverProtocol | None = None,
+    ):
         self.tools = tools
+        self.approval_resolver = approval_resolver
 
     async def __call__(self, state: dict, config: RunnableConfig | None = None) -> dict:
         messages = state.get("messages", [])
@@ -244,6 +298,51 @@ class SafeToolNode:
                     "tool.call_ids": write_tool_call_ids,
                 },
             )
+
+            user_message = decision.get("user_message")
+            if self.approval_resolver and isinstance(user_message, str):
+                pending_tool_calls = [
+                    {key: value for key, value in tool_call.items() if key != "type"}
+                    for tool_call in write_tools
+                ]
+                approval = await self.approval_resolver.resolve(
+                    user_message, pending_tool_calls
+                )
+                if approval.intent == "revise":
+                    write_tool_call_id_set = set(write_tool_call_ids)
+                    read_tool_calls = [
+                        tool_call
+                        for tool_call in tool_calls
+                        if str(tool_call["id"]) not in write_tool_call_id_set
+                    ]
+                    read_outputs = await asyncio.gather(
+                        *[
+                            _execute_single_tool_safely(tool_call, self.tools)
+                            for tool_call in read_tool_calls
+                        ]
+                    )
+                    read_outputs_by_id = {
+                        str(output.tool_call_id): output for output in read_outputs
+                    }
+                    return {
+                        "messages": [
+                            (
+                                ToolMessage(
+                                    name=tool_call["name"],
+                                    tool_call_id=tool_call["id"],
+                                    content=(
+                                        "Pending write superseded by user revision"
+                                    ),
+                                    status="error",
+                                )
+                                if str(tool_call["id"]) in write_tool_call_id_set
+                                else read_outputs_by_id[str(tool_call["id"])]
+                            )
+                            for tool_call in tool_calls
+                        ]
+                        + [HumanMessage(content=approval.feedback)]
+                    }
+                decision = {"approved": approval.intent == "approve"}
 
             if not decision.get("approved"):
                 feedback = decision.get("feedback", "No feedback provided.")

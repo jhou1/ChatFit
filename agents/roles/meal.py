@@ -11,7 +11,11 @@ from langchain_core.prompts.prompt import PromptTemplate
 from langgraph.graph import StateGraph, START
 
 from langgraph.prebuilt import tools_condition
-from tools.safe_execution import SafeToolNode, _execute_llm_query_safely
+from tools.safe_execution import (
+    ApprovalResolver,
+    SafeToolNode,
+    _execute_llm_query_safely,
+)
 
 INSTRUCTION_FOR_RECORDING_MEALS = """
 You are a nutrition and meal assistant.
@@ -68,7 +72,10 @@ def make_meal_subagent_graph(llm_config: LLMConfig, db_path: str, vector_store):
 
     builder = StateGraph(AgentState)
     builder.add_node("log_meal", log_meal_node)
-    tool_node = SafeToolNode(tools=[log_meal, advise_meals])
+    tool_node = SafeToolNode(
+        tools=[log_meal, advise_meals],
+        approval_resolver=ApprovalResolver(llm_config),
+    )
     builder.add_node("tools", tool_node)  # type: ignore # type: ignore
 
     builder.add_edge(START, "log_meal")

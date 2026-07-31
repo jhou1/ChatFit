@@ -16,7 +16,11 @@ from agents.sqlite_handler import (
 )
 from agents.llm_factory import create_chat_model, LLMConfig
 from langgraph.prebuilt import tools_condition
-from tools.safe_execution import SafeToolNode, _execute_llm_query_safely
+from tools.safe_execution import (
+    ApprovalResolver,
+    SafeToolNode,
+    _execute_llm_query_safely,
+)
 
 INSTRUCTION_FOR_RECORDING_TRAINING_SESSIONS = """
 You are a highly capable assistant helping users track their fitness training sessions.
@@ -152,7 +156,8 @@ def make_training_agent_graph(llm_config: LLMConfig, db_path: str):
             normalize_practice_name,
             log_training_session,
             retrieve_training_sessions,
-        ]
+        ],
+        approval_resolver=ApprovalResolver(llm_config),
     )
     builder.add_node("tools", tool_node)  # type: ignore # type: ignore
 

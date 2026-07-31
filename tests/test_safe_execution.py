@@ -3,18 +3,30 @@ import asyncio
 import pytest
 from unittest.mock import Mock, AsyncMock, patch
 
-from langchain_core.messages import ToolMessage, AIMessage
+from langchain_core.messages import ToolMessage, AIMessage, HumanMessage
 
 from tools.safe_execution import (
     _is_transient_tool_error,
     _is_rate_limit_tool_error,
     _execute_single_tool_safely,
     _execute_llm_query_safely,
+    ApprovalDecision,
+    ApprovalResolver,
     MAX_RETRIES,
     MAX_OUTPUT_TOKENS,
     TRUNCATE_WARNINGS,
 )
 from agents.observability import InMemorySink, observation_sink, start_trace
+
+
+class FakeApprovalResolver:
+    def __init__(self, decision):
+        self.decision = decision
+        self.calls = []
+
+    async def resolve(self, user_message, pending_tool_calls):
+        self.calls.append((user_message, pending_tool_calls))
+        return self.decision
 
 
 def test_is_transient_error():
@@ -356,6 +368,65 @@ async def test_safe_tool_node_write_tool_rejected(mock_execute, mock_interrupt):
     assert rejected_message.status == "error"
     assert "User rejected the operation" in rejected_message.content
     assert rejected_message.tool_call_id == "call_3"
+
+
+@pytest.mark.asyncio
+@patch("tools.safe_execution.interrupt")
+@patch("tools.safe_execution._execute_single_tool_safely")
+async def test_revision_supersedes_write_and_preserves_reply(
+    mock_execute, mock_interrupt
+):
+    resolver = FakeApprovalResolver(
+        ApprovalDecision(intent="revise", feedback="保存，同时 RPE 7")
+    )
+    node = SafeToolNode(tools=[], approval_resolver=resolver)
+    pending = {
+        "name": "log_training_session",
+        "args": {"sessions": [{"rpe": None}]},
+        "id": "training-1",
+    }
+    mock_interrupt.return_value = {"user_message": "保存，同时 RPE 7"}
+
+    result = await node({"messages": [AIMessage(content="", tool_calls=[pending])]})
+
+    mock_execute.assert_not_called()
+    assert resolver.calls == [("保存，同时 RPE 7", [pending])]
+    assert isinstance(result["messages"][0], ToolMessage)
+    assert result["messages"][0].status == "error"
+    assert "superseded" in result["messages"][0].content
+    assert isinstance(result["messages"][1], HumanMessage)
+    assert result["messages"][1].content == "保存，同时 RPE 7"
+
+
+@pytest.mark.asyncio
+@patch("tools.safe_execution._execute_llm_query_safely")
+@patch("tools.safe_execution.create_chat_model")
+async def test_approval_resolver_returns_revision_and_preserves_full_feedback(
+    mock_create_chat_model, mock_execute
+):
+    mock_execute.return_value = {"messages": AIMessage(content='{"intent":"revise"}')}
+    resolver = ApprovalResolver(Mock())
+
+    decision = await resolver.resolve(
+        "保存，同时 RPE 7",
+        [{"name": "log_training_session", "args": {"rpe": None}, "id": "1"}],
+    )
+
+    assert decision == ApprovalDecision(intent="revise", feedback="保存，同时 RPE 7")
+
+
+@pytest.mark.asyncio
+@patch("tools.safe_execution._execute_llm_query_safely")
+@patch("tools.safe_execution.create_chat_model")
+async def test_approval_resolver_safely_rejects_malformed_json(
+    mock_create_chat_model, mock_execute
+):
+    mock_execute.return_value = {"messages": AIMessage(content="not JSON")}
+    resolver = ApprovalResolver(Mock())
+
+    decision = await resolver.resolve("保存", [])
+
+    assert decision == ApprovalDecision(intent="reject", feedback="保存")
 
 
 @pytest.mark.asyncio
