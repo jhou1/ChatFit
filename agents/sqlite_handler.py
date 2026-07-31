@@ -1,4 +1,6 @@
+from datetime import date
 import sqlite3
+from typing import Any
 
 from agents.models import TrainingInputRecorder, MealInfo
 
@@ -244,6 +246,60 @@ def get_aggregated_training_data(n: int, db_path: str):
         return [dict(row) for row in cursor.fetchall()]
 
 
+def get_training_records_for_date(
+    target_date: date, db_path: str
+) -> list[dict[str, Any]]:
+    """Return one recap row per training session on a calendar date."""
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT date(t.date) AS training_date,
+                   p.name AS practice_name,
+                   t.rpe,
+                   t.note,
+                   COUNT(s.id) AS total_sets
+            FROM training_sessions AS t
+            JOIN practices AS p ON p.id = t.practice_id
+            LEFT JOIN training_sets AS s ON s.training_session_id = t.id
+            WHERE date(t.date) = date(?)
+            GROUP BY t.id, date(t.date), p.name, t.rpe, t.note
+            ORDER BY t.id ASC
+            """,
+            (target_date.isoformat(),),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def get_aggregated_training_between(
+    start_date: date, end_date: date, db_path: str
+) -> list[dict[str, Any]]:
+    """Aggregate training data in an inclusive calendar-date range."""
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT
+                date(t.date) AS training_date,
+                p.type AS practice_type,
+                SUM(CASE WHEN p.type = 'weighted' THEN s.weight * s.reps ELSE 0 END) AS total_weight_volume,
+                SUM(CASE WHEN p.type = 'bodyweight' THEN s.reps ELSE 0 END) AS total_reps,
+                SUM(s.distance) AS total_distance,
+                SUM(s.duration) AS total_duration,
+                COUNT(s.id) AS total_sets,
+                AVG(t.rpe) AS avg_rpe
+            FROM training_sessions AS t
+            JOIN practices AS p ON t.practice_id = p.id
+            JOIN training_sets AS s ON t.id = s.training_session_id
+            WHERE date(t.date) BETWEEN date(?) AND date(?)
+            GROUP BY date(t.date), p.type
+            ORDER BY date(t.date) ASC
+            """,
+            (start_date.isoformat(), end_date.isoformat()),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
 def get_meal_records_of_last_n_days(n: int, db_path: str):
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
@@ -258,3 +314,25 @@ def get_meal_records_of_last_n_days(n: int, db_path: str):
             (f"-{n} days",),
         )
         return [dict(row) for row in cursor.fetchall()]
+
+
+def get_meal_records_between(
+    start_date: date, end_date: date, db_path: str
+) -> list[dict[str, Any]]:
+    """Return meals recorded in the inclusive calendar-date range."""
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT * FROM meal_records
+            WHERE date(date) BETWEEN date(?) AND date(?)
+            ORDER BY date ASC
+            """,
+            (start_date.isoformat(), end_date.isoformat()),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def get_meal_records_for_date(target_date: date, db_path: str) -> list[dict[str, Any]]:
+    """Return meals recorded on one calendar date."""
+    return get_meal_records_between(target_date, target_date, db_path)

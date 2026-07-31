@@ -1,12 +1,113 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import sqlite3
 
-from agents.models import TrainingInputRecorder, TrainingSet, TrainingSession
+import agents.sqlite_handler as sqlite_handler
+from agents.models import MealInfo, TrainingInputRecorder, TrainingSet, TrainingSession
 from agents.sqlite_handler import (
+    add_meal_log,
     add_training_session,
     get_training_sessions_of_last_n_days,
     init_db,
 )
+
+
+def seed_training_and_meal(db_path, target_date: date, label: str) -> None:
+    add_training_session(
+        TrainingInputRecorder(
+            date=target_date,
+            sessions=[
+                TrainingSession(
+                    practice_name=f"Squat {label}",
+                    practice_type="weighted",
+                    rpe=7,
+                    note=label,
+                    sets=[TrainingSet(set_number=1, weight=100, reps=5)],
+                )
+            ],
+            confirm_new_practices=True,
+        ),
+        str(db_path),
+    )
+    add_meal_log(
+        MealInfo(
+            date=target_date,
+            meal_type="dinner",
+            items=label,
+            note=label,
+        ),
+        str(db_path),
+    )
+
+
+def test_explicit_date_reads_do_not_use_sqlite_now(tmp_path):
+    """Breaks if a requested calendar date is ignored for SQLite's current date."""
+    temp_db_path = tmp_path / "explicit_date.db"
+    init_db(temp_db_path)
+    add_meal_log(
+        MealInfo(
+            date=date(2026, 8, 1),
+            meal_type="dinner",
+            items="rice and fish",
+            note="post-training",
+        ),
+        str(temp_db_path),
+    )
+    add_training_session(
+        TrainingInputRecorder(
+            date=date(2026, 8, 1),
+            sessions=[
+                TrainingSession(
+                    practice_name="Squat",
+                    practice_type="weighted",
+                    rpe=7,
+                    note="comfortable",
+                    sets=[TrainingSet(set_number=1, weight=100, reps=5)],
+                )
+            ],
+            confirm_new_practices=True,
+        ),
+        str(temp_db_path),
+    )
+
+    meals = sqlite_handler.get_meal_records_for_date(
+        date(2026, 8, 1), str(temp_db_path)
+    )
+    training = sqlite_handler.get_training_records_for_date(
+        date(2026, 8, 1), str(temp_db_path)
+    )
+
+    assert [row["items"] for row in meals] == ["rice and fish"]
+    assert training == [
+        {
+            "training_date": "2026-08-01",
+            "practice_name": "Squat",
+            "rpe": 7,
+            "note": "comfortable",
+            "total_sets": 1,
+        }
+    ]
+
+
+def test_inclusive_week_range_is_exactly_sunday_through_saturday(tmp_path):
+    """Breaks if explicit review ranges exclude either endpoint or include outside data."""
+    temp_db_path = tmp_path / "explicit_range.db"
+    init_db(temp_db_path)
+    seed_training_and_meal(temp_db_path, date(2026, 7, 25), "outside")
+    seed_training_and_meal(temp_db_path, date(2026, 7, 26), "sunday")
+    seed_training_and_meal(temp_db_path, date(2026, 8, 1), "saturday")
+
+    training = sqlite_handler.get_aggregated_training_between(
+        date(2026, 7, 26), date(2026, 8, 1), str(temp_db_path)
+    )
+    meals = sqlite_handler.get_meal_records_between(
+        date(2026, 7, 26), date(2026, 8, 1), str(temp_db_path)
+    )
+
+    assert {row["training_date"] for row in training} == {
+        "2026-07-26",
+        "2026-08-01",
+    }
+    assert {row["date"] for row in meals} == {"2026-07-26", "2026-08-01"}
 
 
 def test_add_training_session(tmp_path):
