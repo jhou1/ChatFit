@@ -17,6 +17,8 @@ from tools.safe_execution import (
     TRUNCATE_WARNINGS,
 )
 from agents.observability import InMemorySink, observation_sink, start_trace
+from agents.roles.training import INSTRUCTION_FOR_RECORDING_TRAINING_SESSIONS
+from langchain_core.prompts.prompt import PromptTemplate
 
 
 class FakeApprovalResolver:
@@ -27,6 +29,17 @@ class FakeApprovalResolver:
     async def resolve(self, user_message, pending_tool_calls):
         self.calls.append((user_message, pending_tool_calls))
         return self.decision
+
+
+def test_recording_prompt_explains_how_to_handle_superseded_training_writes():
+    prompt = PromptTemplate.from_template(
+        INSTRUCTION_FOR_RECORDING_TRAINING_SESSIONS
+    ).format(current_time="2026-07-31")
+    normalized_prompt = " ".join(prompt.split())
+
+    assert "superseded" in normalized_prompt
+    assert "merge" in normalized_prompt
+    assert "new approval" in normalized_prompt
 
 
 def test_is_transient_error():
@@ -419,6 +432,59 @@ async def test_revision_supersedes_write_and_preserves_reply(
     assert "superseded" in result["messages"][0].content
     assert isinstance(result["messages"][1], HumanMessage)
     assert result["messages"][1].content == "保存，同时 RPE 7"
+
+
+@pytest.mark.asyncio
+@patch("tools.safe_execution.interrupt")
+@patch("tools.safe_execution._execute_single_tool_safely")
+async def test_training_revision_requires_fresh_approval_before_single_write(
+    mock_execute, mock_interrupt
+):
+    resolver = FakeApprovalResolver(
+        ApprovalDecision(intent="revise", feedback="保存，同时 RPE 7")
+    )
+    node = SafeToolNode(tools=[], approval_resolver=resolver)
+    original_call = {
+        "name": "log_training_session",
+        "args": {"sessions": [{"rpe": None}]},
+        "id": "training-original",
+    }
+    replacement_call = {
+        "name": "log_training_session",
+        "args": {"sessions": [{"rpe": 7}]},
+        "id": "training-revised",
+    }
+    mock_interrupt.side_effect = [
+        {"user_message": "保存，同时 RPE 7"},
+        {"user_message": "保存"},
+    ]
+
+    assert original_call["args"]["sessions"][0]["rpe"] is None
+    revision_result = await node(
+        {"messages": [AIMessage(content="", tool_calls=[original_call])]}
+    )
+
+    mock_execute.assert_not_called()
+    assert resolver.calls == [("保存，同时 RPE 7", [original_call])]
+    assert isinstance(revision_result["messages"][0], ToolMessage)
+    assert "superseded" in revision_result["messages"][0].content
+    assert isinstance(revision_result["messages"][1], HumanMessage)
+    assert revision_result["messages"][1].content == "保存，同时 RPE 7"
+
+    resolver.decision = ApprovalDecision(intent="approve", feedback="保存")
+    mock_execute.return_value = ToolMessage(
+        content="Saved", tool_call_id="training-revised"
+    )
+    await node({"messages": [AIMessage(content="", tool_calls=[replacement_call])]})
+
+    assert mock_interrupt.call_count == 2
+    second_interrupt = mock_interrupt.call_args_list[1].args[0]
+    assert second_interrupt["tool_calls"][0]["args"]["sessions"][0]["rpe"] == 7
+    mock_execute.assert_awaited_once()
+    assert (
+        mock_execute.await_args.args[0]["args"]["operation_id"]
+        == "hitl:training-revised"
+    )
 
 
 @pytest.mark.asyncio

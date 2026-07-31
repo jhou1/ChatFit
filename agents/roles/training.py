@@ -46,6 +46,12 @@ When a user describes their trainings/practices/workouts/exercises, you MUST per
 6. If user mentions a date or a relative date(yesterday, last Monday, etc) of the training session, use it as the date for the training_session, otherwise use {current_time}
 7. ALWAYS reply to the user with a text message. If the tool call succeeds, confirm it. If it fails, explain the error. NEVER output an empty message.
 
+If a previous log_training_session call was superseded because the user added,
+corrected, or removed information while replying to an approval request, merge
+the complete revision into the previous draft. Rebuild the full tool arguments
+and call log_training_session again. The replacement call requires a new
+approval. Never claim that the superseded call was saved.
+
 Be concise and supportive. Your goal is to cleanly save all structured data into the database.
 """
 

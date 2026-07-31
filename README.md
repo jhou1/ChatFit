@@ -15,6 +15,7 @@ ChatFit 是一个基于自然语言交互的个人训练与饮食助手。用户
 - 基于本地食谱向量库提供饮食相关上下文
 - Supervisor 根据对话内容并行路由 Training、Meal、Insights 和 Chatter Agent
 - 数据写入前支持 Human-in-the-loop 确认
+- 如果确认回复同时补充或修改了训练信息，ChatFit 不会立即写入；它会更新待保存内容并再次请求确认。确认后的重复投递使用幂等键，不会生成重复训练记录。
 - 长对话自动压缩历史上下文，保留重要训练和饮食信息
 - 支持 Google、OpenAI、Anthropic 以及 OpenAI-compatible 本地模型
 - 可选接入 Langfuse 进行 Agent 链路追踪和质量评估
