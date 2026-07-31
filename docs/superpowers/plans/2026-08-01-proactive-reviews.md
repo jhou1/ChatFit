@@ -55,17 +55,15 @@
 
 - [ ] **Step 1: Add failing exact-date and range tests**
 
-Add imports and tests that seed July 25, July 26, and August 1, then assert only the requested dates are returned:
+Add tests that seed July 25, July 26, and August 1, then assert only the
+requested dates are returned. For the first RED run, import the existing module
+and resolve the new function inside the test body so pytest reports a failing
+test rather than a collection error:
 
 ```python
 from datetime import date
 
-from agents.sqlite_handler import (
-    get_aggregated_training_between,
-    get_meal_records_between,
-    get_meal_records_for_date,
-    get_training_records_for_date,
-)
+import agents.sqlite_handler as sqlite_handler
 
 
 def test_explicit_date_reads_do_not_use_sqlite_now(temp_db_path):
@@ -95,8 +93,12 @@ def test_explicit_date_reads_do_not_use_sqlite_now(temp_db_path):
         str(temp_db_path),
     )
 
-    meals = get_meal_records_for_date(date(2026, 8, 1), str(temp_db_path))
-    training = get_training_records_for_date(date(2026, 8, 1), str(temp_db_path))
+    meals = sqlite_handler.get_meal_records_for_date(
+        date(2026, 8, 1), str(temp_db_path)
+    )
+    training = sqlite_handler.get_training_records_for_date(
+        date(2026, 8, 1), str(temp_db_path)
+    )
 
     assert [row["items"] for row in meals] == ["rice and fish"]
     assert training == [
@@ -115,10 +117,10 @@ def test_inclusive_week_range_is_exactly_sunday_through_saturday(temp_db_path):
     seed_training_and_meal(temp_db_path, date(2026, 7, 26), "sunday")
     seed_training_and_meal(temp_db_path, date(2026, 8, 1), "saturday")
 
-    training = get_aggregated_training_between(
+    training = sqlite_handler.get_aggregated_training_between(
         date(2026, 7, 26), date(2026, 8, 1), str(temp_db_path)
     )
-    meals = get_meal_records_between(
+    meals = sqlite_handler.get_meal_records_between(
         date(2026, 7, 26), date(2026, 8, 1), str(temp_db_path)
     )
 
@@ -168,7 +170,9 @@ Run:
 UV_CACHE_DIR=/private/tmp/chatfit-uv-cache uv run pytest tests/test_sqlite_handler.py -q
 ```
 
-Expected: collection fails because the four new functions do not exist.
+Expected: the test runs and fails with `AttributeError` at the first missing
+behavior. After each implementation makes one assertion pass, add or enable the
+next behavior test and repeat RED → GREEN so every query proves its own failure.
 
 - [ ] **Step 3: Implement parameterized explicit-date queries**
 
@@ -243,20 +247,17 @@ git commit -m "feat: add explicit review date queries"
 
 - [ ] **Step 1: Write failing pure behavior tests**
 
-Create `tests/test_proactive_reviews.py` with one assertion per behavior:
+Create `tests/test_proactive_reviews.py` with one assertion per behavior. Begin
+with only the first test and dynamically import the new module inside the test
+body, producing a pytest failure instead of a collection error. Once the first
+behavior is GREEN, use normal imports and add each remaining test one at a time,
+watching it fail for its own missing branch before implementing that branch:
 
 ```python
+import importlib
 from datetime import date
 
 import pytest
-
-from proactive_reviews import (
-    ProactiveReviewResult,
-    build_daily_review,
-    build_proactive_review,
-    weekly_bounds,
-)
-
 
 MEAL = {"meal_type": "dinner", "items": "米饭和鱼", "note": "训练后"}
 TRAINING = {
@@ -268,30 +269,37 @@ TRAINING = {
 
 
 def test_daily_review_asks_both_when_nothing_is_recorded():
-    message = build_daily_review(date(2026, 7, 31), [], [])
+    proactive_reviews = importlib.import_module("proactive_reviews")
+    message = proactive_reviews.build_daily_review(date(2026, 7, 31), [], [])
     assert message == "今天还没有看到饮食或训练记录。今天吃了什么，练了什么？"
 
 
 def test_daily_review_recaps_meal_and_only_asks_about_training():
-    message = build_daily_review(date(2026, 7, 31), [MEAL], [])
+    proactive_reviews = importlib.import_module("proactive_reviews")
+    message = proactive_reviews.build_daily_review(date(2026, 7, 31), [MEAL], [])
     assert "晚餐：米饭和鱼" in message
     assert message.endswith("今天练了什么？")
     assert "今天吃了什么" not in message
 
 
 def test_daily_review_recaps_training_and_only_asks_about_meals():
-    message = build_daily_review(date(2026, 7, 31), [], [TRAINING])
+    proactive_reviews = importlib.import_module("proactive_reviews")
+    message = proactive_reviews.build_daily_review(date(2026, 7, 31), [], [TRAINING])
     assert "深蹲（5 组，RPE 7）" in message
     assert message.endswith("今天吃了什么？")
     assert "今天练了什么" not in message
 
 
 def test_daily_review_is_silent_when_both_categories_exist():
-    assert build_daily_review(date(2026, 7, 31), [MEAL], [TRAINING]) is None
+    proactive_reviews = importlib.import_module("proactive_reviews")
+    assert proactive_reviews.build_daily_review(
+        date(2026, 7, 31), [MEAL], [TRAINING]
+    ) is None
 
 
 def test_weekly_bounds_are_sunday_through_saturday():
-    assert weekly_bounds(date(2026, 8, 1)) == (
+    proactive_reviews = importlib.import_module("proactive_reviews")
+    assert proactive_reviews.weekly_bounds(date(2026, 8, 1)) == (
         date(2026, 7, 26),
         date(2026, 8, 1),
     )
@@ -318,7 +326,9 @@ Run:
 UV_CACHE_DIR=/private/tmp/chatfit-uv-cache uv run pytest tests/test_proactive_reviews.py -q
 ```
 
-Expected: collection fails because `proactive_reviews.py` does not exist.
+Expected for the first cycle: the test runs and fails with
+`ModuleNotFoundError: proactive_reviews`. Later cycles fail on the newly added
+branch assertion before the corresponding implementation is written.
 
 - [ ] **Step 3: Implement immutable result types and deterministic composition**
 
@@ -396,32 +406,28 @@ git commit -m "feat: compose proactive daily reviews"
 
 - [ ] **Step 1: Add a failing uncheckpointed reporting-window Agent test**
 
-Patch the safe LLM executor so the first Agent turn calls both fixed-window
-tools and the second returns a summary. Patch both repository range functions
-to capture the requested dates:
+Use the real temporary SQLite repository seeded with rows immediately outside
+and inside the requested window. Patch only the external LLM executor: its first
+Agent turn calls both fixed-window tools, and its second turn inspects the real
+`ToolMessage` payloads before returning a summary:
 
 ```python
 @pytest.mark.asyncio
-async def test_weekly_insights_uses_both_fixed_window_tools(monkeypatch, llm_config):
-    calls = []
-
-    monkeypatch.setattr(
-        insights_module,
-        "get_aggregated_training_between",
-        lambda start, end, db: calls.append(("training", start, end, db)) or [],
-    )
-    monkeypatch.setattr(
-        insights_module,
-        "get_meal_records_between",
-        lambda start, end, db: calls.append(("meals", start, end, db)) or [],
-    )
+async def test_weekly_insights_uses_both_fixed_window_tools(
+    monkeypatch, llm_config, temp_db_path
+):
+    seed_data_for_date(temp_db_path, date(2026, 7, 25), "outside")
+    seed_data_for_date(temp_db_path, date(2026, 7, 26), "sunday")
+    seed_data_for_date(temp_db_path, date(2026, 8, 1), "saturday")
 
     turn = 0
+    captured_system_prompt = ""
 
     async def fake_execute(_llm, messages):
-        nonlocal turn
+        nonlocal turn, captured_system_prompt
         turn += 1
         if turn == 1:
+            captured_system_prompt = messages[0].content
             return {
                 "messages": AIMessage(
                     content="",
@@ -431,26 +437,70 @@ async def test_weekly_insights_uses_both_fixed_window_tools(monkeypatch, llm_con
                     ],
                 )
             }
+        tool_messages = {
+            message.name: message.content
+            for message in messages
+            if isinstance(message, ToolMessage)
+        }
+        training = json.loads(tool_messages["retrieve_recent_training"])
+        meals = json.loads(tool_messages["retrieve_recent_meals"])
+        assert {row["training_date"] for row in training} == {
+            "2026-07-26",
+            "2026-08-01",
+        }
+        assert {row["date"] for row in meals} == {
+            "2026-07-26",
+            "2026-08-01",
+        }
         return {"messages": AIMessage(content="本周训练和饮食保持稳定。")}
 
     monkeypatch.setattr(insights_module, "_execute_llm_query_safely", fake_execute)
 
     summary = await insights_module.generate_weekly_insights(
         llm_config,
-        "/tmp/review.db",
+        str(temp_db_path),
         date(2026, 7, 26),
         date(2026, 8, 1),
     )
 
     assert summary == "本周训练和饮食保持稳定。"
-    assert calls == [
-        ("training", date(2026, 7, 26), date(2026, 8, 1), "/tmp/review.db"),
-        ("meals", date(2026, 7, 26), date(2026, 8, 1), "/tmp/review.db"),
-    ]
+    assert "2026-07-26" in captured_system_prompt
+    assert "2026-08-01" in captured_system_prompt
 ```
 
-Also assert the generated system prompt contains both ISO dates, and add a test
-that blank or `[Error]` final content raises `RuntimeError` so Task 2 can retry.
+Use this real-data helper in the Agent test:
+
+```python
+def seed_data_for_date(db_path, target_date: date, label: str) -> None:
+    add_training_session(
+        TrainingInputRecorder(
+            date=target_date,
+            sessions=[
+                TrainingSession(
+                    practice_name=f"Squat {label}",
+                    practice_type="weighted",
+                    rpe=7,
+                    note=label,
+                    sets=[TrainingSet(set_number=1, weight=100, reps=5)],
+                )
+            ],
+            confirm_new_practices=True,
+        ),
+        str(db_path),
+    )
+    add_meal_log(
+        MealInfo(
+            date=target_date,
+            meal_type="dinner",
+            items=label,
+            note=label,
+        ),
+        str(db_path),
+    )
+```
+
+Add a test that blank or `[Error]` final content raises `RuntimeError` so Task
+2 can retry.
 
 - [ ] **Step 2: Run the focused Agent tests and verify RED**
 
@@ -847,28 +897,7 @@ git commit -m "feat: schedule opt-in proactive Telegram reviews"
 - Documents: disabled-by-default behavior and conditional chat ID requirement.
 - Configures: `API_PROACTIVE_REVIEW_URL=http://api:8000/proactive-review` for the Bot container.
 
-- [ ] **Step 1: Add documentation/configuration assertions**
-
-Add a lightweight test in `tests/test_bot.py` that reads `.env.example` and
-`docker-compose.yml` and asserts these exact strings exist:
-
-```python
-assert "PROACTIVE_REVIEWS_ENABLED=false" in env_example
-assert "TELEGRAM_CHAT_ID=" in env_example
-assert "API_PROACTIVE_REVIEW_URL=http://api:8000/proactive-review" in compose
-```
-
-- [ ] **Step 2: Run the documentation assertion and verify RED**
-
-Run:
-
-```bash
-UV_CACHE_DIR=/private/tmp/chatfit-uv-cache uv run pytest tests/test_bot.py -q
-```
-
-Expected: the new assertion fails because configuration examples are absent.
-
-- [ ] **Step 3: Update environment and Compose configuration**
+- [ ] **Step 1: Update environment and Compose configuration**
 
 Add this exact block to `.env.example`:
 
@@ -885,7 +914,7 @@ Add this Bot environment entry to `docker-compose.yml`:
 - API_PROACTIVE_REVIEW_URL=http://api:8000/proactive-review
 ```
 
-- [ ] **Step 4: Update all three user-facing architecture sources**
+- [ ] **Step 2: Update all three user-facing architecture sources**
 
 Document in Chinese:
 
@@ -900,22 +929,24 @@ Update both Mermaid architecture diagrams and the relevant configuration tables;
 keep `docs/index.html` semantically aligned with `README.md` and
 `docs/architecture.md`.
 
-- [ ] **Step 5: Run focused tests and documentation drift checks**
+- [ ] **Step 3: Validate configuration behavior and inspect documentation drift**
 
 Run:
 
 ```bash
-UV_CACHE_DIR=/private/tmp/chatfit-uv-cache uv run pytest tests/test_bot.py -q
+podman-compose config
 rg -n "PROACTIVE_REVIEWS_ENABLED|TELEGRAM_CHAT_ID|proactive-review|21:00|Asia/Shanghai" .env.example docker-compose.yml README.md docs/architecture.md docs/index.html
 ```
 
-Expected: tests pass and every documentation/configuration file contains its
-applicable proactive-review description.
+Expected: Compose parses successfully, and the manual inspection output shows
+every documentation/configuration file contains its applicable proactive-review
+description. Human-facing prose receives no source-string unit test; the
+mandatory independent quality subagent reviews semantic documentation parity.
 
-- [ ] **Step 6: Commit deployment and documentation updates**
+- [ ] **Step 4: Commit deployment and documentation updates**
 
 ```bash
-git add .env.example docker-compose.yml README.md docs/architecture.md docs/index.html tests/test_bot.py
+git add .env.example docker-compose.yml README.md docs/architecture.md docs/index.html
 git commit -m "docs: explain proactive review scheduling"
 ```
 
