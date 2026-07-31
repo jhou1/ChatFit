@@ -8,6 +8,8 @@ or training data is already recorded and asks only about the missing category.
 If both categories are already recorded, ChatFit stays silent. On Saturday,
 ChatFit always sends one combined message containing an Insights Agent weekly
 summary followed by any question needed to fill gaps in today's records.
+Automatic sending is opt-in through `PROACTIVE_REVIEWS_ENABLED`, which defaults
+to `false`.
 
 This feature remains within the current single-user deployment model. It does
 not change user-to-thread mapping, checkpoint identifiers, conversation-memory
@@ -16,6 +18,8 @@ retention, or context summarization.
 ## Goals
 
 - Send a proactive review at 21:00 Asia/Shanghai.
+- Allow deployments to enable or disable all automatic sending without changing
+  code.
 - Avoid asking for information that is already persisted for the current day.
 - Ask about training when only meals are present, meals when only training is
   present, and both when neither is present.
@@ -41,8 +45,13 @@ The existing Telegram Bot remains the outbound transport and owns the daily
 schedule. The FastAPI service remains the owner of business-data access and
 Agent execution.
 
-At application startup, the Bot registers one `python-telegram-bot` JobQueue
-daily job for 21:00 in `ZoneInfo("Asia/Shanghai")`. The deployment supplies one
+At application startup, the Bot reads `PROACTIVE_REVIEWS_ENABLED`, which
+defaults to `false`. When disabled, the Bot does not validate proactive-only
+configuration, register a JobQueue task, call the proactive API, or send an
+automatic message. Existing reactive Telegram handlers continue normally.
+
+When enabled, the Bot registers one `python-telegram-bot` JobQueue daily job for
+21:00 in `ZoneInfo("Asia/Shanghai")`. The deployment must then supply one
 `TELEGRAM_CHAT_ID`; startup fails with a clear configuration error when it is
 missing or invalid. The scheduled callback asks the API for the day's proactive
 review, then sends the returned message to that chat through the existing
@@ -84,6 +93,7 @@ sequenceDiagram
 
 The Bot owns only these responsibilities:
 
+- parse `PROACTIVE_REVIEWS_ENABLED` and skip all proactive setup when disabled;
 - validate `TELEGRAM_CHAT_ID`;
 - register the daily 21:00 Asia/Shanghai JobQueue task;
 - request the already-composed message from the API;
@@ -185,8 +195,13 @@ question is still appended when applicable.
 
 ## Configuration and Deployment
 
-`TELEGRAM_CHAT_ID` is required and identifies the sole proactive-message target.
-The schedule is fixed at 21:00 Asia/Shanghai for this single-user feature.
+`PROACTIVE_REVIEWS_ENABLED` accepts case-insensitive `true` or `false` and
+defaults to `false`. Any other non-empty value fails startup with a clear
+configuration error. When false, the Bot starts without a proactive job and
+`TELEGRAM_CHAT_ID` is optional. When true, `TELEGRAM_CHAT_ID` is required and
+identifies the sole proactive-message target. The schedule is fixed at 21:00
+Asia/Shanghai for this single-user feature.
+
 `API_PROACTIVE_REVIEW_URL` identifies `POST /proactive-review`; it defaults to
 `http://127.0.0.1:${PORT}/proactive-review` and Compose sets it to
 `http://api:8000/proactive-review`.
@@ -231,8 +246,15 @@ remain in effect for Agent calls.
 
 ### Bot integration
 
+- The default disabled state registers no proactive job and makes no automatic
+  API or Telegram call.
+- Explicit `PROACTIVE_REVIEWS_ENABLED=false` has the same behavior as the
+  default.
+- Case-insensitive `PROACTIVE_REVIEWS_ENABLED=true` enables proactive setup.
+- An invalid toggle value fails startup clearly.
 - The JobQueue registers one daily task for 21:00 Asia/Shanghai.
-- Missing or invalid `TELEGRAM_CHAT_ID` fails startup clearly.
+- Missing or invalid `TELEGRAM_CHAT_ID` fails startup only when proactive reviews
+  are enabled.
 - A no-send API result causes no Telegram request.
 - A message result is sent only to the configured chat.
 - API retries are bounded, and HTML rejection uses the plain-text fallback.
@@ -248,14 +270,16 @@ must be fixed and verification repeated until clean.
 
 ## Documentation Changes
 
-- Update `README.md` with `TELEGRAM_CHAT_ID`, the 21:00 Asia/Shanghai behavior,
-  Saturday composition, and the no-catch-up limitation.
+- Update `README.md` with `PROACTIVE_REVIEWS_ENABLED`, conditional
+  `TELEGRAM_CHAT_ID` requirements, the 21:00 Asia/Shanghai behavior, Saturday
+  composition, and the no-catch-up limitation.
 - Update `docs/architecture.md` to show the Bot scheduler, proactive-review API,
   deterministic review service, and direct Insights Agent call.
 - Update `docs/index.html` so the published architecture and configuration do
   not lag behind the code.
-- Update `.env.example` with `TELEGRAM_CHAT_ID` and update `docker-compose.yml`
-  with `API_PROACTIVE_REVIEW_URL=http://api:8000/proactive-review`.
+- Update `.env.example` with `PROACTIVE_REVIEWS_ENABLED=false` and
+  `TELEGRAM_CHAT_ID`; update `docker-compose.yml` with
+  `API_PROACTIVE_REVIEW_URL=http://api:8000/proactive-review`.
 
 ## Alternatives Considered
 
@@ -287,11 +311,15 @@ reserves the Insights Agent for weekly analysis.
    appended.
 3. Date boundaries cover explicit Shanghai calendar dates, and the weekly window
    is exactly Sunday through Saturday inclusive.
-4. `TELEGRAM_CHAT_ID` is the only notification target, and an invalid or absent
-   value prevents Bot startup with a clear error.
-5. No code related to user thread identifiers, checkpoints, or message-retention
+4. Proactive sending defaults to disabled. When disabled, no proactive job or
+   automatic API/Telegram call occurs and the Bot's reactive behavior remains
+   available.
+5. When proactive sending is enabled, `TELEGRAM_CHAT_ID` is the only notification
+   target, and an invalid or absent value prevents Bot startup with a clear
+   error.
+6. No code related to user thread identifiers, checkpoints, or message-retention
    limits changes.
-6. Existing Telegram and Agent behavior remains compatible.
-7. README, architecture documentation, and `docs/index.html` describe the shipped
+7. Existing Telegram and Agent behavior remains compatible.
+8. README, architecture documentation, and `docs/index.html` describe the shipped
    behavior.
-8. Independent verification reports no error, failure, or warning.
+9. Independent verification reports no error, failure, or warning.
