@@ -12,6 +12,7 @@ import telegram.error
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.request import BaseRequest, RequestData
+from telegram.warnings import PTBUserWarning
 
 import bot
 
@@ -57,6 +58,10 @@ class FakeApplicationBuilder:
 
     def get_updates_request(self, request: Any) -> "FakeApplicationBuilder":
         self.updates_request = request
+        return self
+
+    def job_queue(self, job_queue: Any) -> "FakeApplicationBuilder":
+        self.app.job_queue = job_queue
         return self
 
     def build(self) -> FakeApplication:
@@ -569,6 +574,39 @@ def test_disabled_proactive_reviews_do_not_require_chat_id():
     assert settings.chat_id is None
 
 
+@pytest.mark.parametrize(
+    "environ",
+    [{}, {"PROACTIVE_REVIEWS_ENABLED": "false"}],
+    ids=["default", "explicit-false"],
+)
+def test_disabled_proactive_reviews_build_application_without_job_queue(environ):
+    settings = bot.load_proactive_settings(environ)
+
+    application = bot.build_telegram_application(
+        "123:ABC",
+        request=FakeTelegramRequest(),
+        proactive_reviews_enabled=settings.enabled,
+    )
+
+    with pytest.warns(PTBUserWarning, match="No `JobQueue` set up"):
+        assert application.job_queue is None
+
+
+def test_enabled_proactive_reviews_build_application_with_registered_job():
+    settings = bot.load_proactive_settings(
+        {"PROACTIVE_REVIEWS_ENABLED": "true", "TELEGRAM_CHAT_ID": "456"}
+    )
+    application = bot.build_telegram_application(
+        "123:ABC",
+        request=FakeTelegramRequest(),
+        proactive_reviews_enabled=settings.enabled,
+    )
+
+    assert application.job_queue is not None
+    bot.register_proactive_review_job(application, settings)
+    assert [job.name for job in application.job_queue.jobs()] == ["proactive-review"]
+
+
 @pytest.mark.parametrize("value", ["true", "TRUE", " True "])
 def test_enabled_proactive_reviews_require_integer_chat_id(value):
     settings = bot.load_proactive_settings(
@@ -630,7 +668,7 @@ def test_main_registers_photo_message_handler(monkeypatch):
     ]
     callback_names = [callback.__name__ for callback in callbacks]
     assert "handle_photo" in callback_names
-    assert app.job_queue.registrations == []
+    assert app.job_queue is None
     assert app.polling_started
     assert app.polling_kwargs == {}
 

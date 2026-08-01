@@ -475,8 +475,11 @@ def build_telegram_application(
     proxy_url: str | None = None,
     request: BaseRequest | None = None,
     photo_text_extractor: PhotoTextExtractor | None = None,
+    proactive_reviews_enabled: bool = False,
 ) -> Application[Any, Any, Any, Any, Any, Any]:
     builder = ApplicationBuilder().token(token)
+    if not proactive_reviews_enabled:
+        builder.job_queue(None)
 
     if request is not None:
         builder = builder.request(request)
@@ -521,7 +524,10 @@ def main():
     proxy_url = get_telegram_proxy_url()
     photo_text_extractor = build_photo_text_extractor_from_env()
     app = build_telegram_application(
-        token, proxy_url=proxy_url, photo_text_extractor=photo_text_extractor
+        token,
+        proxy_url=proxy_url,
+        photo_text_extractor=photo_text_extractor,
+        proactive_reviews_enabled=proactive_settings.enabled,
     )
     if proactive_settings.enabled:
         register_proactive_review_job(app, proactive_settings)
