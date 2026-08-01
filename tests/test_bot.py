@@ -10,7 +10,7 @@ import pytest
 from PIL import Image
 import telegram.error
 from telegram import Update
-from telegram.constants import ParseMode
+from telegram.constants import MessageLimit, ParseMode
 from telegram.request import BaseRequest, RequestData
 from telegram.warnings import PTBUserWarning
 
@@ -204,6 +204,12 @@ class FakeAsyncClient:
         return outcome
 
 
+class SlowSuccessfulAsyncClient(FakeAsyncClient):
+    async def post(self, url: str) -> httpx.Response:
+        await asyncio.sleep(0)
+        return await super().post(url)
+
+
 class FakeScheduledBot:
     def __init__(self, outcomes: list[Exception | None] | None = None) -> None:
         self.outcomes = list(outcomes or [])
@@ -315,6 +321,42 @@ async def test_fetch_proactive_review_retries_transport_and_server_errors(
     assert result == {"should_send": True, "message": "回顾"}
     assert client.posts == [api_url, api_url, api_url]
     assert sleeps == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_fetch_proactive_review_waits_past_server_deadline_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Breaks if a valid slow API response times out and becomes duplicate POSTs."""
+    api_url = "http://api/proactive-review"
+    request = httpx.Request("POST", api_url)
+    client = SlowSuccessfulAsyncClient(
+        [
+            httpx.Response(
+                200,
+                request=request,
+                json={"should_send": True, "message": "慢速但有效的回顾"},
+            )
+        ]
+    )
+    client_options: list[dict[str, Any]] = []
+
+    def fake_client(**kwargs: Any) -> SlowSuccessfulAsyncClient:
+        client_options.append(kwargs)
+        return client
+
+    monkeypatch.setattr(bot.httpx, "AsyncClient", fake_client)
+
+    result = await bot.fetch_proactive_review(api_url)
+
+    assert result == {"should_send": True, "message": "慢速但有效的回顾"}
+    assert client.posts == [api_url]
+    timeout = client_options[0]["timeout"]
+    assert isinstance(timeout, httpx.Timeout)
+    assert timeout.read == bot.PROACTIVE_REVIEW_READ_TIMEOUT_SECONDS
+    assert (
+        bot.PROACTIVE_REVIEW_READ_TIMEOUT_SECONDS > bot.WEEKLY_INSIGHTS_TIMEOUT_SECONDS
+    )
 
 
 @pytest.mark.asyncio
@@ -456,6 +498,29 @@ async def test_scheduled_review_sends_rendered_html_to_configured_target(
 
 
 @pytest.mark.asyncio
+async def test_scheduled_review_limits_oversized_payload_to_one_message(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Breaks if Bot splits or forwards an API payload beyond Telegram's limit."""
+    settings = bot.ProactiveSettings(True, 456, "http://api/proactive-review")
+    telegram_bot = FakeScheduledBot()
+
+    async def fake_fetch(api_url: str) -> dict[str, Any]:
+        return {
+            "should_send": True,
+            "message": "私" * (int(MessageLimit.MAX_TEXT_LENGTH) + 100),
+        }
+
+    monkeypatch.setattr(bot, "fetch_proactive_review", fake_fetch)
+
+    await bot.send_proactive_review(scheduled_context(settings, telegram_bot))
+
+    assert len(telegram_bot.messages) == 1
+    assert len(telegram_bot.messages[0]["text"]) == int(MessageLimit.MAX_TEXT_LENGTH)
+    assert telegram_bot.messages[0]["text"].endswith("…")
+
+
+@pytest.mark.asyncio
 async def test_scheduled_review_falls_back_to_original_plain_text_on_bad_html(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -500,9 +565,52 @@ async def test_scheduled_review_logs_final_network_error_without_reraising(
         await bot.send_proactive_review(scheduled_context(settings, telegram_bot))
 
     assert len(telegram_bot.messages) == 2
-    assert "Proactive review delivery failed due to network error" in caplog.text
+    assert "Proactive review delivery failed" in caplog.text
     assert "456" not in caplog.text
     assert "private review" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fallback_error",
+    [
+        telegram.error.BadRequest("private fallback rejection"),
+        telegram.error.TelegramError("private fallback transport detail"),
+    ],
+    ids=["bad-request", "telegram-error"],
+)
+async def test_scheduled_review_logs_final_plain_fallback_failure_privately(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    fallback_error: telegram.error.TelegramError,
+):
+    """Breaks if the second Telegram failure escapes or leaks delivery data."""
+    settings = bot.ProactiveSettings(True, 987654321, "http://api/proactive-review")
+    telegram_bot = FakeScheduledBot(
+        [telegram.error.BadRequest("private html rejection"), fallback_error]
+    )
+
+    async def fake_fetch(api_url: str) -> dict[str, Any]:
+        return {"should_send": True, "message": "private proactive message"}
+
+    monkeypatch.setattr(bot, "fetch_proactive_review", fake_fetch)
+
+    with caplog.at_level(logging.ERROR, logger=bot.__name__):
+        await bot.send_proactive_review(scheduled_context(settings, telegram_bot))
+
+    assert len(telegram_bot.messages) == 2
+    assert all(
+        len(delivery["text"]) <= int(MessageLimit.MAX_TEXT_LENGTH)
+        for delivery in telegram_bot.messages
+    )
+    assert [record.getMessage() for record in caplog.records] == [
+        "Proactive review delivery failed"
+    ]
+    assert caplog.records[0].exc_info is None
+    assert "987654321" not in caplog.text
+    assert "private proactive message" not in caplog.text
+    assert "private html rejection" not in caplog.text
+    assert str(fallback_error) not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -572,6 +680,23 @@ def test_disabled_proactive_reviews_do_not_require_chat_id():
 
     assert settings.enabled is False
     assert settings.chat_id is None
+
+
+def test_proactive_review_url_uses_non_default_port():
+    settings = bot.load_proactive_settings({"PORT": "9123"})
+
+    assert settings.api_url == "http://127.0.0.1:9123/proactive-review"
+
+
+def test_proactive_review_url_override_wins_over_port_derivation():
+    settings = bot.load_proactive_settings(
+        {
+            "PORT": "9123",
+            "API_PROACTIVE_REVIEW_URL": "http://reviews.internal/custom",
+        }
+    )
+
+    assert settings.api_url == "http://reviews.internal/custom"
 
 
 @pytest.mark.parametrize(

@@ -207,18 +207,34 @@ async def test_weekly_insights_rejects_blank_or_error_final_content(
 ):
     """Breaks if retryable failures are presented as a weekly summary."""
 
+    turn = 0
+
     async def fake_execute(_llm, _messages):
+        nonlocal turn
+        turn += 1
+        if turn == 1:
+            return {
+                "messages": AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "retrieve_recent_training", "args": {}, "id": "t"},
+                        {"name": "retrieve_recent_meals", "args": {}, "id": "m"},
+                    ],
+                )
+            }
         return {"messages": AIMessage(content=final_content)}
 
     monkeypatch.setattr(insights_module, "_execute_llm_query_safely", fake_execute)
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="weekly insights generation failed"):
         await insights_module.generate_weekly_insights(
             llm_config,
             str(temp_db_path),
             date(2026, 7, 26),
             date(2026, 8, 1),
         )
+
+    assert turn == 2
 
 
 @pytest.mark.asyncio

@@ -334,12 +334,15 @@ async def test_llm_judge_logs_score_export_failure_without_request_content(
                 content='{"evaluations": [{"dimension": "Tone", "evidence": "Supportive", "score": 5, "weight": 1.0}], "overall_weighted_score": 5.0}'
             )
 
-    def fail_score_export(**kwargs):
-        raise RuntimeError("score service unavailable")
-
     private_trace = "private-trace-id"
     private_input = "private user input"
     private_output = "private agent output"
+
+    def fail_score_export(**kwargs):
+        raise RuntimeError(
+            f"private exception: {private_trace} | {private_input} | {private_output}"
+        )
+
     with caplog.at_level("WARNING", logger="scripts.llm_judge"):
         result = await evaluate_trace(
             private_trace,
@@ -358,8 +361,10 @@ async def test_llm_judge_logs_score_export_failure_without_request_content(
         )
 
     assert result.overall_weighted_score == 5.0
-    assert "Failed to export LLM judge scores to Langfuse" in caplog.text
-    assert caplog.records[-1].exc_info is not None
+    assert [record.getMessage() for record in caplog.records] == [
+        "Failed to export LLM judge scores to Langfuse"
+    ]
+    assert caplog.records[-1].exc_info is None
     assert private_trace not in caplog.text
     assert private_input not in caplog.text
     assert private_output not in caplog.text

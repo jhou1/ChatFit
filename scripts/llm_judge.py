@@ -125,8 +125,6 @@ async def evaluate_trace(
                     comment=ev.evidence,
                 )
         except Exception:
-            logger.warning(
-                "Failed to export LLM judge scores to Langfuse", exc_info=True
-            )
+            logger.warning("Failed to export LLM judge scores to Langfuse")
 
     return result

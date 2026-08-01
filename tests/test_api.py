@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 from datetime import date
 
@@ -7,6 +8,7 @@ import pytest
 from langchain_core.messages import AIMessage
 
 import api as api_module
+import proactive_reviews
 from agents.observability import InMemorySink, observation_sink
 from agents.models import MealInfo, TrainingInputRecorder, TrainingSession, TrainingSet
 from agents.sqlite_handler import add_meal_log, add_training_session, init_db
@@ -231,6 +233,50 @@ async def test_proactive_review_uses_api_state_for_saturday_weekly_summary(
         "should_send": True,
         "message": "## 本周总结\n\n本周训练和饮食保持稳定。",
     }
+    assert api_module.user_sessions == {}
+
+
+@pytest.mark.asyncio
+async def test_proactive_review_weekly_timeout_returns_daily_question(
+    monkeypatch: pytest.MonkeyPatch,
+    temp_db_path,
+):
+    """Breaks if API-level weekly work can outlive its end-to-end deadline."""
+    target_date = date(2026, 8, 1)
+    calls = 0
+
+    async def slow_weekly_insights(config, db_path, start_date, end_date):
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0)
+        return "private summary returned after the deadline"
+
+    monkeypatch.setattr(api_module, "today_in_shanghai", lambda: target_date)
+    monkeypatch.setattr(api_module, "generate_weekly_insights", slow_weekly_insights)
+    monkeypatch.setattr(
+        proactive_reviews, "WEEKLY_INSIGHTS_TIMEOUT_SECONDS", 0.0, raising=False
+    )
+    api_module.app.state.db_path = str(temp_db_path)
+    api_module.app.state.llm_config = object()
+    api_module.user_sessions.clear()
+
+    transport = httpx.ASGITransport(app=api_module.app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        response = await client.post("/proactive-review")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "should_send": True,
+        "message": (
+            "## 本周总结\n\n"
+            "本周总结暂时生成失败。你可以稍后发消息让我重新总结。"
+            "\n\n---\n\n"
+            "今天还没有看到饮食或训练记录。今天吃了什么，练了什么？"
+        ),
+    }
+    assert calls == 1
     assert api_module.user_sessions == {}
 
 

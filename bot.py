@@ -24,6 +24,11 @@ from telegram.request import BaseRequest, HTTPXRequest
 from dotenv import load_dotenv
 
 from inputs.photo_ocr import PhotoTextExtractor, build_photo_text_extractor_from_env
+from proactive_reviews import (
+    WEEKLY_INSIGHTS_TIMEOUT_SECONDS,
+    MAX_PROACTIVE_MESSAGE_LENGTH,
+    truncate_proactive_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +100,8 @@ PHOTO_READ_FAILED_REPLY = (
 UNSUPPORTED_INPUT_REPLY = (
     "我现在只能处理文字、语音和图片消息。请把训练或饮食内容用这些方式发给我。"
 )
+PROACTIVE_REVIEW_READ_TIMEOUT_SECONDS = WEEKLY_INSIGHTS_TIMEOUT_SECONDS + 15.0
+PROACTIVE_REVIEW_CONNECT_TIMEOUT_SECONDS = 10.0
 
 
 @dataclass(frozen=True)
@@ -148,6 +155,7 @@ async def send_proactive_review(context: ContextTypes.DEFAULT_TYPE) -> None:
     message = result["message"]
     if not (isinstance(message, str) and message.strip()):
         raise RuntimeError("scheduled callback requires a validated non-blank message")
+    message = truncate_proactive_text(message, MAX_PROACTIVE_MESSAGE_LENGTH)
     chat_id = settings.chat_id
     if chat_id is None:
         raise RuntimeError("scheduled callback requires a configured chat ID")
@@ -163,12 +171,16 @@ async def send_proactive_review(context: ContextTypes.DEFAULT_TYPE) -> None:
         except telegram.error.BadRequest:
             await context.bot.send_message(chat_id=chat_id, text=message)
             logger.info("Proactive review delivered as plain text fallback")
-    except telegram.error.NetworkError:
-        logger.error("Proactive review delivery failed due to network error")
+    except telegram.error.TelegramError:
+        logger.error("Proactive review delivery failed")
 
 
 async def fetch_proactive_review(api_url: str) -> dict[str, Any]:
-    async with httpx.AsyncClient(timeout=30.0, proxy=None) as client:
+    timeout = httpx.Timeout(
+        PROACTIVE_REVIEW_READ_TIMEOUT_SECONDS,
+        connect=PROACTIVE_REVIEW_CONNECT_TIMEOUT_SECONDS,
+    )
+    async with httpx.AsyncClient(timeout=timeout, proxy=None) as client:
         for attempt in range(3):
             try:
                 response = await client.post(api_url)

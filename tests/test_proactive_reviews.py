@@ -1,8 +1,11 @@
+import asyncio
 import importlib
+import logging
 from datetime import date
 from pathlib import Path
 
 import pytest
+from telegram.constants import MessageLimit
 
 import proactive_reviews
 from agents.models import MealInfo, TrainingInputRecorder, TrainingSession, TrainingSet
@@ -18,6 +21,7 @@ TRAINING = {
 WEEKLY_FAILURE = (
     "## 本周总结\n\n" "本周总结暂时生成失败。你可以稍后发消息让我重新总结。"
 )
+TELEGRAM_TEXT_LIMIT = int(MessageLimit.MAX_TEXT_LENGTH)
 
 
 def test_daily_review_asks_both_when_nothing_is_recorded():
@@ -36,6 +40,18 @@ def test_daily_review_recaps_meal_and_only_asks_about_training():
     assert "晚餐：米饭和鱼" in message
     assert message.endswith("今天练了什么？")
     assert "今天吃了什么" not in message
+
+
+def test_daily_review_truncates_long_unicode_meal_recap_before_question():
+    """Breaks if an oversized meal recap displaces its missing-training prompt."""
+    meal = {**MEAL, "items": "🍜" * (TELEGRAM_TEXT_LIMIT + 100)}
+
+    message = proactive_reviews.build_daily_review(date(2026, 7, 31), [meal], [])
+
+    assert message is not None
+    assert len(message) == TELEGRAM_TEXT_LIMIT
+    assert message.startswith("今天记录的饮食：晚餐：🍜")
+    assert message.endswith("…。今天练了什么？")
 
 
 def test_daily_review_uses_meal_note_when_optional_fields_are_null():
@@ -64,6 +80,20 @@ def test_daily_review_recaps_training_and_only_asks_about_meals():
     assert "深蹲（5 组，RPE 7）" in message
     assert message.endswith("今天吃了什么？")
     assert "今天练了什么" not in message
+
+
+def test_daily_review_truncates_training_recap_on_unicode_cluster_boundary():
+    """Breaks if truncation splits an emoji cluster or loses the meal question."""
+    training = {**TRAINING, "practice_name": "🏋️" * TELEGRAM_TEXT_LIMIT}
+
+    message = proactive_reviews.build_daily_review(date(2026, 7, 31), [], [training])
+
+    assert message is not None
+    assert len(message) <= TELEGRAM_TEXT_LIMIT
+    assert message.startswith("今天记录的训练：🏋️")
+    assert "🏋️…" in message
+    assert "🏋…" not in message
+    assert message.endswith("…。今天吃了什么？")
 
 
 def test_daily_review_omits_null_rpe_from_training_recap():
@@ -174,6 +204,95 @@ async def test_saturday_puts_weekly_summary_before_daily_question(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_saturday_truncates_weekly_narrative_and_recap_but_keeps_question(
+    tmp_path: Path,
+):
+    """Breaks if variable Saturday sections consume Telegram's fixed envelope."""
+    db_path = tmp_path / "long_saturday_review.db"
+    init_db(db_path)
+    add_meal_log(
+        MealInfo(
+            date=date(2026, 8, 1),
+            meal_type="dinner",
+            items="🍜" * TELEGRAM_TEXT_LIMIT,
+            note="private meal note",
+        ),
+        str(db_path),
+    )
+
+    async def weekly_summary_generator(start: date, end: date) -> str:
+        return "周" * (TELEGRAM_TEXT_LIMIT + 100)
+
+    result = await proactive_reviews.build_proactive_review(
+        date(2026, 8, 1), str(db_path), weekly_summary_generator
+    )
+
+    assert result.message is not None
+    assert len(result.message) <= TELEGRAM_TEXT_LIMIT
+    assert result.message.startswith("## 本周总结\n\n周")
+    assert result.message.count("\n\n---\n\n") == 1
+    assert "今天记录的饮食：晚餐：🍜" in result.message
+    assert result.message.endswith("…。今天练了什么？")
+    assert result.message.count("…") == 2
+
+
+@pytest.mark.asyncio
+async def test_saturday_slow_success_stays_within_one_outer_attempt(tmp_path: Path):
+    """Breaks if a cooperative slow summary is retried before its server budget."""
+    db_path = tmp_path / "slow_success.db"
+    init_db(db_path)
+    calls = 0
+
+    async def weekly_summary_generator(start: date, end: date) -> str:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0)
+        return "本周总结生成成功。"
+
+    result = await proactive_reviews.build_proactive_review(
+        date(2026, 8, 1), str(db_path), weekly_summary_generator
+    )
+
+    assert result.message is not None
+    assert "本周总结生成成功。" in result.message
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_saturday_server_timeout_uses_failure_notice_and_daily_question(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    """Breaks if the whole weekly path has no deadline or loses the daily suffix."""
+    db_path = tmp_path / "weekly_timeout.db"
+    init_db(db_path)
+    calls = 0
+    monkeypatch.setattr(
+        proactive_reviews,
+        "WEEKLY_INSIGHTS_TIMEOUT_SECONDS",
+        0.0,
+        raising=False,
+    )
+
+    async def weekly_summary_generator(start: date, end: date) -> str:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0)
+        return "private summary that arrived beyond the deadline"
+
+    result = await proactive_reviews.build_proactive_review(
+        date(2026, 8, 1), str(db_path), weekly_summary_generator
+    )
+
+    assert result == proactive_reviews.ProactiveReviewResult(
+        True,
+        WEEKLY_FAILURE
+        + "\n\n---\n\n今天还没有看到饮食或训练记录。今天吃了什么，练了什么？",
+    )
+    assert calls == 1
+
+
+@pytest.mark.asyncio
 async def test_saturday_retries_failed_summary_twice_then_uses_failure_notice(
     tmp_path: Path,
 ):
@@ -197,6 +316,49 @@ async def test_saturday_retries_failed_summary_twice_then_uses_failure_notice(
         + "\n\n---\n\n今天还没有看到饮食或训练记录。今天吃了什么，练了什么？",
     )
     assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_saturday_retry_logs_are_attempt_scoped_and_privacy_safe(
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+):
+    """Breaks if weekly retry metadata is absent or includes private failures."""
+    db_path = tmp_path / "private_retry_logs.db"
+    init_db(db_path)
+    private_values = (
+        "private-trace-id",
+        "private meal input",
+        "private weekly output",
+    )
+
+    async def weekly_summary_generator(start: date, end: date) -> str:
+        raise RuntimeError(" | ".join(private_values))
+
+    with caplog.at_level(logging.INFO, logger=proactive_reviews.__name__):
+        result = await proactive_reviews.build_proactive_review(
+            date(2026, 8, 1), str(db_path), weekly_summary_generator
+        )
+
+    assert result.message is not None
+    assert result.message.startswith(WEEKLY_FAILURE)
+    assert [record.getMessage() for record in caplog.records] == [
+        "Weekly insights generation attempt started",
+        "Weekly insights generation retry scheduled",
+        "Weekly insights generation attempt started",
+        "Weekly insights generation fallback selected",
+    ]
+    assert [getattr(record, "weekly_attempt") for record in caplog.records] == [
+        1,
+        1,
+        2,
+        2,
+    ]
+    assert all(getattr(record, "weekly_max_attempts") == 2 for record in caplog.records)
+    assert getattr(caplog.records[1], "weekly_next_attempt") == 2
+    assert all(record.exc_info is None for record in caplog.records)
+    for private_value in private_values:
+        assert private_value not in caplog.text
 
 
 @pytest.mark.asyncio
