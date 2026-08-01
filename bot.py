@@ -136,7 +136,11 @@ async def send_proactive_review(context: ContextTypes.DEFAULT_TYPE) -> None:
         raise RuntimeError("scheduled callback requires ProactiveSettings job data")
     settings = job.data
     logger.info("Proactive review schedule execution started")
-    result = await fetch_proactive_review(settings.api_url)
+    try:
+        result = await fetch_proactive_review(settings.api_url)
+    except (httpx.HTTPError, ValueError):
+        logger.error("Proactive review fetch failed")
+        return
     if not result["should_send"]:
         logger.info("Proactive review completed with no send")
         return

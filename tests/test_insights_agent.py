@@ -147,6 +147,58 @@ async def test_weekly_insights_uses_both_fixed_window_tools(
 
 
 @pytest.mark.asyncio
+async def test_weekly_insights_rejects_final_answer_without_tool_results(
+    monkeypatch, llm_config, temp_db_path
+):
+    """Breaks if a scheduled summary can bypass both required weekly reads."""
+
+    async def fake_execute(_llm, _messages):
+        return {"messages": AIMessage(content="未查询数据也生成的周总结。")}
+
+    monkeypatch.setattr(insights_module, "_execute_llm_query_safely", fake_execute)
+
+    with pytest.raises(RuntimeError, match="weekly insights generation failed"):
+        await insights_module.generate_weekly_insights(
+            llm_config,
+            str(temp_db_path),
+            date(2026, 7, 26),
+            date(2026, 8, 1),
+        )
+
+
+@pytest.mark.asyncio
+async def test_weekly_insights_rejects_final_answer_with_only_one_tool_result(
+    monkeypatch, llm_config, temp_db_path
+):
+    """Breaks if one weekly data domain is enough to accept a summary."""
+    turn = 0
+
+    async def fake_execute(_llm, _messages):
+        nonlocal turn
+        turn += 1
+        if turn == 1:
+            return {
+                "messages": AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "retrieve_recent_training", "args": {}, "id": "t"}
+                    ],
+                )
+            }
+        return {"messages": AIMessage(content="只查询训练后生成的周总结。")}
+
+    monkeypatch.setattr(insights_module, "_execute_llm_query_safely", fake_execute)
+
+    with pytest.raises(RuntimeError, match="weekly insights generation failed"):
+        await insights_module.generate_weekly_insights(
+            llm_config,
+            str(temp_db_path),
+            date(2026, 7, 26),
+            date(2026, 8, 1),
+        )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "final_content", ["", "[Error] LLM request failed after retries."]
 )

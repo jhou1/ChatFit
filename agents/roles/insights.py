@@ -1,9 +1,9 @@
 import json
 from datetime import date, datetime
 
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.prompts.prompt import PromptTemplate
 from langchain_core.tools import tool
-from langchain_core.messages import HumanMessage, SystemMessage
 
 from langgraph.graph import StateGraph, START
 from langgraph.prebuilt import tools_condition
@@ -135,6 +135,19 @@ async def generate_weekly_insights(
             ]
         }
     )
+    required_tool_results = {
+        "retrieve_recent_training": 0,
+        "retrieve_recent_meals": 0,
+    }
+    for message in response["messages"]:
+        if (
+            isinstance(message, ToolMessage)
+            and message.name in required_tool_results
+            and message.status != "error"
+        ):
+            required_tool_results[message.name] += 1
+    if any(count != 1 for count in required_tool_results.values()):
+        raise RuntimeError("weekly insights generation failed")
     summary = extract_text(response["messages"][-1]).strip()
     if not summary or summary.startswith("[Error]"):
         raise RuntimeError("weekly insights generation failed")

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from io import BytesIO
 from types import SimpleNamespace
 from typing import Any
@@ -326,6 +327,78 @@ async def test_fetch_proactive_review_does_not_retry_client_error(
         await bot.fetch_proactive_review(api_url)
 
     assert client.posts == [api_url]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_posts"),
+    [
+        ("transport", 3),
+        ("server", 3),
+        ("client", 1),
+        ("contract", 1),
+    ],
+)
+async def test_scheduled_review_logs_final_fetch_failure_without_private_data(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failure_kind: str,
+    expected_posts: int,
+):
+    api_url = "http://private.internal/proactive-review?token=url-secret"
+    request = httpx.Request("POST", api_url)
+    if failure_kind == "transport":
+        outcomes: list[httpx.Response | Exception] = [
+            httpx.ConnectError("transport-secret", request=request) for _ in range(3)
+        ]
+    elif failure_kind == "server":
+        outcomes = [
+            httpx.Response(
+                503,
+                request=request,
+                json={"detail": "response-secret"},
+            )
+            for _ in range(3)
+        ]
+    elif failure_kind == "client":
+        outcomes = [
+            httpx.Response(
+                400,
+                request=request,
+                json={"detail": "response-secret"},
+            )
+        ]
+    else:
+        outcomes = [
+            httpx.Response(
+                200,
+                request=request,
+                json={"should_send": "response-secret", "message": None},
+            )
+        ]
+    client = patch_proactive_http_client(monkeypatch, outcomes)
+    telegram_bot = FakeScheduledBot()
+    settings = bot.ProactiveSettings(True, 987654321, api_url)
+
+    async def fake_sleep(_delay: int) -> None:
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    with caplog.at_level(logging.ERROR, logger=bot.__name__):
+        await bot.send_proactive_review(scheduled_context(settings, telegram_bot))
+
+    assert len(client.posts) == expected_posts
+    assert telegram_bot.messages == []
+    assert [record.getMessage() for record in caplog.records] == [
+        "Proactive review fetch failed"
+    ]
+    assert all(record.exc_info is None for record in caplog.records)
+    assert "private.internal" not in caplog.text
+    assert "url-secret" not in caplog.text
+    assert "987654321" not in caplog.text
+    assert "transport-secret" not in caplog.text
+    assert "response-secret" not in caplog.text
 
 
 @pytest.mark.asyncio
