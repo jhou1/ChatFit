@@ -31,5 +31,6 @@ services:
     - API_URL=http://api:8000/chat
     - API_CLEAR_URL=http://api:8000/clear
     - API_RESUME_URL=http://api:8000/resume
+    - API_PROACTIVE_REVIEW_URL=http://api:8000/proactive-review
     extra_hosts:
     - host.docker.internal:host-gateway

@@ -38,6 +38,12 @@ flowchart LR
     M --> VS[("Chroma 食谱索引")]
     G --> CP[("LangGraph Checkpoint")]
     G -. 可选追踪 .-> LF["Langfuse"]
+    J["Bot JobQueue<br/>每天 21:00 Asia/Shanghai"] --> P["FastAPI /proactive-review"]
+    P --> DB
+    P --> I
+    P -->|返回回顾内容| J
+    J --> TG["Telegram（配置的单一 chat）"]
+    B --> J
 ```
 
 | 组件 | 职责 |
@@ -48,6 +54,7 @@ flowchart LR
 | Training Agent | 解析并保存训练动作、组数、重量、次数、距离和 RPE |
 | Meal Agent | 保存饮食记录，并检索本地食谱上下文 |
 | Insights Agent | 聚合训练与饮食数据，生成趋势和恢复分析 |
+| 主动回顾任务 | Bot JobQueue 在每天 21:00（Asia/Shanghai）调用 `/proactive-review`；API 查询 SQLite，并在周六调用 Insights Agent 汇总，随后由 Bot 发送 Telegram |
 | Context Governance | 压缩过长的对话历史，避免上下文无限增长 |
 | Langfuse | 可选的运行轨迹、评分与生产质量观测 |
 
@@ -87,6 +94,26 @@ TELEGRAM_BOT_TOKEN=your-telegram-bot-token
 | `LANGFUSE_CAPTURE_CONTENT` | 是否允许 Langfuse 保存 prompt/output；默认 `false` |
 | `CHECKPOINTER_DB_PATH` | LangGraph checkpoint SQLite 文件路径 |
 | `OBSERVABILITY_HASH_KEY` | 对用户标识和敏感内容生成稳定 keyed hash 的随机密钥 |
+| `PROACTIVE_REVIEWS_ENABLED` | 是否启用每日/每周 Telegram 主动回顾；默认 `false` |
+| `TELEGRAM_CHAT_ID` | 启用主动回顾时必填的整数 Telegram chat ID；关闭时不需要设置 |
+
+#### 可选：启用主动回顾
+
+主动回顾默认关闭。若要启用，请在 `.env` 中设置开关和接收消息的**整数**
+chat ID：
+
+```dotenv
+PROACTIVE_REVIEWS_ENABLED=true
+TELEGRAM_CHAT_ID=123456789
+```
+
+Bot 的 JobQueue 每天在 `21:00 Asia/Shanghai` 运行一次：当天只记录了饮食时，
+提醒补充训练；只记录了训练时，提醒补充饮食；两类记录都没有时，提醒记录当天
+饮食或训练；两类都有时不发送每日提醒。周六则只发送一条合并消息：由 Insights
+Agent 生成当周周日至周六的总结，并附上当天仍缺失的类别提醒（如有）。
+
+任务不会补发错过的时间点；重启或停机期间的提醒也不会追赶。当前实现只支持将
+主动消息发送到一个配置的 chat ID，适用于单用户部署。
 
 Langfuse 是可选依赖。Tracing 初始化或导出失败时，系统会记录日志并自动降级，
 不会让 `/chat` 接口返回 500。
@@ -260,6 +287,9 @@ ChatFit 将不同类型的数据分开保存：
   `runtime-data/checkpointer.db`
 - **压缩摘要**：长对话中的重要上下文，作为 LangGraph state 的一部分持久化
 - **RAG 数据**：从本地食谱生成的 Chroma 向量索引，位于 `chroma.db/`
+- **主动回顾**：Bot JobQueue 调用 `/proactive-review`，API 从 SQLite 读取当天
+  记录；周六再通过 Insights Agent 生成周日至周六总结，随后由 Bot 发送至配置的
+  Telegram chat。
 
 `/clear` 只切换当前用户的 thread，不会删除业务数据库或向量索引。
 
