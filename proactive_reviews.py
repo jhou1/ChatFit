@@ -64,9 +64,12 @@ def _format_training_recap(session: dict[str, Any]) -> str:
 
 
 def _ensure_weekly_heading(weekly_review: str) -> str:
-    if weekly_review.startswith("## 本周总结"):
-        return weekly_review
-    return f"## 本周总结\n\n{weekly_review}"
+    heading = "## 本周总结"
+    narrative = weekly_review
+    while narrative.startswith(heading):
+        narrative = narrative[len(heading) :].lstrip("\r\n")
+    narrative = narrative.lstrip("\r\n")
+    return f"{heading}\n\n{narrative}"
 
 
 def build_daily_review(

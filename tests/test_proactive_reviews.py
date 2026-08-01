@@ -122,6 +122,26 @@ async def test_saturday_adds_weekly_heading_to_plain_summary(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_saturday_normalizes_single_newline_after_weekly_heading(tmp_path: Path):
+    """Breaks if a generator heading is not followed by exactly one blank line."""
+    db_path = tmp_path / "malformed_weekly_heading.db"
+    init_db(db_path)
+
+    async def weekly_summary_generator(start: date, end: date) -> str:
+        return "## 本周总结\n内容"
+
+    result = await proactive_reviews.build_proactive_review(
+        date(2026, 8, 1), str(db_path), weekly_summary_generator
+    )
+
+    assert result == proactive_reviews.ProactiveReviewResult(
+        True,
+        "## 本周总结\n\n内容"
+        "\n\n---\n\n今天还没有看到饮食或训练记录。今天吃了什么，练了什么？",
+    )
+
+
+@pytest.mark.asyncio
 async def test_saturday_puts_weekly_summary_before_daily_question(tmp_path: Path):
     """Breaks if Saturday skips its summary, uses wrong bounds, or reverses sections."""
     db_path = tmp_path / "proactive_review.db"
