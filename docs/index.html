@@ -1,208 +1,427 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ChatFit - Your Friendly AI Fitness Assistant</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <style>
-        body { font-family: 'Inter', sans-serif; }
-        .blob {
-            position: absolute;
-            filter: blur(80px);
-            z-index: 0;
-            opacity: 0.4;
-        }
-    </style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="ChatFit is a self-hosted AI fitness assistant that turns Telegram messages into useful training and meal history.">
+  <link rel="icon" type="image/png" href="assets/chatfit-kettlebell-buddy.png">
+  <title>ChatFit — Fitness logging that feels like chat</title>
+  <style>
+    :root {
+      --ink: #101828;
+      --muted: #667085;
+      --cobalt: #3563e9;
+      --cobalt-soft: #edf2ff;
+      --line: #e4e8f0;
+      --surface: #fafbff;
+      --success: #32b76c;
+      --content: 1160px;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      overflow-x: hidden;
+      color: var(--ink);
+      background: #fff;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: inherit; text-decoration: none; }
+    a:focus-visible { outline: 3px solid var(--cobalt); outline-offset: 4px; }
+
+    .site-nav {
+      width: min(calc(100% - 48px), var(--content));
+      height: 72px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 800; }
+    .brand img { width: 36px; height: 36px; object-fit: contain; }
+    .brand span { font-size: 18px; letter-spacing: -.025em; }
+    .site-nav nav { display: flex; align-items: center; gap: 28px; color: var(--muted); }
+    .site-nav nav a {
+      font-size: 14px;
+      font-weight: 650;
+      transition: color .18s ease, background-color .18s ease;
+    }
+    .site-nav nav a:hover { color: var(--cobalt); }
+    .site-nav nav a:last-child {
+      padding: 9px 15px;
+      color: var(--cobalt);
+      background: var(--cobalt-soft);
+      border-radius: 999px;
+    }
+
+    .hero {
+      min-height: calc(100vh - 72px);
+      max-width: var(--content);
+      margin: 0 auto;
+      padding: clamp(42px, 6vh, 66px) 24px 38px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.06fr) minmax(0, .94fr);
+      grid-template-areas: "copy chat" "flow flow";
+      column-gap: clamp(48px, 7vw, 82px);
+      row-gap: clamp(34px, 5vh, 50px);
+      align-items: center;
+      align-content: center;
+      background: linear-gradient(145deg, #fff 0%, #fff 46%, var(--surface) 100%);
+    }
+    .hero-copy { grid-area: copy; min-width: 0; }
+    .eyebrow {
+      margin: 0 0 18px;
+      color: var(--cobalt);
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: .11em;
+      text-transform: uppercase;
+    }
+    .hero h1 {
+      margin: 0;
+      max-width: 620px;
+      font-size: clamp(52px, 5vw, 72px);
+      line-height: .98;
+      letter-spacing: -.06em;
+    }
+    .hero h1 span { color: var(--cobalt); }
+    .hero-summary {
+      max-width: 570px;
+      margin: 24px 0 0;
+      color: var(--muted);
+      font-size: clamp(17px, 1.4vw, 19px);
+      line-height: 1.62;
+    }
+    .hero-actions { margin-top: 28px; display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      border-radius: 999px;
+      font-size: 15px;
+      font-weight: 750;
+      transition: color .18s ease, background-color .18s ease;
+    }
+    .button-primary { padding: 13px 20px; color: #fff; background: var(--cobalt); }
+    .button-primary:hover { background: #254fce; }
+    .text-link { color: var(--cobalt); font-size: 15px; font-weight: 750; }
+    .trust-line { margin: 20px 0 0; color: var(--muted); font-size: 13px; }
+
+    .conversation {
+      grid-area: chat;
+      position: relative;
+      min-width: 0;
+      overflow: hidden;
+      padding: 20px;
+      background: rgba(255, 255, 255, .96);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: 0 22px 58px rgba(52, 72, 123, .12);
+    }
+    .mascot-peek {
+      grid-area: chat;
+      z-index: 2;
+      width: 104px;
+      height: 104px;
+      justify-self: end;
+      align-self: start;
+      object-fit: contain;
+      pointer-events: none;
+      transform: translate(28px, -58px);
+    }
+    .conversation-header { display: flex; align-items: center; gap: 9px; font-size: 14px; }
+    .status-dot { width: 9px; height: 9px; flex: 0 0 auto; background: var(--success); border-radius: 50%; }
+    .messages { margin-top: 20px; display: flex; flex-direction: column; gap: 11px; }
+    .message {
+      width: fit-content;
+      max-width: 86%;
+      margin: 0;
+      padding: 10px 13px;
+      color: #344054;
+      background: #f2f4f7;
+      border-radius: 14px 14px 14px 4px;
+      font-size: 14px;
+      line-height: 1.42;
+    }
+    .message-user {
+      align-self: flex-end;
+      color: #fff;
+      background: var(--cobalt);
+      border-radius: 14px 14px 4px 14px;
+    }
+    .message-insight { color: #2246a4; background: var(--cobalt-soft); }
+    .conversation-input {
+      margin-top: 16px;
+      padding: 10px 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--muted);
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      font-size: 13px;
+    }
+    .conversation-input span {
+      width: 25px;
+      height: 25px;
+      display: inline-grid;
+      place-items: center;
+      color: #fff;
+      background: var(--cobalt);
+      border-radius: 50%;
+    }
+
+    .process-flow,
+    .benefits {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .process-flow {
+      grid-area: flow;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .process-flow li {
+      min-width: 0;
+      padding: 4px 24px;
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      border-left: 1px solid var(--line);
+    }
+    .process-flow li:first-child { padding-left: 0; border-left: 0; }
+    .process-flow li:last-child { padding-right: 0; }
+    .process-flow li > span {
+      width: 30px;
+      height: 30px;
+      flex: 0 0 auto;
+      display: inline-grid;
+      place-items: center;
+      color: var(--cobalt);
+      background: var(--cobalt-soft);
+      border-radius: 50%;
+      font-size: 13px;
+      font-weight: 800;
+    }
+    .process-flow div { min-width: 0; display: grid; }
+    .process-flow strong { font-size: 14px; }
+    .process-flow small { margin-top: 2px; color: var(--muted); font-size: 12px; }
+
+    .value-section { padding: clamp(64px, 8vh, 88px) 24px 44px; background: var(--surface); }
+    .value-section > * { width: min(100%, var(--content)); margin-inline: auto; }
+    .section-heading { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.35fr) minmax(0, 1fr); gap: 42px; align-items: end; }
+    .section-heading p { margin: 0; color: var(--muted); font-size: 15px; }
+    .section-heading > p:first-child {
+      align-self: start;
+      color: var(--cobalt);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+    .section-heading h2 {
+      margin: 0;
+      font-size: clamp(34px, 3.4vw, 48px);
+      line-height: 1.04;
+      letter-spacing: -.045em;
+    }
+    .benefits { gap: 30px; margin-top: 36px; }
+    .benefits article { padding-top: 20px; border-top: 1px solid var(--line); }
+    .benefits h3 { margin: 0; font-size: 18px; letter-spacing: -.02em; }
+    .benefits p { margin: 9px 0 0; color: var(--muted); font-size: 15px; }
+
+    .insight-example {
+      display: grid;
+      grid-template-columns: .9fr 1.1fr;
+      gap: clamp(36px, 6vw, 76px);
+      margin-top: 40px;
+      padding: clamp(28px, 4vw, 48px);
+      align-items: center;
+      background: var(--cobalt-soft);
+      border-radius: 20px;
+    }
+    .insight-example > div > p:first-child {
+      margin: 0 0 10px;
+      color: var(--cobalt);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+    .insight-example h3 { margin: 0; font-size: clamp(23px, 2.25vw, 31px); line-height: 1.15; letter-spacing: -.035em; }
+    .insight-example > div > p:last-child { margin: 14px 0 0; color: #52617a; font-size: 15px; }
+    .insight-example article {
+      padding: 24px;
+      background: #fff;
+      border: 1px solid rgba(53, 99, 233, .12);
+      border-radius: 16px;
+      box-shadow: 0 14px 36px rgba(52, 72, 123, .09);
+    }
+    .insight-example article small { color: var(--cobalt); font-size: 12px; font-weight: 800; }
+    .insight-example article h3 { margin-top: 9px; font-size: 20px; }
+    .insight-example article p { margin: 10px 0 0; color: var(--muted); font-size: 14px; }
+
+    .deploy-band {
+      display: grid;
+      grid-template-columns: .85fr 1.25fr auto;
+      gap: 32px;
+      margin-top: 24px;
+      padding: 28px 32px;
+      align-items: center;
+      color: #fff;
+      background: var(--ink);
+      border-radius: 20px;
+    }
+    .deploy-band h2 { margin: 0; font-size: 25px; letter-spacing: -.035em; }
+    .deploy-band p { margin: 5px 0 0; color: #aab4c6; font-size: 13px; }
+    .deploy-band ol { margin: 0; padding: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 10px 22px; list-style: none; counter-reset: setup; }
+    .deploy-band li { display: flex; align-items: center; gap: 8px; color: #d6dce7; font-size: 13px; font-weight: 650; counter-increment: setup; }
+    .deploy-band li::before {
+      content: counter(setup);
+      width: 24px;
+      height: 24px;
+      display: inline-grid;
+      place-items: center;
+      color: #bfcdf7;
+      background: rgba(53, 99, 233, .24);
+      border-radius: 50%;
+      font-size: 11px;
+    }
+    .button-secondary { padding: 11px 17px; color: var(--ink); background: #fff; white-space: nowrap; }
+    .button-secondary:hover { color: var(--cobalt); background: var(--cobalt-soft); }
+
+    .site-footer {
+      width: min(calc(100% - 48px), var(--content));
+      min-height: 64px;
+      margin: 0 auto;
+      padding: 18px 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .site-footer strong { color: var(--ink); font-size: 14px; }
+
+    @media (max-width: 899px) {
+      .site-nav { width: min(calc(100% - 32px), var(--content)); }
+      .site-nav nav a:not(:last-child) { display: none; }
+      .hero {
+        min-height: auto;
+        padding: 44px 20px 56px;
+        grid-template-columns: 1fr;
+        grid-template-areas: "copy" "chat" "flow";
+        gap: 38px;
+      }
+      .hero h1 { font-size: clamp(44px, 13vw, 60px); }
+      .hero-summary { margin-top: 20px; }
+      .mascot-peek { width: 88px; height: 88px; transform: translate(14px, -50px); }
+      .process-flow, .benefits, .insight-example, .deploy-band { grid-template-columns: 1fr; }
+      .process-flow { gap: 20px; }
+      .process-flow li, .process-flow li:first-child, .process-flow li:last-child { padding: 0; border-left: 0; }
+      .value-section { padding: 64px 20px 40px; }
+      .section-heading { grid-template-columns: 1fr; gap: 16px; align-items: start; }
+      .section-heading > p:first-child { margin-bottom: 2px; }
+      .benefits { gap: 24px; margin-top: 36px; }
+      .insight-example { gap: 28px; margin-top: 40px; padding: 28px 22px; }
+      .deploy-band { gap: 22px; padding: 28px 24px; }
+      .site-footer { padding-inline: 20px; width: 100%; }
+    }
+
+    @media (max-width: 520px) {
+      .site-nav nav { gap: 0; }
+      .conversation { padding: 17px; border-radius: 18px; }
+      .message { max-width: 92%; font-size: 13px; }
+      .hero-actions { align-items: flex-start; flex-direction: column; gap: 16px; }
+      .insight-example article { padding: 20px; }
+      .button-secondary { width: 100%; white-space: normal; }
+      .site-footer { align-items: flex-start; flex-direction: column; gap: 4px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { transition-duration: .01ms !important; }
+    }
+  </style>
 </head>
-<body class="bg-[#FBFBF9] text-[#1C293C] antialiased selection:bg-[#FDC800] selection:text-[#1C293C]">
+<body>
+  <header class="site-nav" aria-label="Primary navigation">
+    <a class="brand" href="#top" aria-label="ChatFit home">
+      <img src="assets/chatfit-kettlebell-buddy.png" alt="ChatFit kettlebell mascot" width="36" height="36">
+      <span>ChatFit</span>
+    </a>
+    <nav aria-label="Landing page">
+      <a href="#how-it-works">How it works</a>
+      <a href="#why-chatfit">Why ChatFit</a>
+      <a href="https://github.com/hjw/ChatFit" target="_blank" rel="noopener noreferrer">GitHub</a>
+    </nav>
+  </header>
 
-    <!-- Hero Section -->
-    <div class="relative overflow-hidden bg-[#FBFBF9] pt-24 pb-32 border-b-4 border-[#1C293C]">
-
-        <header class="relative z-10 max-w-6xl mx-auto px-4 text-center">
-            <div class="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white border border-indigo-100 shadow-sm text-sm font-medium text-indigo-600 mb-8">
-                <span class="relative flex h-2.5 w-2.5">
-                  <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
-                  <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-indigo-500"></span>
-                </span>
-                Meet your new training partner
-            </div>
-
-            <h1 class="text-5xl font-black tracking-tight text-[#1C293C] sm:text-7xl mb-8 leading-[1.3] sm:leading-[1.2]">
-                Your AI Fitness Assistant,<br/>
-                Right in <span class="inline-block bg-[#FDC800] px-4 py-2 border-4 border-[#1C293C] shadow-[6px_6px_0_0_#1c293c] transform -rotate-2 mt-4">Telegram</span> 🚀
-            </h1>
-
-            <p class="mt-6 text-xl font-medium text-[#1C293C] max-w-2xl mx-auto mb-10 leading-relaxed">
-                Tired of adding your sets and reps one by one? Track your training volume and meals through natural chat. Turn your habits into a data goldmine and uncover the hidden patterns holding you back.
-            </p>
-
-            <div class="flex flex-col sm:flex-row justify-center gap-6 px-4">
-                <a href="#" class="bg-[#FDC800] text-[#1C293C] border-4 border-[#1C293C] shadow-[6px_6px_0_0_#1c293c] hover:shadow-[2px_2px_0_0_#1c293c] hover:translate-y-1 hover:translate-x-1 px-8 py-4 text-lg font-black transition-all duration-200">
-                    Start Chatting
-                </a>
-                <a href="#developer" class="bg-[#FBFBF9] text-[#1C293C] border-4 border-[#1C293C] shadow-[6px_6px_0_0_#1c293c] hover:shadow-[2px_2px_0_0_#1c293c] hover:translate-y-1 hover:translate-x-1 px-8 py-4 text-lg font-black transition-all duration-200">
-                    Deploy Your Own
-                </a>
-            </div>
-
-            <!-- Friendly Mockup Visual -->
-            <div class="mt-24 flex justify-center px-4">
-                <div class="w-full max-w-md bg-[#FBFBF9] border-4 border-[#1C293C] shadow-[12px_12px_0_0_#432DD7] relative flex flex-col min-h-[600px]">
-                    <!-- Phone Top bar -->
-                    <div class="bg-[#FDC800] pt-5 pb-4 px-6 flex justify-between items-center border-b-4 border-[#1C293C]">
-                        <div class="flex items-center gap-3">
-                            <div class="font-black text-2xl text-[#1C293C]">🤖 ChatFit bot</div>
-                        </div>
-                    </div>
-
-                    <!-- Chat Area -->
-                    <div class="flex-1 bg-[#FBFBF9] p-6 flex flex-col justify-end gap-6 overflow-hidden relative">
-                        <!-- User message 1 -->
-                        <div class="bg-[#432DD7] text-white border-2 border-[#1C293C] p-3 w-[90%] self-end text-sm font-bold shadow-[4px_4px_0_0_#1C293C]">
-                            Today I did kettlebell long cycle with 2x24KG for 60 reps 🏋️‍♂️
-                        </div>
-
-                        <!-- Bot message 1 -->
-                        <div class="bg-[#FBFBF9] border-2 border-[#1C293C] text-[#1C293C] p-3 w-[90%] self-start text-sm font-bold shadow-[4px_4px_0_0_#1C293C]">
-                            Impressive! How are you feeling now (your RPE)? What warm up and cool down did you do?
-                        </div>
-
-                        <!-- User message 2 -->
-                        <div class="bg-[#432DD7] text-white border-2 border-[#1C293C] p-3 w-[90%] self-end text-sm font-bold shadow-[4px_4px_0_0_#1C293C]">
-                            Mobility and a few rounds of swings as warm up, farmer's carry and walking in cool down. RPE 7
-                        </div>
-
-                        <!-- Bot message 2 -->
-                        <div class="bg-[#FDC800] border-2 border-[#1C293C] text-[#1C293C] p-3 w-[90%] self-start text-sm font-bold shadow-[4px_4px_0_0_#1C293C]">
-                            Great job! Your training logs are saved! ✅
-                        </div>
-                    </div>
-
-                    <!-- Phone Bottom bar -->
-                    <div class="bg-[#FBFBF9] p-4 border-t-4 border-[#1C293C] flex items-center gap-3">
-                        <div class="flex-1 bg-white border-2 border-[#1C293C] h-12 px-4 flex items-center text-[#1C293C] font-bold shadow-[4px_4px_0_0_#1C293C]">Message...</div>
-                    </div>
-                </div>
-            </div>
-        </header>
-    </div>
-
-    <!-- Features Grid -->
-    <section class="py-24 relative bg-[#FDC800] border-b-4 border-[#1C293C]">
-        <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="text-center mb-16">
-                <h2 class="text-3xl md:text-5xl font-black text-[#1C293C] mb-4">Why you'll love ChatFit</h2>
-                <p class="text-xl font-bold text-[#1C293C] max-w-2xl mx-auto">Designed to be simple on the surface, but powerful under the hood.</p>
-            </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                <!-- Feature 1 -->
-                <div class="bg-[#FBFBF9] p-8 border-4 border-[#1C293C] shadow-[8px_8px_0_0_#1c293c]">
-                    <div class="text-4xl mb-6">💎</div>
-                    <h3 class="text-2xl font-black text-[#1C293C] mb-3">Your Data Goldmine</h3>
-                    <p class="text-[#1C293C] font-medium leading-relaxed">All your training volumes and meal logs are saved securely into a local SQLite database. Your data remains entirely yours.</p>
-                    <p class="text-[#1C293C] font-medium leading-relaxed mt-3">如果确认回复同时补充或修改了训练信息，ChatFit 不会立即写入；它会更新待保存内容并再次请求确认。确认后的重复投递使用幂等键，不会生成重复训练记录。</p>
-                </div>
-                <!-- Feature 2 -->
-                <div class="bg-[#FBFBF9] p-8 border-4 border-[#1C293C] shadow-[8px_8px_0_0_#1c293c]">
-                    <div class="text-4xl mb-6">🔍</div>
-                    <h3 class="text-2xl font-black text-[#1C293C] mb-3">Uncover Hidden Patterns</h3>
-                    <p class="text-[#1C293C] font-medium leading-relaxed">The true value of tracking lies in discovery. Identify performance breakthroughs, root causes of injuries, and how diet correlates with your lifestyle.</p>
-                </div>
-                <!-- Feature 3 -->
-                <div class="bg-[#FBFBF9] p-8 border-4 border-[#1C293C] shadow-[8px_8px_0_0_#1c293c]">
-                    <div class="text-4xl mb-6">🤖</div>
-                    <h3 class="text-2xl font-black text-[#1C293C] mb-3">Unopinionated AI Choice</h3>
-                    <p class="text-[#1C293C] font-medium leading-relaxed">Connect to your favorite provider (OpenAI, Anthropic, DeepSeek) or use a local LLM when data privacy is your top concern.</p>
-                </div>
-                <!-- Feature 4 -->
-                <div class="bg-[#FBFBF9] p-8 border-4 border-[#1C293C] shadow-[8px_8px_0_0_#1c293c]">
-                    <div class="text-4xl mb-6">💬</div>
-                    <h3 class="text-2xl font-black text-[#1C293C] mb-3">Seamless Telegram Integration</h3>
-                    <p class="text-[#1C293C] font-medium leading-relaxed">No extra apps to download. Text, voice, and OCR-assisted photo messages work directly in Telegram.</p>
-                </div>
-                <!-- Feature 5 -->
-                <div class="bg-[#FBFBF9] p-8 border-4 border-[#1C293C] shadow-[8px_8px_0_0_#1c293c]">
-                    <div class="text-4xl mb-6">🗓️</div>
-                    <h3 class="text-2xl font-black text-[#1C293C] mb-3">可选主动回顾</h3>
-                    <p class="text-[#1C293C] font-medium leading-relaxed">默认关闭。启用后，Bot JobQueue 会在每天 21:00 Asia/Shanghai 检查 SQLite：只记录饮食时提醒训练，只记录训练时提醒饮食，两者皆无时同时询问当天饮食和训练，两者齐全则不发送；周六只发送一条由 Insights Agent 汇总的周日至周六总结，并附上当天缺失项。</p>
-                </div>
-            </div>
+  <main id="top">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="eyebrow">Self-hosted AI fitness assistant</p>
+        <h1 id="hero-title" aria-label="Just tell it what you did.">Just tell it <span>what you did.</span></h1>
+        <p class="hero-summary">ChatFit turns casual training and meal messages into structured history—then helps you notice the patterns that move you forward.</p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="https://github.com/hjw/ChatFit" target="_blank" rel="noopener noreferrer">Deploy on GitHub <span aria-hidden="true">→</span></a>
+          <a class="text-link" href="#how-it-works">See it in action <span aria-hidden="true">↓</span></a>
         </div>
+        <p class="trust-line">Source available · Structured records stay local · Built with Gemini</p>
+      </div>
+
+      <img class="mascot-peek" src="assets/chatfit-kettlebell-buddy.png" alt="" width="128" height="128">
+      <div class="conversation" aria-label="Example ChatFit conversation">
+        <div class="conversation-header"><span class="status-dot" aria-hidden="true"></span><strong>ChatFit bot</strong></div>
+        <div class="messages">
+          <p class="message message-user">Long cycle today: 2×24 kg, 60 reps.</p>
+          <p class="message message-bot">Nice session! What was your RPE, and how did you warm up?</p>
+          <p class="message message-user">RPE 7. Mobility and a few rounds of swings.</p>
+          <p class="message message-insight">Saved to your training log.</p>
+        </div>
+        <div class="conversation-input" aria-hidden="true">Message ChatFit… <span>↑</span></div>
+      </div>
+
+      <ol id="how-it-works" class="process-flow" aria-label="How ChatFit works" role="list">
+        <li><span aria-hidden="true">1</span><div><strong>Message naturally</strong><small>Text, voice, or OCR-assisted photo</small></div></li>
+        <li><span aria-hidden="true">2</span><div><strong>ChatFit fills the gaps</strong><small>Helpful follow-up questions</small></div></li>
+        <li><span aria-hidden="true">3</span><div><strong>Your history becomes useful</strong><small>Patterns, trends, and reviews</small></div></li>
+      </ol>
     </section>
 
-    <!-- Developer Section -->
-    <section id="developer" class="py-24 px-4 bg-[#FBFBF9]">
-        <div class="max-w-5xl mx-auto bg-[#432DD7] border-4 border-[#1C293C] shadow-[12px_12px_0_0_#1C293C] p-8 md:p-16 text-center relative">
-            <h2 class="relative z-10 text-3xl md:text-5xl font-black text-[#FBFBF9] mb-6 tracking-tight">Getting Started</h2>
-            <p class="relative z-10 text-lg md:text-xl font-bold text-[#FBFBF9] mb-12 max-w-2xl mx-auto">
-                ChatFit is completely open-source. Clone the repository and run your own private fitness agent in seconds.
-            </p>
+    <section id="why-chatfit" class="value-section" aria-labelledby="value-title">
+      <header class="section-heading">
+        <p>Simple in use, useful over time</p>
+        <h2 id="value-title">Less form-filling. More understanding.</h2>
+        <p>ChatFit keeps the interface conversational while quietly building the fitness history you never had time to maintain.</p>
+      </header>
 
-            <div class="relative z-10 bg-[#1C293C] border-4 border-[#FBFBF9] shadow-[8px_8px_0_0_#FDC800] text-left p-6 md:p-8 font-mono text-sm md:text-base text-[#FBFBF9] max-w-3xl mx-auto">
-                <p class="text-[#FBFBF9] mb-4 font-bold"># Spin up the services with Podman</p>
-                <p class="text-[#FDC800] mb-2 flex items-center gap-3 font-bold"><span class="text-[#FDC800]">❯</span> podman compose up -d</p>
-                <p class="text-[#FBFBF9] mt-4">Conversation checkpoints persist in <code>runtime-data/</code>; optional tracing failures do not take the chat API offline.</p>
-            </div>
+      <div class="benefits">
+        <article><h3>Log your way</h3><p>Send training or meal details as text, voice, or OCR-assisted photos—directly in Telegram.</p></article>
+        <article><h3>Keep clean records</h3><p>ChatFit asks for missing details, confirms the entry, and stores structured data locally.</p></article>
+        <article><h3>Notice what matters</h3><p>Use accumulated history to uncover training, recovery, and nutrition patterns over time.</p></article>
+      </div>
 
-            <div class="relative z-10 mt-8 text-left max-w-3xl mx-auto text-[#FBFBF9] font-medium leading-relaxed">
-                <h3 class="text-2xl font-black mb-3">配置可选主动回顾</h3>
-                <p>在 <code>.env</code> 中设置 <code>PROACTIVE_REVIEWS_ENABLED=true</code>，并填写整数 <code>TELEGRAM_CHAT_ID</code>。该 ID 仅在启用时必填；功能默认关闭，且当前只支持一个接收 chat。</p>
-                <p class="mt-3">流程为 Bot JobQueue → <code>/proactive-review</code> → SQLite / Insights Agent → Telegram。不会补发停机或错过时段的消息。</p>
-            </div>
+      <div class="insight-example">
+        <div><p>The payoff</p><h3>Your data becomes a conversation, not a spreadsheet.</h3><p>Ask about recent progress or enable optional reviews. ChatFit turns your own history into context you can act on.</p></div>
+        <article aria-label="Example optional weekly review"><small>Example optional weekly review</small><h3>This week: 3 training sessions.</h3><p>Recorded totals: 4,820 kg volume, 42 minutes, 5 km, and 18 sets. Average RPE: 7.</p></article>
+      </div>
 
-            <div class="relative z-10 mt-12">
-                <a href="https://github.com/hjw/ChatFit" target="_blank" class="inline-flex items-center justify-center gap-2 px-8 py-4 bg-[#FDC800] border-4 border-[#1C293C] text-[#1C293C] font-black shadow-[6px_6px_0_0_#1C293C] hover:shadow-[2px_2px_0_0_#1C293C] hover:translate-y-1 hover:translate-x-1 transition-all">
-                    View full setup on GitHub
-                </a>
-            </div>
-        </div>
+      <div class="deploy-band">
+        <div><h2>Make ChatFit yours.</h2><p>Create a Telegram bot and deploy the source-available app.</p></div>
+        <ol role="list"><li>Create bot</li><li>Add Gemini key</li><li>Run with Podman</li></ol>
+        <a class="button button-secondary" href="https://github.com/hjw/ChatFit" target="_blank" rel="noopener noreferrer">View setup on GitHub <span aria-hidden="true">→</span></a>
+      </div>
     </section>
+  </main>
 
-    <!-- Engineering Documentation -->
-    <section class="py-24 px-4 bg-[#FDC800] border-y-4 border-[#1C293C]">
-        <div class="max-w-6xl mx-auto">
-            <div class="text-center mb-14">
-                <h2 class="text-3xl md:text-5xl font-black text-[#1C293C] mb-4">Engineering Docs</h2>
-                <p class="text-xl font-bold text-[#1C293C] max-w-3xl mx-auto">
-                    Understand how ChatFit is built, evaluated, observed, and verified before deployment.
-                </p>
-            </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                <a href="architecture.md" class="block bg-[#FBFBF9] p-8 border-4 border-[#1C293C] shadow-[8px_8px_0_0_#1c293c] hover:translate-x-1 hover:translate-y-1 hover:shadow-[4px_4px_0_0_#1c293c] transition-all">
-                    <div class="text-4xl mb-4">🏗️</div>
-                    <h3 class="text-2xl font-black mb-3">System Architecture</h3>
-                    <p class="font-medium leading-relaxed">API, LangGraph orchestration, specialist Agents, persistence, and cross-cutting quality systems.</p>
-                </a>
-                <a href="evaluation.md" class="block bg-[#FBFBF9] p-8 border-4 border-[#1C293C] shadow-[8px_8px_0_0_#432DD7] hover:translate-x-1 hover:translate-y-1 hover:shadow-[4px_4px_0_0_#432DD7] transition-all">
-                    <div class="text-4xl mb-4">🧪</div>
-                    <h3 class="text-2xl font-black mb-3">Agent Evaluation</h3>
-                    <p class="font-medium leading-relaxed">Versioned datasets, deterministic graders, real-input LLM judging, and executable release scorecards.</p>
-                </a>
-                <a href="observability.md" class="block bg-[#FBFBF9] p-8 border-4 border-[#1C293C] shadow-[8px_8px_0_0_#432DD7] hover:translate-x-1 hover:translate-y-1 hover:shadow-[4px_4px_0_0_#432DD7] transition-all">
-                    <div class="text-4xl mb-4">🔭</div>
-                    <h3 class="text-2xl font-black mb-3">Agent Observability</h3>
-                    <p class="font-medium leading-relaxed">Privacy-safe structured traces reconstruct routes, LLM calls, tools, HITL, context, and failures.</p>
-                </a>
-                <a href="quality.md" class="block bg-[#FBFBF9] p-8 border-4 border-[#1C293C] shadow-[8px_8px_0_0_#1c293c] hover:translate-x-1 hover:translate-y-1 hover:shadow-[4px_4px_0_0_#1c293c] transition-all">
-                    <div class="text-4xl mb-4">✅</div>
-                    <h3 class="text-2xl font-black mb-3">Quality &amp; Verification</h3>
-                    <p class="font-medium leading-relaxed">Required linting, formatting, type checking, security scanning, and test verification.</p>
-                </a>
-            </div>
-        </div>
-    </section>
-
-    <!-- Footer -->
-    <footer class="py-10 text-center text-slate-500 text-sm">
-        <p>Made with 💪 for fitness and data enthusiasts.</p>
-    </footer>
-
+  <footer class="site-footer"><strong>ChatFit</strong><span>Source available · Built for fitness and data enthusiasts</span></footer>
 </body>
 </html>
