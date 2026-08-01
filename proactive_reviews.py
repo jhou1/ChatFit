@@ -63,6 +63,12 @@ def _format_training_recap(session: dict[str, Any]) -> str:
     return f"{session['practice_name']}（{details}）"
 
 
+def _ensure_weekly_heading(weekly_review: str) -> str:
+    if weekly_review.startswith("## 本周总结"):
+        return weekly_review
+    return f"## 本周总结\n\n{weekly_review}"
+
+
 def build_daily_review(
     as_of: date, meals: list[dict[str, Any]], training: list[dict[str, Any]]
 ) -> str | None:
@@ -99,6 +105,7 @@ async def build_proactive_review(
             weekly_review = await weekly_summary_generator(start_date, end_date)
         except Exception:
             weekly_review = WEEKLY_FAILURE
+    weekly_review = _ensure_weekly_heading(weekly_review)
     if daily_review is None:
         return ProactiveReviewResult(should_send=True, message=weekly_review)
     return ProactiveReviewResult(
