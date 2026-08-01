@@ -1,6 +1,11 @@
+import asyncio
+import logging
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import time
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 import mistune
@@ -19,6 +24,8 @@ from telegram.request import BaseRequest, HTTPXRequest
 from dotenv import load_dotenv
 
 from inputs.photo_ocr import PhotoTextExtractor, build_photo_text_extractor_from_env
+
+logger = logging.getLogger(__name__)
 
 
 class TelegramRenderer(mistune.HTMLRenderer):
@@ -88,6 +95,118 @@ PHOTO_READ_FAILED_REPLY = (
 UNSUPPORTED_INPUT_REPLY = (
     "我现在只能处理文字、语音和图片消息。请把训练或饮食内容用这些方式发给我。"
 )
+
+
+@dataclass(frozen=True)
+class ProactiveSettings:
+    enabled: bool
+    chat_id: int | None
+    api_url: str
+
+
+def load_proactive_settings(
+    environ: Mapping[str, str] | None = None,
+) -> ProactiveSettings:
+    values = os.environ if environ is None else environ
+    port = values.get("PORT", "8000")
+    api_url = values.get(
+        "API_PROACTIVE_REVIEW_URL",
+        f"http://127.0.0.1:{port}/proactive-review",
+    )
+    raw_enabled = values.get("PROACTIVE_REVIEWS_ENABLED", "false").strip().lower()
+    if raw_enabled not in {"true", "false"}:
+        raise ValueError("PROACTIVE_REVIEWS_ENABLED must be true or false")
+    if raw_enabled == "true":
+        raw_chat_id = values.get("TELEGRAM_CHAT_ID", "").strip()
+        if not raw_chat_id:
+            raise ValueError(
+                "TELEGRAM_CHAT_ID is required when proactive reviews are enabled"
+            )
+        try:
+            chat_id = int(raw_chat_id)
+        except ValueError as error:
+            raise ValueError("TELEGRAM_CHAT_ID must be an integer") from error
+        return ProactiveSettings(True, chat_id, api_url)
+    return ProactiveSettings(False, None, api_url)
+
+
+async def send_proactive_review(context: ContextTypes.DEFAULT_TYPE) -> None:
+    job = context.job
+    if job is None or not isinstance(job.data, ProactiveSettings):
+        raise RuntimeError("scheduled callback requires ProactiveSettings job data")
+    settings = job.data
+    logger.info("Proactive review schedule execution started")
+    result = await fetch_proactive_review(settings.api_url)
+    if not result["should_send"]:
+        logger.info("Proactive review completed with no send")
+        return
+
+    message = result["message"]
+    if not (isinstance(message, str) and message.strip()):
+        raise RuntimeError("scheduled callback requires a validated non-blank message")
+    chat_id = settings.chat_id
+    if chat_id is None:
+        raise RuntimeError("scheduled callback requires a configured chat ID")
+    html_message = str(markdown_to_tg_html(message)).strip()
+    try:
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=html_message,
+                parse_mode=ParseMode.HTML,
+            )
+            logger.info("Proactive review delivered as HTML")
+        except telegram.error.BadRequest:
+            await context.bot.send_message(chat_id=chat_id, text=message)
+            logger.info("Proactive review delivered as plain text fallback")
+    except telegram.error.NetworkError:
+        logger.error("Proactive review delivery failed due to network error")
+
+
+async def fetch_proactive_review(api_url: str) -> dict[str, Any]:
+    async with httpx.AsyncClient(timeout=30.0, proxy=None) as client:
+        for attempt in range(3):
+            try:
+                response = await client.post(api_url)
+                response.raise_for_status()
+                data = response.json()
+                if not isinstance(data, dict):
+                    raise ValueError("proactive review response must be an object")
+                should_send = data.get("should_send")
+                if not isinstance(should_send, bool):
+                    raise ValueError("should_send must be a boolean")
+                message = data.get("message")
+                if should_send and not (isinstance(message, str) and message.strip()):
+                    raise ValueError("a send result requires a non-blank message")
+                if not should_send and message is not None:
+                    raise ValueError("a no-send result requires message=None")
+                return data
+            except httpx.HTTPStatusError as error:
+                if error.response.status_code < 500 or attempt == 2:
+                    raise
+            except httpx.TransportError:
+                if attempt == 2:
+                    raise
+
+            retry_number = attempt + 1
+            logger.warning("Proactive review request retry %s", retry_number)
+            await asyncio.sleep(retry_number)
+
+    raise RuntimeError("proactive review fetch exhausted without result")
+
+
+def register_proactive_review_job(
+    application: Application[Any, Any, Any, Any, Any, Any],
+    settings: ProactiveSettings,
+) -> None:
+    if application.job_queue is None:
+        raise RuntimeError("Telegram JobQueue is unavailable")
+    application.job_queue.run_daily(
+        send_proactive_review,
+        time=time(hour=21, minute=0, tzinfo=ZoneInfo("Asia/Shanghai")),
+        data=settings,
+        name="proactive-review",
+    )
 
 
 def get_telegram_proxy_url() -> str | None:
@@ -387,6 +506,12 @@ def main():
         print("Please add it to your .env file.")
         exit(1)
 
+    try:
+        proactive_settings = load_proactive_settings()
+    except ValueError as error:
+        print(f"Error: {error}")
+        exit(1)
+
     print("Initializing Telegram Bot...")
 
     proxy_url = get_telegram_proxy_url()
@@ -394,6 +519,8 @@ def main():
     app = build_telegram_application(
         token, proxy_url=proxy_url, photo_text_extractor=photo_text_extractor
     )
+    if proactive_settings.enabled:
+        register_proactive_review_job(app, proactive_settings)
 
     print("Bot is polling for messages. Press Ctrl+C to stop.")
     app.run_polling()

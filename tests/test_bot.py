@@ -1,10 +1,15 @@
+import asyncio
 import json
 from io import BytesIO
+from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 from PIL import Image
+import telegram.error
 from telegram import Update
+from telegram.constants import ParseMode
 from telegram.request import BaseRequest, RequestData
 
 import bot
@@ -14,6 +19,7 @@ class FakeApplication:
     def __init__(self) -> None:
         self.handlers: list[Any] = []
         self.bot_data: dict[str, Any] = {}
+        self.job_queue = FakeJobQueue()
         self.polling_started = False
         self.polling_kwargs: dict[str, Any] = {}
 
@@ -23,6 +29,16 @@ class FakeApplication:
     def run_polling(self, **kwargs: Any) -> None:
         self.polling_started = True
         self.polling_kwargs = kwargs
+
+
+class FakeJobQueue:
+    def __init__(self) -> None:
+        self.registrations: list[dict[str, Any]] = []
+
+    def run_daily(self, callback: Any, *, time: Any, data: Any, name: str) -> None:
+        self.registrations.append(
+            {"callback": callback, "time": time, "data": data, "name": name}
+        )
 
 
 class FakeApplicationBuilder:
@@ -163,6 +179,53 @@ class FailingPhotoTextExtractor:
         raise RuntimeError("provider unavailable")
 
 
+class FakeAsyncClient:
+    def __init__(self, outcomes: list[httpx.Response | Exception]) -> None:
+        self.outcomes = outcomes.copy()
+        self.posts: list[str] = []
+
+    async def __aenter__(self) -> "FakeAsyncClient":
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        return None
+
+    async def post(self, url: str) -> httpx.Response:
+        self.posts.append(url)
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+class FakeScheduledBot:
+    def __init__(self, outcomes: list[Exception | None] | None = None) -> None:
+        self.outcomes = list(outcomes or [])
+        self.messages: list[dict[str, Any]] = []
+
+    async def send_message(self, **kwargs: Any) -> None:
+        self.messages.append(kwargs)
+        if self.outcomes:
+            outcome = self.outcomes.pop(0)
+            if outcome is not None:
+                raise outcome
+
+
+def scheduled_context(
+    settings: "bot.ProactiveSettings", telegram_bot: FakeScheduledBot
+) -> Any:
+    return SimpleNamespace(job=SimpleNamespace(data=settings), bot=telegram_bot)
+
+
+def patch_proactive_http_client(
+    monkeypatch: pytest.MonkeyPatch,
+    outcomes: list[httpx.Response | Exception],
+) -> FakeAsyncClient:
+    client = FakeAsyncClient(outcomes)
+    monkeypatch.setattr(bot.httpx, "AsyncClient", lambda **kwargs: client)
+    return client
+
+
 def patch_backend_post(
     monkeypatch: pytest.MonkeyPatch,
     backend_posts: list[dict[str, Any]],
@@ -178,10 +241,308 @@ def patch_backend_post(
     monkeypatch.setattr(bot, "post_message_to_api", fake_post_message_to_api)
 
 
+@pytest.mark.asyncio
+async def test_scheduled_review_requires_proactive_settings_job_data():
+    context = SimpleNamespace(job=None, bot=FakeScheduledBot())
+
+    with pytest.raises(RuntimeError, match="ProactiveSettings job data"):
+        await bot.send_proactive_review(context)
+
+
+@pytest.mark.asyncio
+async def test_scheduled_review_requires_configured_chat_id(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    settings = bot.ProactiveSettings(True, None, "http://api/proactive-review")
+
+    async def fake_fetch(api_url: str) -> dict[str, Any]:
+        return {"should_send": True, "message": "回顾"}
+
+    monkeypatch.setattr(bot, "fetch_proactive_review", fake_fetch)
+
+    with pytest.raises(RuntimeError, match="configured chat ID"):
+        await bot.send_proactive_review(scheduled_context(settings, FakeScheduledBot()))
+
+
+@pytest.mark.asyncio
+async def test_scheduled_review_requires_validated_message(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    settings = bot.ProactiveSettings(True, 456, "http://api/proactive-review")
+
+    async def fake_fetch(api_url: str) -> dict[str, Any]:
+        return {"should_send": True, "message": None}
+
+    monkeypatch.setattr(bot, "fetch_proactive_review", fake_fetch)
+
+    with pytest.raises(RuntimeError, match="validated non-blank message"):
+        await bot.send_proactive_review(scheduled_context(settings, FakeScheduledBot()))
+
+
+@pytest.mark.asyncio
+async def test_fetch_proactive_review_retries_transport_and_server_errors(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    api_url = "http://api/proactive-review"
+    request = httpx.Request("POST", api_url)
+    client = patch_proactive_http_client(
+        monkeypatch,
+        [
+            httpx.ConnectError("offline", request=request),
+            httpx.Response(503, request=request, json={"detail": "unavailable"}),
+            httpx.Response(
+                200,
+                request=request,
+                json={"should_send": True, "message": "回顾"},
+            ),
+        ],
+    )
+    sleeps: list[int] = []
+
+    async def fake_sleep(delay: int) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    result = await bot.fetch_proactive_review(api_url)
+
+    assert result == {"should_send": True, "message": "回顾"}
+    assert client.posts == [api_url, api_url, api_url]
+    assert sleeps == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_fetch_proactive_review_does_not_retry_client_error(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    api_url = "http://api/proactive-review"
+    request = httpx.Request("POST", api_url)
+    client = patch_proactive_http_client(
+        monkeypatch,
+        [httpx.Response(400, request=request, json={"detail": "bad request"})],
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await bot.fetch_proactive_review(api_url)
+
+    assert client.posts == [api_url]
+
+
+@pytest.mark.asyncio
+async def test_scheduled_review_no_send_calls_no_telegram_method(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    settings = bot.ProactiveSettings(True, 456, "http://api/proactive-review")
+    telegram_bot = FakeScheduledBot()
+    api_calls: list[str] = []
+
+    async def fake_fetch(api_url: str) -> dict[str, Any]:
+        api_calls.append(api_url)
+        return {"should_send": False, "message": None}
+
+    monkeypatch.setattr(bot, "fetch_proactive_review", fake_fetch)
+
+    with caplog.at_level("INFO", logger=bot.__name__):
+        await bot.send_proactive_review(scheduled_context(settings, telegram_bot))
+
+    assert api_calls == ["http://api/proactive-review"]
+    assert telegram_bot.messages == []
+    assert "Proactive review schedule execution started" in caplog.text
+    assert "Proactive review completed with no send" in caplog.text
+    assert "456" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_scheduled_review_sends_rendered_html_to_configured_target(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    settings = bot.ProactiveSettings(True, 456, "http://api/proactive-review")
+    telegram_bot = FakeScheduledBot()
+
+    async def fake_fetch(api_url: str) -> dict[str, Any]:
+        return {"should_send": True, "message": "**回顾**"}
+
+    monkeypatch.setattr(bot, "fetch_proactive_review", fake_fetch)
+
+    with caplog.at_level("INFO", logger=bot.__name__):
+        await bot.send_proactive_review(scheduled_context(settings, telegram_bot))
+
+    assert telegram_bot.messages == [
+        {"chat_id": 456, "text": "<b>回顾</b>", "parse_mode": ParseMode.HTML}
+    ]
+    assert "Proactive review delivered as HTML" in caplog.text
+    assert "456" not in caplog.text
+    assert "回顾" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_scheduled_review_falls_back_to_original_plain_text_on_bad_html(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    settings = bot.ProactiveSettings(True, 456, "http://api/proactive-review")
+    telegram_bot = FakeScheduledBot([telegram.error.BadRequest("bad html"), None])
+
+    async def fake_fetch(api_url: str) -> dict[str, Any]:
+        return {"should_send": True, "message": "**回顾**"}
+
+    monkeypatch.setattr(bot, "fetch_proactive_review", fake_fetch)
+
+    with caplog.at_level("INFO", logger=bot.__name__):
+        await bot.send_proactive_review(scheduled_context(settings, telegram_bot))
+
+    assert telegram_bot.messages == [
+        {"chat_id": 456, "text": "<b>回顾</b>", "parse_mode": ParseMode.HTML},
+        {"chat_id": 456, "text": "**回顾**"},
+    ]
+    assert "Proactive review delivered as plain text fallback" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_scheduled_review_logs_final_network_error_without_reraising(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    settings = bot.ProactiveSettings(True, 456, "http://api/proactive-review")
+    telegram_bot = FakeScheduledBot(
+        [
+            telegram.error.BadRequest("bad html"),
+            telegram.error.NetworkError("offline"),
+        ]
+    )
+
+    async def fake_fetch(api_url: str) -> dict[str, Any]:
+        return {"should_send": True, "message": "private review"}
+
+    monkeypatch.setattr(bot, "fetch_proactive_review", fake_fetch)
+
+    with caplog.at_level("ERROR", logger=bot.__name__):
+        await bot.send_proactive_review(scheduled_context(settings, telegram_bot))
+
+    assert len(telegram_bot.messages) == 2
+    assert "Proactive review delivery failed due to network error" in caplog.text
+    assert "456" not in caplog.text
+    assert "private review" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_fetch_proactive_review_rejects_non_boolean_should_send_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    api_url = "http://api/proactive-review"
+    request = httpx.Request("POST", api_url)
+    client = patch_proactive_http_client(
+        monkeypatch,
+        [
+            httpx.Response(
+                200,
+                request=request,
+                json={"should_send": "true", "message": "回顾"},
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="should_send must be a boolean"):
+        await bot.fetch_proactive_review(api_url)
+
+    assert client.posts == [api_url]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "error_match"),
+    [
+        ({"should_send": True, "message": None}, "non-blank message"),
+        ({"should_send": True, "message": "  "}, "non-blank message"),
+        ({"should_send": False, "message": "unexpected"}, "message=None"),
+    ],
+)
+async def test_fetch_proactive_review_rejects_inconsistent_message_presence(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict[str, Any],
+    error_match: str,
+):
+    api_url = "http://api/proactive-review"
+    request = httpx.Request("POST", api_url)
+    client = patch_proactive_http_client(
+        monkeypatch,
+        [httpx.Response(200, request=request, json=payload)],
+    )
+
+    with pytest.raises(ValueError, match=error_match):
+        await bot.fetch_proactive_review(api_url)
+
+    assert client.posts == [api_url]
+
+
+def test_proactive_reviews_default_to_disabled():
+    settings = bot.load_proactive_settings({})
+
+    assert settings == bot.ProactiveSettings(
+        enabled=False,
+        chat_id=None,
+        api_url="http://127.0.0.1:8000/proactive-review",
+    )
+
+
+def test_disabled_proactive_reviews_do_not_require_chat_id():
+    settings = bot.load_proactive_settings(
+        {"PROACTIVE_REVIEWS_ENABLED": "false", "TELEGRAM_CHAT_ID": "not-an-id"}
+    )
+
+    assert settings.enabled is False
+    assert settings.chat_id is None
+
+
+@pytest.mark.parametrize("value", ["true", "TRUE", " True "])
+def test_enabled_proactive_reviews_require_integer_chat_id(value):
+    settings = bot.load_proactive_settings(
+        {"PROACTIVE_REVIEWS_ENABLED": value, "TELEGRAM_CHAT_ID": "-100123"}
+    )
+
+    assert settings.enabled is True
+    assert settings.chat_id == -100123
+
+
+def test_invalid_proactive_toggle_is_rejected():
+    with pytest.raises(ValueError, match="PROACTIVE_REVIEWS_ENABLED"):
+        bot.load_proactive_settings({"PROACTIVE_REVIEWS_ENABLED": "yes"})
+
+
+def test_enabled_proactive_reviews_require_chat_id():
+    with pytest.raises(ValueError, match="TELEGRAM_CHAT_ID is required"):
+        bot.load_proactive_settings({"PROACTIVE_REVIEWS_ENABLED": "true"})
+
+
+def test_enabled_proactive_reviews_reject_non_integer_chat_id():
+    with pytest.raises(ValueError, match="TELEGRAM_CHAT_ID must be an integer"):
+        bot.load_proactive_settings(
+            {"PROACTIVE_REVIEWS_ENABLED": "true", "TELEGRAM_CHAT_ID": "not-an-id"}
+        )
+
+
+def test_job_is_registered_at_2100_shanghai():
+    application = FakeApplication()
+    settings = bot.ProactiveSettings(True, 456, "http://api/proactive-review")
+
+    bot.register_proactive_review_job(application, settings)
+
+    registration = application.job_queue.registrations[0]
+    assert registration["callback"] is bot.send_proactive_review
+    assert registration["time"].hour == 21
+    assert registration["time"].minute == 0
+    assert registration["time"].tzinfo.key == "Asia/Shanghai"
+    assert registration["data"] == settings
+    assert registration["name"] == "proactive-review"
+
+
 def test_main_registers_photo_message_handler(monkeypatch):
     app = FakeApplication()
 
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("PROACTIVE_REVIEWS_ENABLED", "false")
     monkeypatch.delenv("TELEGRAM_PROXY", raising=False)
     monkeypatch.delenv("LLM_PROXY", raising=False)
     monkeypatch.setattr(bot, "ApplicationBuilder", lambda: FakeApplicationBuilder(app))
@@ -196,8 +557,40 @@ def test_main_registers_photo_message_handler(monkeypatch):
     ]
     callback_names = [callback.__name__ for callback in callbacks]
     assert "handle_photo" in callback_names
+    assert app.job_queue.registrations == []
     assert app.polling_started
     assert app.polling_kwargs == {}
+
+
+def test_main_registers_enabled_proactive_review_job(monkeypatch):
+    app = FakeApplication()
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("PROACTIVE_REVIEWS_ENABLED", "true")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "456")
+    monkeypatch.delenv("TELEGRAM_PROXY", raising=False)
+    monkeypatch.setattr(bot, "ApplicationBuilder", lambda: FakeApplicationBuilder(app))
+    monkeypatch.setattr(
+        bot, "build_photo_text_extractor_from_env", FakePhotoTextExtractor
+    )
+
+    bot.main()
+
+    assert len(app.job_queue.registrations) == 1
+    assert app.polling_started
+
+
+def test_main_exits_with_non_sensitive_settings_error(monkeypatch, capsys):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "secret-token")
+    monkeypatch.setenv("PROACTIVE_REVIEWS_ENABLED", "yes")
+
+    with pytest.raises(SystemExit) as error:
+        bot.main()
+
+    assert error.value.code == 1
+    output = capsys.readouterr().out
+    assert "PROACTIVE_REVIEWS_ENABLED must be true or false" in output
+    assert "secret-token" not in output
 
 
 def test_telegram_proxy_does_not_reuse_llm_proxy(monkeypatch):
