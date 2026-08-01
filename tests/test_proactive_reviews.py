@@ -38,6 +38,25 @@ def test_daily_review_recaps_meal_and_only_asks_about_training():
     assert "今天吃了什么" not in message
 
 
+def test_daily_review_uses_meal_note_when_optional_fields_are_null():
+    """Breaks if persisted meals with null optional fields crash or leak None."""
+    persisted_meal = {
+        "date": "2026-07-31",
+        "meal_type": None,
+        "items": None,
+        "note": "午餐吃了米饭和鱼",
+        "created_at": "2026-07-31 12:30:00",
+    }
+
+    message = proactive_reviews.build_daily_review(
+        date(2026, 7, 31), [persisted_meal], []
+    )
+
+    assert message == "今天记录的饮食：午餐吃了米饭和鱼。今天练了什么？"
+    assert "今天吃了什么" not in message
+    assert "None" not in message
+
+
 def test_daily_review_recaps_training_and_only_asks_about_meals():
     """Breaks if recorded training is not recapped before requesting meals."""
     message = proactive_reviews.build_daily_review(date(2026, 7, 31), [], [TRAINING])
@@ -45,6 +64,25 @@ def test_daily_review_recaps_training_and_only_asks_about_meals():
     assert "深蹲（5 组，RPE 7）" in message
     assert message.endswith("今天吃了什么？")
     assert "今天练了什么" not in message
+
+
+def test_daily_review_omits_null_rpe_from_training_recap():
+    """Breaks if a persisted training session renders its optional RPE as None."""
+    persisted_training = {
+        "training_date": "2026-07-31",
+        "practice_name": "深蹲",
+        "rpe": None,
+        "note": "状态舒适",
+        "total_sets": 5,
+    }
+
+    message = proactive_reviews.build_daily_review(
+        date(2026, 7, 31), [], [persisted_training]
+    )
+
+    assert message == "今天记录的训练：深蹲（5 组）。今天吃了什么？"
+    assert "今天练了什么" not in message
+    assert "None" not in message
 
 
 def test_daily_review_is_silent_when_both_categories_exist():

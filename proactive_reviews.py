@@ -47,20 +47,33 @@ def today_in_shanghai() -> date:
     return datetime.now(ZoneInfo("Asia/Shanghai")).date()
 
 
+def _format_meal_recap(meal: dict[str, Any]) -> str:
+    meal_type = meal.get("meal_type")
+    label = MEAL_LABELS.get(meal_type) if isinstance(meal_type, str) else None
+    detail = meal.get("items") or meal.get("note") or "已记录"
+    if label is None:
+        return str(detail)
+    return f"{label}：{detail}"
+
+
+def _format_training_recap(session: dict[str, Any]) -> str:
+    details = f"{session['total_sets']} 组"
+    if session.get("rpe") is not None:
+        details += f"，RPE {session['rpe']}"
+    return f"{session['practice_name']}（{details}）"
+
+
 def build_daily_review(
     as_of: date, meals: list[dict[str, Any]], training: list[dict[str, Any]]
 ) -> str | None:
     if not meals and not training:
         return "今天还没有看到饮食或训练记录。今天吃了什么，练了什么？"
     if meals and not training:
-        meal_recap = "；".join(
-            f"{MEAL_LABELS[meal['meal_type']]}：{meal['items']}" for meal in meals
-        )
+        meal_recap = "；".join(_format_meal_recap(meal) for meal in meals)
         return f"今天记录的饮食：{meal_recap}。今天练了什么？"
     if training and not meals:
         training_recap = "；".join(
-            f"{session['practice_name']}（{session['total_sets']} 组，RPE {session['rpe']}）"
-            for session in training
+            _format_training_recap(session) for session in training
         )
         return f"今天记录的训练：{training_recap}。今天吃了什么？"
     return None

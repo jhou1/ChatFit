@@ -320,3 +320,46 @@ async def test_llm_judge_scores_real_supplied_input_and_output():
     assert result.overall_weighted_score == 5.0
     assert "I completed my workout" in fake_judge.messages[1].content
     assert "your session was saved" in fake_judge.messages[1].content
+
+
+@pytest.mark.asyncio
+async def test_llm_judge_logs_score_export_failure_without_request_content(
+    caplog: pytest.LogCaptureFixture,
+):
+    """Breaks if a Langfuse score failure is silent or logs private request data."""
+
+    class FakeJudge:
+        async def ainvoke(self, messages):
+            return AIMessage(
+                content='{"evaluations": [{"dimension": "Tone", "evidence": "Supportive", "score": 5, "weight": 1.0}], "overall_weighted_score": 5.0}'
+            )
+
+    def fail_score_export(**kwargs):
+        raise RuntimeError("score service unavailable")
+
+    private_trace = "private-trace-id"
+    private_input = "private user input"
+    private_output = "private agent output"
+    with caplog.at_level("WARNING", logger="scripts.llm_judge"):
+        result = await evaluate_trace(
+            private_trace,
+            private_input,
+            private_output,
+            [
+                {
+                    "dimension_name": "Tone",
+                    "criteria_description": "d",
+                    "evidence_requirement": "e",
+                    "weight": 1.0,
+                }
+            ],
+            judge_llm=FakeJudge(),
+            langfuse_client=SimpleNamespace(create_score=fail_score_export),
+        )
+
+    assert result.overall_weighted_score == 5.0
+    assert "Failed to export LLM judge scores to Langfuse" in caplog.text
+    assert caplog.records[-1].exc_info is not None
+    assert private_trace not in caplog.text
+    assert private_input not in caplog.text
+    assert private_output not in caplog.text

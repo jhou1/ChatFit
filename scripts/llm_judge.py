@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from agents.llm_factory import LLMConfig, create_chat_model
 from agents.utils import extract_text
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -122,6 +125,8 @@ async def evaluate_trace(
                     comment=ev.evidence,
                 )
         except Exception:
-            pass
+            logger.warning(
+                "Failed to export LLM judge scores to Langfuse", exc_info=True
+            )
 
     return result
