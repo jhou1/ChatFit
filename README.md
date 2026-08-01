@@ -180,29 +180,6 @@ curl -X POST http://localhost:8000/chat \
 }
 ```
 
-### `POST /proactive-review`
-
-生成定时主动回顾，无请求体，也不会读取或改变聊天 thread。周日到周五会根据当天
-饮食和训练记录提示缺失项目；周六会先生成当周（周日至周六）的训练与饮食总结。
-
-响应：
-
-```json
-{
-  "should_send": true,
-  "message": "今天还没有看到饮食或训练记录。今天吃了什么，练了什么？"
-}
-```
-
-当当天饮食和训练均已记录且不是周六时，响应为：
-
-```json
-{
-  "should_send": false,
-  "message": null
-}
-```
-
 完整 OpenAPI Schema 可在服务启动后访问 `/openapi.json`。
 每次 `/chat` 响应还会返回 `X-Request-ID` 和 `X-Trace-ID`，用于关联日志与 trace。
 
