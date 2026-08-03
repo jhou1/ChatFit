@@ -1,0 +1,369 @@
+"""Interpret and execute explicit user-memory mutations."""
+
+import json
+from collections.abc import Sequence
+from typing import Any, Protocol
+
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from agents.llm_factory import LLMConfig, create_chat_model
+from agents.memory.models import (
+    MemoryAgentResult,
+    MemoryConflictError,
+    MemoryMutationDecision,
+    MemoryUpdate,
+    NewUserMemory,
+    PendingMemoryAction,
+    UserMemory,
+)
+from agents.memory.store import UserMemoryStore, owner_key_for
+
+
+class MemoryInterpreter(Protocol):
+    """Classify one user message using the user's current memory names."""
+
+    async def interpret(
+        self,
+        *,
+        user_message: str,
+        memories: Sequence[UserMemory],
+        pending: PendingMemoryAction | None,
+    ) -> MemoryMutationDecision: ...
+
+
+_MEMORY_INTERPRETER_PROMPT = (
+    "You classify explicit user-memory mutation commands. Return one "
+    "intent: remember, update, forget, or clarify. Preserve the user's "
+    "explicit memory content verbatim; never paraphrase it. Use only the "
+    "supplied current memory names and aliases to identify targets. If "
+    "the command is incomplete or could match zero or multiple memories, "
+    "choose clarify rather than guessing."
+)
+
+
+class LLMMemoryInterpreter:
+    """Interpret memory commands with validated structured model output."""
+
+    def __init__(self, llm_config: LLMConfig) -> None:
+        chat_model = create_chat_model(llm_config)
+        self._runnable = chat_model.with_structured_output(MemoryMutationDecision)
+
+    async def interpret(
+        self,
+        *,
+        user_message: str,
+        memories: Sequence[UserMemory],
+        pending: PendingMemoryAction | None,
+    ) -> MemoryMutationDecision:
+        memory_context = [
+            {
+                "id": memory.id,
+                "memory_type": memory.memory_type.value,
+                "canonical_key": memory.canonical_key,
+                "display_name": memory.display_name,
+                "aliases": list(memory.aliases),
+                "version": memory.version,
+            }
+            for memory in memories
+        ]
+        pending_context = (
+            pending.model_dump(mode="json") if pending is not None else None
+        )
+        human_prompt = (
+            f"User message:\n{user_message}\n\nCurrent memories:\n"
+            f"{json.dumps(memory_context, ensure_ascii=False, separators=(',', ':'))}"
+            "\n\nPending action:\n"
+            f"{json.dumps(pending_context, ensure_ascii=False, separators=(',', ':'))}"
+        )
+        raw_decision: Any = await self._runnable.ainvoke(
+            [
+                SystemMessage(content=_MEMORY_INTERPRETER_PROMPT),
+                HumanMessage(content=human_prompt),
+            ]
+        )
+        return MemoryMutationDecision.model_validate(raw_decision)
+
+
+def extract_explicit_memory_payload(user_message: str) -> str | None:
+    """Return content explicitly delimited by a supported remember command."""
+    if user_message.startswith("记住"):
+        payload = user_message[len("记住") :]
+        return payload or None
+    suffix = "，记下来"
+    if user_message.endswith(suffix):
+        payload = user_message[: -len(suffix)]
+        return payload or None
+    return None
+
+
+class MemoryAgent:
+    """Apply interpreted memory mutations through the transactional store."""
+
+    def __init__(
+        self, *, store: UserMemoryStore, interpreter: MemoryInterpreter
+    ) -> None:
+        self._store = store
+        self._interpreter = interpreter
+
+    async def handle(
+        self,
+        *,
+        user_id: str,
+        user_message: str,
+        pending: PendingMemoryAction | None,
+    ) -> MemoryAgentResult:
+        owner_key = owner_key_for(user_id)
+        try:
+            memories = self._store.list_memories(owner_key)
+        except Exception:
+            return self._repository_failure()
+        decision = await self._interpreter.interpret(
+            user_message=user_message,
+            memories=memories,
+            pending=pending,
+        )
+        if pending is not None and pending.decision.intent != "clarify":
+            decision = self._merge_pending_decision(pending.decision, decision)
+
+        if decision.intent == "clarify":
+            question = decision.clarification_question or "请告诉我你想修改哪一条记忆。"
+            try:
+                candidates, _ = self._resolve_candidates(owner_key, decision, memories)
+            except Exception:
+                return self._repository_failure()
+            return self._pending_result(decision, candidates, question)
+
+        if decision.intent in ("update", "forget"):
+            return self._handle_targeted_mutation(
+                owner_key=owner_key,
+                decision=decision,
+                memories=memories,
+                pending=pending,
+            )
+
+        explicit_payload = extract_explicit_memory_payload(user_message)
+        has_explicit_marker = user_message.startswith("记住") or user_message.endswith(
+            "，记下来"
+        )
+        content = explicit_payload if has_explicit_marker else decision.content
+        if (
+            decision.memory_type is None
+            or not decision.canonical_key
+            or not decision.display_name
+            or content is None
+        ):
+            question = decision.clarification_question or "请告诉我需要记住的完整内容。"
+            return MemoryAgentResult(
+                response=question,
+                pending=PendingMemoryAction(decision=decision, question=question),
+            )
+
+        try:
+            result = self._store.remember(
+                owner_key,
+                NewUserMemory(
+                    memory_type=decision.memory_type,
+                    canonical_key=decision.canonical_key,
+                    display_name=decision.display_name,
+                    content=content,
+                    aliases=decision.aliases,
+                ),
+            )
+        except MemoryConflictError:
+            return self._clarify_remember_conflict(
+                owner_key=owner_key,
+                decision=decision,
+                content=content,
+            )
+        except Exception:
+            return MemoryAgentResult(response="记忆保存失败，请稍后重试。")
+
+        if result.status == "unchanged":
+            return MemoryAgentResult(
+                response=f"已记住，无需重复记录「{result.memory.display_name}」。"
+            )
+        return MemoryAgentResult(response=f"已记住「{result.memory.display_name}」。")
+
+    def _clarify_remember_conflict(
+        self,
+        *,
+        owner_key: str,
+        decision: MemoryMutationDecision,
+        content: str,
+    ) -> MemoryAgentResult:
+        queries = (decision.canonical_key or "", *decision.aliases)
+        candidates_by_id: dict[str, UserMemory] = {}
+        try:
+            for query in queries:
+                if query:
+                    for memory in self._store.resolve(owner_key, query):
+                        candidates_by_id[memory.id] = memory
+        except Exception:
+            return self._repository_failure()
+
+        update_decision = MemoryMutationDecision(
+            intent="update",
+            memory_type=decision.memory_type,
+            canonical_key=decision.canonical_key,
+            display_name=decision.display_name,
+            content=content,
+            aliases=decision.aliases,
+            target_query=decision.canonical_key,
+            clarification_question=(
+                f"「{decision.display_name}」已有不同内容，要更新它吗？"
+            ),
+        )
+        return self._pending_result(
+            update_decision,
+            list(candidates_by_id.values()),
+            update_decision.clarification_question or "要更新这条记忆吗？",
+        )
+
+    @staticmethod
+    def _merge_pending_decision(
+        original: MemoryMutationDecision,
+        clarification: MemoryMutationDecision,
+    ) -> MemoryMutationDecision:
+        updates = {}
+        for field in (
+            "memory_type",
+            "canonical_key",
+            "display_name",
+            "content",
+            "clarification_question",
+        ):
+            value = getattr(clarification, field)
+            if getattr(original, field) is None and value is not None:
+                updates[field] = value
+        if clarification.target_query is not None:
+            updates["target_query"] = clarification.target_query
+        if not original.aliases and clarification.aliases:
+            updates["aliases"] = clarification.aliases
+        return original.model_copy(update=updates)
+
+    def _handle_targeted_mutation(
+        self,
+        *,
+        owner_key: str,
+        decision: MemoryMutationDecision,
+        memories: Sequence[UserMemory],
+        pending: PendingMemoryAction | None,
+    ) -> MemoryAgentResult:
+        try:
+            candidates, exact_target = self._resolve_candidates(
+                owner_key, decision, memories
+            )
+        except Exception:
+            return self._repository_failure()
+
+        if pending is not None and pending.candidate_ids:
+            allowed_ids = set(pending.candidate_ids)
+            candidates = [memory for memory in candidates if memory.id in allowed_ids]
+
+        if not exact_target or len(candidates) != 1:
+            return self._clarify_target(decision, candidates)
+
+        target = candidates[0]
+        expected_version = target.version
+        if pending is not None and target.id in pending.candidate_ids:
+            versions = dict(
+                zip(
+                    pending.candidate_ids,
+                    pending.candidate_versions,
+                    strict=True,
+                )
+            )
+            expected_version = versions[target.id]
+            if target.version != expected_version:
+                return MemoryAgentResult(
+                    response="这条记忆已更新，请先查看新内容后再确认。"
+                )
+
+        if decision.intent == "update":
+            if decision.content is None:
+                question = decision.clarification_question or "请告诉我新的完整内容。"
+                return self._pending_result(decision, [target], question)
+            aliases = tuple(dict.fromkeys((*target.aliases, *decision.aliases)))
+            try:
+                updated = self._store.update(
+                    owner_key,
+                    target.id,
+                    MemoryUpdate(
+                        display_name=decision.display_name or target.display_name,
+                        content=decision.content,
+                        aliases=aliases,
+                        expected_version=expected_version,
+                    ),
+                )
+            except Exception:
+                return self._repository_failure()
+            return MemoryAgentResult(response=f"已更新「{updated.display_name}」。")
+
+        try:
+            forgotten = self._store.forget(owner_key, target.id)
+        except Exception:
+            return self._repository_failure()
+        if not forgotten:
+            return self._repository_failure()
+        return MemoryAgentResult(response=f"已忘掉「{target.display_name}」。")
+
+    def _resolve_candidates(
+        self,
+        owner_key: str,
+        decision: MemoryMutationDecision,
+        memories: Sequence[UserMemory],
+    ) -> tuple[list[UserMemory], bool]:
+        if decision.target_query:
+            exact = self._store.resolve(owner_key, decision.target_query)
+            if exact:
+                return exact, True
+            display_matches = [
+                memory
+                for memory in memories
+                if memory.display_name == decision.target_query
+            ]
+            if display_matches:
+                return display_matches, True
+        if decision.memory_type is not None:
+            return (
+                [
+                    memory
+                    for memory in memories
+                    if memory.memory_type == decision.memory_type
+                ],
+                False,
+            )
+        return [], False
+
+    def _clarify_target(
+        self,
+        decision: MemoryMutationDecision,
+        candidates: Sequence[UserMemory],
+    ) -> MemoryAgentResult:
+        question = decision.clarification_question
+        if question is None and candidates:
+            names = "、".join(f"「{memory.display_name}」" for memory in candidates)
+            question = f"请确认你指的是哪一条：{names}？"
+        if question is None:
+            question = "没有找到对应记忆，请告诉我它的准确名称。"
+        return self._pending_result(decision, candidates, question)
+
+    @staticmethod
+    def _pending_result(
+        decision: MemoryMutationDecision,
+        candidates: Sequence[UserMemory],
+        question: str,
+    ) -> MemoryAgentResult:
+        return MemoryAgentResult(
+            response=question,
+            pending=PendingMemoryAction(
+                decision=decision,
+                candidate_ids=tuple(memory.id for memory in candidates),
+                candidate_versions=tuple(memory.version for memory in candidates),
+                question=question,
+            ),
+        )
+
+    @staticmethod
+    def _repository_failure() -> MemoryAgentResult:
+        return MemoryAgentResult(response="记忆操作失败，请稍后重试。")

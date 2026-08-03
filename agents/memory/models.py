@@ -66,6 +66,41 @@ class RememberResult(BaseModel):
     memory: UserMemory
 
 
+class MemoryMutationDecision(BaseModel):
+    """A structured interpretation of one explicit memory command."""
+
+    model_config = ConfigDict(frozen=True)
+
+    intent: Literal["remember", "update", "forget", "clarify"]
+    memory_type: MemoryType | None = None
+    canonical_key: str | None = None
+    display_name: str | None = None
+    content: str | None = None
+    aliases: tuple[str, ...] = ()
+    target_query: str | None = None
+    clarification_question: str | None = None
+
+
+class PendingMemoryAction(BaseModel):
+    """A mutation awaiting an exact target or other missing information."""
+
+    model_config = ConfigDict(frozen=True)
+
+    decision: MemoryMutationDecision
+    candidate_ids: tuple[str, ...] = ()
+    candidate_versions: tuple[int, ...] = ()
+    question: str
+
+
+class MemoryAgentResult(BaseModel):
+    """The user-facing response and optional mutation awaiting clarification."""
+
+    model_config = ConfigDict(frozen=True)
+
+    response: str
+    pending: PendingMemoryAction | None = None
+
+
 class MemoryConflictError(Exception):
     """Raised when a requested memory mutation conflicts with existing data."""
 
