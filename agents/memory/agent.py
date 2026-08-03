@@ -1,13 +1,13 @@
 """Interpret and execute explicit user-memory mutations."""
 
 import json
-import re
 from collections.abc import Sequence
 from typing import Any, Literal, Protocol
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.llm_factory import LLMConfig, create_chat_model
+from agents.memory.commands import MemoryCommand, parse_memory_command
 from agents.memory.models import (
     MemoryAgentResult,
     MemoryConflictError,
@@ -42,10 +42,6 @@ _MEMORY_INTERPRETER_PROMPT = (
     "choose clarify rather than guessing."
 )
 
-_EXPLICIT_UPDATE_PATTERN = re.compile(
-    r"^(?:把)?(?P<target>.+?)(?:更新成|改成)(?P<content>.*)$",
-    re.DOTALL,
-)
 _TARGET_EDGE_CHARACTERS = " \t\r\n，。！？、,:：;；.?!「」『』“”‘’"
 _CONFIRMATION_REPLIES = frozenset(
     ("确认", "确认执行", "确认更新", "确定", "是的", "继续")
@@ -100,66 +96,22 @@ class LLMMemoryInterpreter:
 
 def extract_explicit_memory_payload(user_message: str) -> str | None:
     """Return content explicitly delimited by a supported remember command."""
-    if user_message.startswith("记住"):
-        payload = user_message[len("记住") :]
-        return payload or None
-    suffix = "，记下来"
-    if user_message.endswith(suffix):
-        payload = user_message[: -len(suffix)]
-        return payload or None
-    return None
+    command = parse_memory_command(user_message)
+    if command is None or command.operation != "remember":
+        return None
+    return command.payload
 
 
 def extract_explicit_update_payload(user_message: str) -> str | None:
     """Return the exact replacement from a supported explicit update command."""
-    match = _EXPLICIT_UPDATE_PATTERN.fullmatch(user_message)
-    return match.group("content") if match is not None else None
-
-
-def _explicit_operation(
-    user_message: str,
-) -> Literal["remember", "update", "forget"] | None:
-    if user_message.startswith("记住") or user_message.endswith("，记下来"):
-        return "remember"
-    if _EXPLICIT_UPDATE_PATTERN.fullmatch(user_message) is not None:
-        return "update"
-    if user_message.startswith(("更新这个记忆", "更新这条记忆")):
-        return "update"
-    if user_message.startswith("忘掉") or user_message.startswith(
-        ("删除这个记忆", "删除这条记忆")
-    ):
-        return "forget"
-    return None
+    command = parse_memory_command(user_message)
+    if command is None or command.operation != "update":
+        return None
+    return command.payload
 
 
 def _clean_target_query(value: str) -> str:
     return value.strip(_TARGET_EDGE_CHARACTERS)
-
-
-def _direct_target_queries(
-    operation: Literal["update", "forget"], user_message: str
-) -> tuple[str, ...]:
-    target: str | None = None
-    if operation == "update":
-        match = _EXPLICIT_UPDATE_PATTERN.fullmatch(user_message)
-        if match is not None:
-            target = _clean_target_query(match.group("target"))
-    elif user_message.startswith("忘掉"):
-        target = _clean_target_query(user_message[len("忘掉") :])
-    else:
-        for prefix in ("删除这个记忆", "删除这条记忆"):
-            if user_message.startswith(prefix):
-                target = _clean_target_query(user_message[len(prefix) :])
-                break
-
-    if not target:
-        return ()
-    variants = [target]
-    if operation == "update" and target.endswith("模板"):
-        variants.append(_clean_target_query(target[: -len("模板")]))
-    if operation == "forget" and target.startswith("我"):
-        variants.append(_clean_target_query(target[len("我") :]))
-    return tuple(dict.fromkeys(query for query in variants if query))
 
 
 def _reply_target_queries(user_message: str) -> tuple[str, ...]:
@@ -192,7 +144,8 @@ class MemoryAgent:
         pending: PendingMemoryAction | None,
     ) -> MemoryAgentResult:
         owner_key = owner_key_for(user_id)
-        operation = _explicit_operation(user_message)
+        command = parse_memory_command(user_message)
+        operation = command.operation if command is not None else None
         if pending is not None:
             if pending.owner_key != owner_key:
                 return MemoryAgentResult(response="这条待确认记忆不属于当前用户。")
@@ -243,11 +196,11 @@ class MemoryAgent:
                     )
         elif operation == "update":
             decision = decision.model_copy(
-                update={"content": extract_explicit_update_payload(user_message)}
+                update={"content": command.payload if command is not None else None}
             )
         elif operation == "remember":
             decision = decision.model_copy(
-                update={"content": extract_explicit_memory_payload(user_message)}
+                update={"content": command.payload if command is not None else None}
             )
 
         if pending is None and decision.intent == "clarify" and operation == "remember":
@@ -262,13 +215,14 @@ class MemoryAgent:
                 memories=memories,
                 pending=pending,
                 user_message=user_message,
+                command=command,
             )
 
-        explicit_payload = extract_explicit_memory_payload(user_message)
-        has_explicit_marker = user_message.startswith("记住") or user_message.endswith(
-            "，记下来"
+        content = (
+            command.payload
+            if pending is None and command is not None
+            else decision.content
         )
-        content = explicit_payload if has_explicit_marker else decision.content
         if (
             decision.memory_type is None
             or not decision.canonical_key
@@ -377,13 +331,14 @@ class MemoryAgent:
         memories: Sequence[UserMemory],
         pending: PendingMemoryAction | None,
         user_message: str,
+        command: MemoryCommand | None,
     ) -> MemoryAgentResult:
         try:
             if pending is None:
                 candidates = self._resolve_exact_queries(
                     owner_key,
                     memories,
-                    _direct_target_queries(operation, user_message),
+                    command.target_queries if command is not None else (),
                 )
             elif not pending.candidate_ids:
                 recovered = self._resolve_exact_queries(

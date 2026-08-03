@@ -4,8 +4,6 @@ from pydantic import BaseModel, Field, model_validator
 
 from langgraph.graph.message import add_messages
 
-from agents.memory.models import PendingMemoryAction
-
 
 class TrainingSet(BaseModel):
     """
@@ -100,4 +98,4 @@ class AgentState(TypedDict):
     assistant_names: list[str]
     summary: NotRequired[str]
     memory_context: NotRequired[str]
-    pending_memory_action: NotRequired[PendingMemoryAction | None]
+    pending_memory_action: NotRequired[dict[str, object] | None]

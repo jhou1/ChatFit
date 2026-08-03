@@ -1,5 +1,3 @@
-import re
-
 from langchain_core.prompts.prompt import PromptTemplate
 from langchain_core.runnables import RunnableConfig
 from langchain_core.messages import (
@@ -15,7 +13,9 @@ from langgraph.graph.state import CompiledStateGraph
 from agents.models import AgentState
 from agents.llm_factory import create_chat_model, LLMConfig
 from agents.memory.agent import LLMMemoryInterpreter, MemoryAgent, MemoryInterpreter
+from agents.memory.commands import parse_memory_command
 from agents.memory.context import append_agent_context, format_durable_memories
+from agents.memory.models import PendingMemoryAction
 from agents.memory.store import UserMemoryStore, owner_key_for
 from agents.roles.meal import make_meal_subagent_graph
 from agents.roles.training import make_training_agent_graph
@@ -72,24 +72,9 @@ Here is the new conversation history to compress:
 {summary_text}
 """
 
-_EXPLICIT_MEMORY_UPDATE = re.compile(
-    r"(?:记忆|偏好|模板).*(?:更新成|改成)|(?:更新|修改).*(?:记忆|偏好|模板)",
-    re.DOTALL,
-)
 _ROUTABLE_AGENTS = frozenset(
     ("training_agent", "meal_agent", "insights_agent", "chatter")
 )
-
-
-def _is_explicit_memory_command(message: str) -> bool:
-    stripped = message.strip()
-    return (
-        stripped.startswith("记住")
-        or stripped.endswith(("，记下来", ",记下来"))
-        or stripped.startswith("忘掉")
-        or stripped.startswith(("删除这个记忆", "删除这条记忆"))
-        or _EXPLICIT_MEMORY_UPDATE.search(stripped) is not None
-    )
 
 
 async def route_assistant_on_relevance(
@@ -140,9 +125,7 @@ async def route_assistant_on_relevance(
         ),
         "",
     )
-    if pending_memory_action is not None or _is_explicit_memory_command(
-        latest_user_message
-    ):
+    if pending_memory_action is not None or parse_memory_command(latest_user_message):
         routed.insert(0, "memory_agent")
 
     routed = list(dict.fromkeys(routed))
@@ -170,20 +153,39 @@ def make_agent_graph(
     meal_recorder_node = make_meal_subagent_graph(llm_config, db_path, vector_store)
     insights_recorder_node = make_insights_agent_graph(llm_config, db_path)
 
-    async def training_wrapper(state: AgentState):
+    def configured_user_id(config: RunnableConfig) -> str:
+        configurable = config.get("configurable", {})
+        user_id = configurable.get("user_id") or configurable.get("thread_id")
+        if not isinstance(user_id, str) or not user_id:
+            raise ValueError("configurable.user_id or thread_id is required")
+        return user_id
+
+    def fresh_memory_context(config: RunnableConfig) -> str:
+        user_id = configured_user_id(config)
+        memories = memory_store.list_memories(owner_key_for(user_id))
+        return format_durable_memories(memories)
+
+    async def invoke_specialist(
+        specialist,
+        state: AgentState,
+        config: RunnableConfig,
+    ) -> dict[str, object]:
+        memory_context = fresh_memory_context(config)
+        refreshed_state = {**state, "memory_context": memory_context}
+        result = await specialist.ainvoke(refreshed_state)
+        return {"messages": result["messages"], "memory_context": memory_context}
+
+    async def training_wrapper(state: AgentState, config: RunnableConfig):
         with observe_span("agent.training"):
-            result = await training_recorder_node.ainvoke(state)
-            return {"messages": result["messages"]}
+            return await invoke_specialist(training_recorder_node, state, config)
 
-    async def meal_wrapper(state: AgentState):
+    async def meal_wrapper(state: AgentState, config: RunnableConfig):
         with observe_span("agent.meal"):
-            result = await meal_recorder_node.ainvoke(state)
-            return {"messages": result["messages"]}
+            return await invoke_specialist(meal_recorder_node, state, config)
 
-    async def insights_wrapper(state: AgentState):
+    async def insights_wrapper(state: AgentState, config: RunnableConfig):
         with observe_span("agent.insights"):
-            result = await insights_recorder_node.ainvoke(state)
-            return {"messages": result["messages"]}
+            return await invoke_specialist(insights_recorder_node, state, config)
 
     async def chatter_node(state: AgentState):
         with observe_span("agent.chatter"):
@@ -198,20 +200,11 @@ def make_agent_graph(
             response = await _execute_llm_query_safely(llm, messages)
             return {"messages": [response["messages"]]}
 
-    def configured_user_id(config: RunnableConfig) -> str:
-        configurable = config.get("configurable", {})
-        user_id = configurable.get("user_id") or configurable.get("thread_id")
-        if not isinstance(user_id, str) or not user_id:
-            raise ValueError("configurable.user_id or thread_id is required")
-        return user_id
-
     async def load_memories_node(
         state: AgentState, config: RunnableConfig
     ) -> dict[str, str]:
         del state
-        user_id = configured_user_id(config)
-        memories = memory_store.list_memories(owner_key_for(user_id))
-        return {"memory_context": format_durable_memories(memories)}
+        return {"memory_context": fresh_memory_context(config)}
 
     async def memory_agent_node(
         state: AgentState, config: RunnableConfig
@@ -225,15 +218,25 @@ def make_agent_graph(
             "",
         )
         user_id = configured_user_id(config)
+        pending_raw = state.get("pending_memory_action")
+        pending = (
+            PendingMemoryAction.model_validate(pending_raw)
+            if pending_raw is not None
+            else None
+        )
         result = await durable_memory_agent.handle(
             user_id=user_id,
             user_message=user_message,
-            pending=state.get("pending_memory_action"),
+            pending=pending,
         )
         refreshed = memory_store.list_memories(owner_key_for(user_id))
         return {
             "messages": [AIMessage(content=result.response)],
-            "pending_memory_action": result.pending,
+            "pending_memory_action": (
+                result.pending.model_dump(mode="json")
+                if result.pending is not None
+                else None
+            ),
             "memory_context": format_durable_memories(refreshed),
         }
 
