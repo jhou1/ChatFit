@@ -66,6 +66,7 @@ class ProactiveReviewResponse(BaseModel):
 user_sessions: dict[str, str] = {}
 logger = logging.getLogger(__name__)
 CORRELATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+BEARER_AUTHORIZATION_PATTERN = re.compile(r"(?i:Bearer) +([A-Za-z0-9\-._~+/]+=*)")
 
 
 def get_thread_id(user_id: str) -> str:
@@ -87,14 +88,18 @@ def require_trusted_api_client(request: Request) -> None:
     """Authenticate the caller before accepting its asserted user identity."""
 
     expected_token = get_chatfit_api_token()
-    authorization = request.headers.get("Authorization", "")
-    scheme, separator, supplied_token = authorization.partition(" ")
-    if scheme.casefold() != "bearer" or not separator or not supplied_token:
+    authorization_values = request.headers.getlist("Authorization")
+    authorization = (
+        authorization_values[0].strip(" \t") if len(authorization_values) == 1 else ""
+    )
+    credential_match = BEARER_AUTHORIZATION_PATTERN.fullmatch(authorization)
+    if credential_match is None:
         raise HTTPException(
             status_code=401,
             detail="Missing bearer credential",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    supplied_token = credential_match.group(1)
     if not secrets.compare_digest(
         supplied_token.encode("utf-8"), expected_token.encode("utf-8")
     ):

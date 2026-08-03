@@ -297,3 +297,87 @@ also recorded the durable-memory/auth README and site documentation as the
 explicitly approved Task 7 follow-up, not a blocker for this scoped security
 fix. One initial command encountered only the sandbox's uv-cache permission
 boundary; the identical authorized command completed successfully.
+
+## Security review fix round 2
+
+The original reviewer rechecked the first security fix and identified two
+remaining parsing boundaries. Both were reproduced independently before the
+production changes.
+
+### Single Bearer scheme and credential
+
+The authorization parser now accepts exactly one case-insensitive `Bearer`
+scheme and one RFC-style token68 credential. It inspects the complete raw
+header list, requires exactly one Authorization field, permits only HTTP spaces
+between scheme and credential, and validates the full credential alphabet.
+Missing or duplicate authorization, another scheme, a bare scheme, quoted or
+comma-delimited credentials, non-HTTP whitespace, or any extra credential
+returns 401 with
+`WWW-Authenticate: Bearer`. Only a grammatically valid single credential that
+fails `secrets.compare_digest` returns 403 without the challenge. Authentication
+continues to run before session, graph, or durable-memory access.
+
+The expanded real-route regression crosses both `/chat` and `/clear`, checks
+the response contract, keeps the victim session and SQLite memory row intact,
+and proves neither configured nor supplied secrets appear in captured logs.
+Against commit `44a19f7`, the focused test produced the expected `4 failed, 8
+passed`: both extra-credential variants were misclassified as 403. After the
+parser fix, all `12 passed`.
+
+The first round-2 verifier then challenged forms outside the initial matrix and
+found that whitespace splitting still accepted NBSP/HTAB separators and the
+first of two Authorization fields, while comma and quoted credentials were
+misclassified as 403. Those five malformed forms were added across both routes
+before the next production change. The expanded test produced the expected
+`10 failed, 12 passed`; switching to raw-header cardinality plus a token68
+`fullmatch` made all `22 passed`.
+
+### Reject every SQLite `file:` URI
+
+The shared resolver now rejects every explicit case-insensitive `file:` scheme
+before constructing a `Path` or creating a parent directory. This is required
+because the production SQLite connections do not enable `uri=True`; accepting
+such input would otherwise create literal colon/question-mark paths instead of
+opening the intended database. Plain filesystem paths remain unaffected,
+including paths whose later components contain a colon.
+
+API coverage includes `:memory:`, memory-mode URIs, `file:/tmp/...mode=rwc`, a
+mixed-case `file:user.db`, and a mixed-case URI with a percent-encoded path.
+CLI coverage verifies both ordinary and percent-encoded file URIs fail before
+business/vector/store setup. All cases assert no literal `file:` directory is
+created. Against `44a19f7`, the focused command produced the expected `5
+failed, 3 passed`; after the shared resolver fix it reported `8 passed`.
+
+### Round-2 local gates
+
+```text
+API + Bot + user-memory store: 126 passed
+make verify: 319 passed, 3 deselected; all verification checks passed
+make quality: Ruff clean; Black unchanged across 55 files; mypy clean across
+55 source files; Bandit reported zero issues; all static checks passed
+git diff --check: exit 0 with no output
+```
+
+### Round-2 final independent verification
+
+After the first verifier's strict-grammar finding was fixed, a second
+brand-new verifier returned **READY — Task 5 security fix round 2**, with no
+Critical, Important, Minor, warning, or code finding. Its evidence was:
+
+- focused API, Bot, and user-memory store suite: `126 passed`;
+- `make verify`: `319 passed, 3 deselected`;
+- `make quality`: Ruff clean, Black unchanged across 55 files, mypy clean
+  across 55 source files, and Bandit zero issues;
+- `git diff --check`: exit 0 with no output;
+- raw ASGI probes proving duplicate Authorization fields, invalid bytes, NBSP,
+  and HTAB separators return 401 plus Bearer challenge on both routes, while a
+  valid token68 mismatch returns 403 and mixed-case Bearer with edge OWS works;
+- API/CLI probes rejecting six explicit, mixed-case, and percent-encoded
+  `file:` URI forms before artifacts or dependencies while accepting an
+  ordinary colon-bearing filesystem path;
+- identical pre/post HEAD, status, cached diff, untracked-file list, and source
+  diff SHA-256, proving the verifier made no changes.
+
+The verifier recorded the complete README, architecture, and site updates as
+the explicitly approved Task 7 documentation follow-up rather than a scoped
+round-2 blocker.

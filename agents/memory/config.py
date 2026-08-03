@@ -4,19 +4,6 @@ import os
 from collections.abc import Mapping
 from itertools import combinations
 from pathlib import Path
-from urllib.parse import parse_qs
-
-
-def _is_sqlite_memory_target(value: str) -> bool:
-    normalized = value.strip().casefold()
-    if normalized == ":memory:":
-        return True
-    if not normalized.startswith("file:"):
-        return False
-    location, _, query = normalized.partition("?")
-    if location == "file::memory:":
-        return True
-    return "memory" in parse_qs(query).get("mode", ())
 
 
 def resolve_sqlite_file_path(
@@ -25,7 +12,13 @@ def resolve_sqlite_file_path(
     """Resolve one durable SQLite target and reject non-file persistence modes."""
 
     raw_value = os.fspath(value)
-    if _is_sqlite_memory_target(raw_value):
+    normalized = raw_value.strip().casefold()
+    if normalized.startswith("file:"):
+        raise RuntimeError(
+            f"{setting_name} must use a filesystem path; SQLite file URIs "
+            "are not supported"
+        )
+    if normalized == ":memory:":
         raise RuntimeError(f"{setting_name} must be an on-disk SQLite file")
 
     db_path = Path(raw_value).expanduser()

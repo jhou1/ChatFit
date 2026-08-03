@@ -134,16 +134,36 @@ class FakeParallelInterruptAgent(FakeAgent):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("path", "headers", "expected_status"),
+    "path",
+    ("/chat", "/clear"),
+)
+@pytest.mark.parametrize(
+    ("authorization", "expected_status", "expected_challenge"),
     (
-        ("/chat", {}, 401),
-        ("/chat", {"Authorization": "Bearer wrong-secret"}, 403),
-        ("/clear", {}, 401),
-        ("/clear", {"Authorization": "Bearer wrong-secret"}, 403),
+        (None, 401, "Bearer"),
+        ("Basic wrong-secret", 401, "Bearer"),
+        ("Bearer", 401, "Bearer"),
+        (f"Bearer {TEST_CHATFIT_API_TOKEN} extra", 401, "Bearer"),
+        (f"Bearer {TEST_CHATFIT_API_TOKEN}\textra", 401, "Bearer"),
+        (f"Bearer {TEST_CHATFIT_API_TOKEN},extra", 401, "Bearer"),
+        (f'Bearer "{TEST_CHATFIT_API_TOKEN}"', 401, "Bearer"),
+        (b"Bearer\xa0" + TEST_CHATFIT_API_TOKEN.encode("ascii"), 401, "Bearer"),
+        (f"Bearer\t{TEST_CHATFIT_API_TOKEN}", 401, "Bearer"),
+        (
+            (f"Bearer {TEST_CHATFIT_API_TOKEN}", "Bearer extra-credential"),
+            401,
+            "Bearer",
+        ),
+        ("Bearer wrong-secret", 403, None),
     ),
 )
 async def test_untrusted_identity_cannot_access_victim_chat_or_clear_state(
-    path, headers, expected_status, tmp_path, caplog
+    path,
+    authorization,
+    expected_status,
+    expected_challenge,
+    tmp_path,
+    caplog,
 ):
     """Breaks if an untrusted caller can select another user's memory owner."""
     agent = FakeAgent()
@@ -167,6 +187,12 @@ async def test_untrusted_identity_cannot_access_victim_chat_or_clear_state(
     async with httpx.AsyncClient(
         transport=transport, base_url="http://testserver"
     ) as client:
+        if isinstance(authorization, tuple):
+            headers = [("Authorization", value) for value in authorization]
+        elif isinstance(authorization, bytes):
+            headers = [(b"Authorization", authorization)]
+        else:
+            headers = {"Authorization": authorization} if authorization else {}
         response = await client.post(
             path,
             headers=headers,
@@ -174,6 +200,7 @@ async def test_untrusted_identity_cannot_access_victim_chat_or_clear_state(
         )
 
     assert response.status_code == expected_status
+    assert response.headers.get("WWW-Authenticate") == expected_challenge
     assert api_module.user_sessions == {"victim": "victim-thread"}
     assert agent.configs == []
     assert [memory.content for memory in store.list_memories(victim_owner)] == [
@@ -687,14 +714,35 @@ def test_user_memory_path_rejects_directory_mount(monkeypatch, tmp_path):
         ":memory:",
         "file::memory:?cache=shared",
         "file:chatfit-memory?mode=memory&cache=shared",
+        "file:/tmp/user-memory.db?mode=rwc",
+        "FiLe:user-memory.db",
+        "FILE:%2Ftmp%2Fuser-memory.db?mode=rwc",
     ),
 )
-def test_user_memory_path_rejects_non_persistent_sqlite_modes(monkeypatch, memory_path):
-    """Breaks if durable memory can silently become process-local storage."""
+def test_user_memory_path_rejects_sqlite_memory_and_file_uri_targets(
+    monkeypatch, tmp_path, memory_path
+):
+    """Breaks if a URI is treated as a local path without SQLite URI support."""
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("USER_MEMORY_DB_PATH", memory_path)
 
-    with pytest.raises(RuntimeError, match="on-disk SQLite file"):
+    with pytest.raises(RuntimeError, match="SQLite"):
         api_module.get_user_memory_db_path()
+
+    assert not (tmp_path / "file:").exists()
+
+
+def test_user_memory_path_allows_colon_outside_explicit_file_scheme(
+    monkeypatch, tmp_path
+):
+    """Breaks if URI rejection incorrectly bans legal filesystem colons."""
+    memory_path = tmp_path / "archive:2026" / "user-memory.db"
+    monkeypatch.setenv("USER_MEMORY_DB_PATH", str(memory_path))
+
+    resolved = api_module.get_user_memory_db_path()
+
+    assert resolved == str(memory_path)
+    assert memory_path.parent.is_dir()
 
 
 def _patch_api_startup_for_path_validation(monkeypatch, business_path):
@@ -778,6 +826,34 @@ async def test_main_rejects_business_and_memory_database_collision_before_setup(
 
     with pytest.raises(RuntimeError, match="distinct physical files"):
         await main_module.main()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "memory_path",
+    (
+        "file:user-memory.db",
+        "FiLe:%2Ftmp%2Fuser-memory.db?mode=rwc",
+    ),
+)
+async def test_main_rejects_sqlite_file_uri_before_setup(
+    monkeypatch, tmp_path, memory_path
+):
+    """Breaks if CLI constructs dependencies from an unsupported SQLite URI."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("USER_MEMORY_DB_PATH", memory_path)
+    monkeypatch.setattr(
+        main_module,
+        "get_or_create_vector_store",
+        lambda *args: (_ for _ in ()).throw(
+            AssertionError("external setup ran before URI validation")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="SQLite"):
+        await main_module.main()
+
+    assert not (tmp_path / "file:").exists()
 
 
 @pytest.mark.asyncio
