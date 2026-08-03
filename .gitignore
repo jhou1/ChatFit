@@ -14,6 +14,9 @@ wheels/
 chroma.db/*
 chatfit.db
 checkpointer.db
+user-memory.db
+user-memory.db-wal
+user-memory.db-shm
 langfuse_db_data/
 runtime-data/
 chroma.db/

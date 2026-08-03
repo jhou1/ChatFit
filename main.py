@@ -1,6 +1,7 @@
 import os
 import uuid
 import asyncio
+from pathlib import Path
 
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
@@ -12,6 +13,8 @@ from rich.prompt import Prompt
 from rich.markdown import Markdown
 
 from agents.llm_factory import LLMConfig
+from agents.memory.agent import LLMMemoryInterpreter
+from agents.memory.store import UserMemoryStore
 from agents.sqlite_handler import init_db
 from agents.roles.supervisor import make_agent_graph
 from agents.rag import get_or_create_vector_store
@@ -38,11 +41,20 @@ async def main():
         )
 
     # init memory
+    memory_store = UserMemoryStore(
+        Path(os.environ.get("USER_MEMORY_DB_PATH", "user-memory.db"))
+    )
+    memory_interpreter = LLMMemoryInterpreter(llm_config)
     app = make_agent_graph(
-        llm_config, db_path, vector_store, checkpointer=MemorySaver()
+        llm_config,
+        db_path,
+        vector_store,
+        checkpointer=MemorySaver(),
+        memory_store=memory_store,
+        memory_interpreter=memory_interpreter,
     )
     thread_id = str(uuid.uuid4())
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {"configurable": {"thread_id": thread_id, "user_id": "local-cli"}}
 
     welcome_msg = (
         "[bold green]ChatFit Agent Initialized.[/]\nType [bold red]'quit'[/] to exit."
@@ -72,6 +84,7 @@ async def main():
                         "meal",
                         "assistant_selector",
                         "chatter",
+                        "memory",
                     ]:
                         new_messages = node_output.get("messages", [])
                         if new_messages:

@@ -13,6 +13,8 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from agents.roles.supervisor import make_agent_graph
 from agents.llm_factory import LLMConfig
+from agents.memory.agent import LLMMemoryInterpreter
+from agents.memory.store import UserMemoryStore
 from agents.rag import get_or_create_vector_store
 from agents.sqlite_handler import init_db
 from agents.utils import extract_text
@@ -41,14 +43,27 @@ async def evaluate_case(case, llm_config, vector_store, sem, enable_llm_judge):
     async with sem:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "test_eval.db")
+            memory_path = Path(tmpdir) / "user-memory.db"
             init_db(db_path)
 
             checkpointer = MemorySaver()
+            memory_store = UserMemoryStore(memory_path)
+            memory_interpreter = LLMMemoryInterpreter(llm_config)
             app = make_agent_graph(
-                llm_config, db_path, vector_store, checkpointer=checkpointer
+                llm_config,
+                db_path,
+                vector_store,
+                checkpointer=checkpointer,
+                memory_store=memory_store,
+                memory_interpreter=memory_interpreter,
             )
 
-            config = {"configurable": {"thread_id": case.case_id}}
+            config = {
+                "configurable": {
+                    "thread_id": case.case_id,
+                    "user_id": case.case_id,
+                }
+            }
             case_passed = True
             failure_codes = []
 

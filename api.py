@@ -17,6 +17,8 @@ from langgraph.types import Command
 
 from agents.checkpointing import ObservedAsyncSqliteSaver
 from agents.llm_factory import LLMConfig, create_chat_model
+from agents.memory.agent import LLMMemoryInterpreter
+from agents.memory.store import UserMemoryStore
 from langfuse import Langfuse
 from langfuse.langchain import CallbackHandler  # type: ignore
 from agents.sqlite_handler import init_db
@@ -124,6 +126,18 @@ def get_checkpointer_db_path() -> str:
     return str(db_path)
 
 
+def get_user_memory_db_path() -> str:
+    """Resolve the dedicated durable-memory SQLite file."""
+
+    db_path = Path(os.environ.get("USER_MEMORY_DB_PATH", "user-memory.db"))
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    if db_path.exists() and not db_path.is_file():
+        raise RuntimeError(
+            f"USER_MEMORY_DB_PATH must be a file path, not a directory: {db_path}"
+        )
+    return str(db_path)
+
+
 @asynccontextmanager
 async def startup_event(fastapi_app: FastAPI):
     langfuse_client = create_langfuse_client()
@@ -156,11 +170,20 @@ async def startup_event(fastapi_app: FastAPI):
     print("Initializing Agent Graph...")
     # TODO make this configurable
     checkpointer_db = get_checkpointer_db_path()
+    user_memory_store = UserMemoryStore(get_user_memory_db_path())
+    memory_interpreter = LLMMemoryInterpreter(llm_config)
+    fastapi_app.state.user_memory_store = user_memory_store
+    fastapi_app.state.memory_interpreter = memory_interpreter
     async with aiosqlite.connect(checkpointer_db) as conn:
         checkpointer = ObservedAsyncSqliteSaver(conn)
         await checkpointer.setup()
         fastapi_app.state.agent = make_agent_graph(
-            llm_config, db_path, vector_store, checkpointer=checkpointer
+            llm_config,
+            db_path,
+            vector_store,
+            checkpointer=checkpointer,
+            memory_store=user_memory_store,
+            memory_interpreter=memory_interpreter,
         )
         fastapi_app.state.llm_config = llm_config
 
@@ -262,7 +285,7 @@ async def chat_endpoint(req: ChatRequest, request: Request, response: Response):
 
         langfuse_handler = create_langfuse_callback(trace_id)
         config = {
-            "configurable": {"thread_id": thread_id},
+            "configurable": {"thread_id": thread_id, "user_id": req.user_id},
             "callbacks": [langfuse_handler] if langfuse_handler is not None else [],
             "metadata": {
                 "trace_id": trace_id,
@@ -341,6 +364,7 @@ async def chat_endpoint(req: ChatRequest, request: Request, response: Response):
                         "insights",
                         "assistant_selector",
                         "chatter",
+                        "memory",
                     ]:
                         new_messages = node_output.get("messages", [])
                         if new_messages:

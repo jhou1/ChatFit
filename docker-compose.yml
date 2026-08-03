@@ -16,6 +16,7 @@ services:
     - .env
     environment:
     - CHECKPOINTER_DB_PATH=/app/data/checkpointer.db
+    - USER_MEMORY_DB_PATH=/app/data/user-memory.db
     extra_hosts:
     - host.docker.internal:host-gateway
 

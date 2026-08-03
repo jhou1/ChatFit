@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 from types import SimpleNamespace
 from datetime import date
 
@@ -8,10 +9,16 @@ import pytest
 from langchain_core.messages import AIMessage
 
 import api as api_module
+import evaluation.runner as evaluation_runner
+import main as main_module
 import proactive_reviews
+from agents.memory.agent import LLMMemoryInterpreter
+from agents.memory.models import MemoryMutationDecision, MemoryType, NewUserMemory
+from agents.memory.store import UserMemoryStore, owner_key_for
 from agents.observability import InMemorySink, observation_sink
 from agents.models import MealInfo, TrainingInputRecorder, TrainingSession, TrainingSet
 from agents.sqlite_handler import add_meal_log, add_training_session, init_db
+from evaluation.models import EvaluationCase
 
 
 @pytest.fixture
@@ -24,13 +31,16 @@ def temp_db_path(tmp_path):
 class FakeAgent:
     def __init__(self) -> None:
         self.config = None
+        self.configs: list[dict] = []
 
     async def aget_state(self, config):
         self.config = config
+        self.configs.append(config)
         return SimpleNamespace(tasks=[])
 
     async def astream(self, action, *, config, stream_mode):
         self.config = config
+        self.configs.append(config)
         yield {"chatter": {"messages": [AIMessage(content="backend is ready")]}}
 
 
@@ -509,6 +519,377 @@ def test_checkpointer_path_rejects_directory_mount(monkeypatch, tmp_path):
 
     with pytest.raises(RuntimeError, match="must be a file path"):
         api_module.get_checkpointer_db_path()
+
+
+def test_user_memory_path_defaults_without_reusing_other_databases(
+    monkeypatch, tmp_path
+):
+    """Breaks if durable memory silently falls back to another SQLite database."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("USER_MEMORY_DB_PATH", raising=False)
+    monkeypatch.setenv("CHECKPOINTER_DB_PATH", "checkpointer.db")
+
+    memory_path = api_module.get_user_memory_db_path()
+
+    assert memory_path == "user-memory.db"
+    assert memory_path != api_module.get_checkpointer_db_path()
+    assert memory_path != str(tmp_path / "business.db")
+    assert not (tmp_path / memory_path).exists()
+
+
+def test_user_memory_path_creates_parent_directory(monkeypatch, tmp_path):
+    """Breaks if a configured bind-mount parent is not prepared before SQLite."""
+    memory_path = tmp_path / "runtime-data" / "user-memory.db"
+    monkeypatch.setenv("USER_MEMORY_DB_PATH", str(memory_path))
+
+    resolved = api_module.get_user_memory_db_path()
+
+    assert resolved == str(memory_path)
+    assert memory_path.parent.is_dir()
+    assert not memory_path.exists()
+
+
+def test_user_memory_path_rejects_directory_mount(monkeypatch, tmp_path):
+    """Breaks if SQLite is handed a directory-shaped container bind mount."""
+    invalid_path = tmp_path / "user-memory.db"
+    invalid_path.mkdir()
+    monkeypatch.setenv("USER_MEMORY_DB_PATH", str(invalid_path))
+
+    with pytest.raises(RuntimeError, match="must be a file path"):
+        api_module.get_user_memory_db_path()
+
+
+@pytest.mark.asyncio
+async def test_chat_configurable_user_and_thread_ids_are_stable_per_request_owner(
+    monkeypatch,
+):
+    """Breaks if memory ownership is omitted, hashed, or tied to one request."""
+    monkeypatch.setattr(api_module, "CallbackHandler", lambda **kwargs: object())
+    agent = FakeAgent()
+    api_module.app.state.agent = agent
+    api_module.user_sessions.clear()
+
+    transport = httpx.ASGITransport(app=api_module.app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        first = await client.post(
+            "/chat", json={"user_id": "stable-user", "message": "hello"}
+        )
+        second = await client.post(
+            "/chat", json={"user_id": "stable-user", "message": "hello again"}
+        )
+
+    assert first.status_code == second.status_code == 200
+    configurable = [config["configurable"] for config in agent.configs]
+    assert {item["user_id"] for item in configurable} == {"stable-user"}
+    assert len({item["thread_id"] for item in configurable}) == 1
+
+
+@pytest.mark.asyncio
+async def test_clear_rotates_only_conversation_thread_and_preserves_memory(
+    monkeypatch, tmp_path
+):
+    """Breaks if clearing short-term chat state deletes durable user memory."""
+    store = UserMemoryStore(tmp_path / "user-memory.db")
+    owner_key = owner_key_for("clear-user")
+    store.remember(
+        owner_key,
+        NewUserMemory(
+            memory_type=MemoryType.HEALTH_CONSTRAINT,
+            canonical_key="lactose",
+            display_name="乳糖不耐受",
+            content="我乳糖不耐受",
+        ),
+    )
+    monkeypatch.setattr(api_module.app.state, "user_memory_store", store, raising=False)
+    api_module.user_sessions.clear()
+    old_thread = api_module.get_thread_id("clear-user")
+
+    transport = httpx.ASGITransport(app=api_module.app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        response = await client.post(
+            "/clear", json={"user_id": "clear-user", "message": "clear"}
+        )
+
+    assert response.status_code == 200
+    assert api_module.get_thread_id("clear-user") != old_thread
+    assert [memory.content for memory in store.list_memories(owner_key)] == [
+        "我乳糖不耐受"
+    ]
+
+
+class _StructuredMemoryRunnable:
+    async def ainvoke(self, messages):
+        del messages
+        return MemoryMutationDecision(
+            intent="remember",
+            memory_type=MemoryType.HEALTH_CONSTRAINT,
+            canonical_key="乳糖不耐受",
+            display_name="乳糖不耐受",
+            content="模型不得覆盖明确记忆",
+        )
+
+
+class _StructuredMemoryModel:
+    def with_structured_output(self, schema):
+        assert schema is MemoryMutationDecision
+        return _StructuredMemoryRunnable()
+
+
+class _UnusedSubgraph:
+    async def ainvoke(self, state):
+        raise AssertionError(f"unexpected specialist invocation: {state!r}")
+
+
+def _patch_api_lifespan_dependencies(monkeypatch, tmp_path):
+    business_path = tmp_path / "business.db"
+    checkpointer_path = tmp_path / "checkpointer.db"
+    memory_path = tmp_path / "user-memory.db"
+    original_expanduser = api_module.os.path.expanduser
+
+    def expand_business_path(path):
+        if path == "~/.iron/iron.db":
+            return str(business_path)
+        return original_expanduser(path)
+
+    monkeypatch.setattr(api_module.os.path, "expanduser", expand_business_path)
+    monkeypatch.setenv("CHECKPOINTER_DB_PATH", str(checkpointer_path))
+    monkeypatch.setenv("USER_MEMORY_DB_PATH", str(memory_path))
+    monkeypatch.setattr(api_module, "create_langfuse_client", lambda: None)
+    monkeypatch.setattr(api_module, "create_langfuse_callback", lambda trace_id: None)
+    monkeypatch.setattr(
+        api_module, "get_or_create_vector_store", lambda *args: object()
+    )
+    monkeypatch.setattr(
+        "agents.memory.agent.create_chat_model", lambda config: _StructuredMemoryModel()
+    )
+    unused = _UnusedSubgraph()
+    monkeypatch.setattr(
+        "agents.roles.supervisor.make_training_agent_graph",
+        lambda *args, **kwargs: unused,
+    )
+    monkeypatch.setattr(
+        "agents.roles.supervisor.make_meal_subagent_graph",
+        lambda *args, **kwargs: unused,
+    )
+    monkeypatch.setattr(
+        "agents.roles.supervisor.make_insights_agent_graph",
+        lambda *args, **kwargs: unused,
+    )
+    monkeypatch.setattr(
+        "agents.roles.supervisor.create_chat_model", lambda config: object()
+    )
+
+    async def deterministic_graph_llm(llm, messages):
+        del llm
+        if "assigning user input" in str(messages[0].content):
+            return {"messages": AIMessage(content="chatter")}
+        return {"messages": AIMessage(content=str(messages[0].content))}
+
+    monkeypatch.setattr(
+        "agents.roles.supervisor._execute_llm_query_safely",
+        deterministic_graph_llm,
+    )
+    return business_path, checkpointer_path, memory_path
+
+
+@pytest.mark.asyncio
+async def test_memory_survives_full_api_restart_new_thread_and_stays_user_isolated(
+    monkeypatch, tmp_path
+):
+    """Breaks if API startup uses transient, shared, or thread-owned memory."""
+    business_path, checkpointer_path, memory_path = _patch_api_lifespan_dependencies(
+        monkeypatch, tmp_path
+    )
+    api_module.user_sessions.clear()
+
+    async with api_module.app.router.lifespan_context(api_module.app):
+        assert isinstance(api_module.app.state.user_memory_store, UserMemoryStore)
+        assert isinstance(api_module.app.state.memory_interpreter, LLMMemoryInterpreter)
+        assert api_module.app.state.user_memory_store.db_path == memory_path
+        transport = httpx.ASGITransport(app=api_module.app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+            remembered = await client.post(
+                "/chat",
+                json={"user_id": "persistent-user", "message": "记住我乳糖不耐受"},
+            )
+            original_thread = api_module.get_thread_id("persistent-user")
+            cleared = await client.post(
+                "/clear",
+                json={"user_id": "persistent-user", "message": "clear"},
+            )
+
+        assert remembered.status_code == cleared.status_code == 200
+        assert "已记住" in remembered.json()["response"]
+        assert api_module.get_thread_id("persistent-user") != original_thread
+
+    async with api_module.app.router.lifespan_context(api_module.app):
+        assert api_module.app.state.user_memory_store.db_path == memory_path
+        transport = httpx.ASGITransport(app=api_module.app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+            same_user = await client.post(
+                "/chat", json={"user_id": "persistent-user", "message": "你好"}
+            )
+            other_user = await client.post(
+                "/chat", json={"user_id": "other-user", "message": "你好"}
+            )
+
+    assert same_user.status_code == other_user.status_code == 200
+    assert "我乳糖不耐受" in same_user.json()["response"]
+    assert "我乳糖不耐受" not in other_user.json()["response"]
+    with sqlite3.connect(memory_path) as connection:
+        memory_tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    with sqlite3.connect(business_path) as connection:
+        business_tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    with sqlite3.connect(checkpointer_path) as connection:
+        checkpointer_tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert "user_memories" in memory_tables
+    assert "user_memories" not in business_tables
+    assert "user_memories" not in checkpointer_tables
+
+
+@pytest.mark.asyncio
+async def test_main_uses_configured_memory_store_and_local_cli_owner(
+    monkeypatch, tmp_path, capsys
+):
+    """Breaks if CLI memory is transient or owned by its random thread ID."""
+    monkeypatch.chdir(tmp_path)
+    memory_path = tmp_path / "runtime-data" / "cli-user-memory.db"
+    monkeypatch.setenv("USER_MEMORY_DB_PATH", str(memory_path))
+    monkeypatch.setattr(
+        main_module, "get_or_create_vector_store", lambda *args: object()
+    )
+    monkeypatch.setattr(
+        "agents.memory.agent.create_chat_model", lambda config: _StructuredMemoryModel()
+    )
+    prompts = iter(("hello", "quit"))
+    monkeypatch.setattr(
+        main_module.Prompt, "ask", lambda *args, **kwargs: next(prompts)
+    )
+    captured = {}
+
+    class RecordingCliGraph:
+        async def astream(self, state, *, config, stream_mode):
+            captured["config"] = config
+            yield {"memory": {"messages": [AIMessage(content="已记住你的训练偏好。")]}}
+
+    def graph_factory(*args, **kwargs):
+        captured["graph_kwargs"] = kwargs
+        return RecordingCliGraph()
+
+    monkeypatch.setattr(main_module, "make_agent_graph", graph_factory)
+
+    await main_module.main()
+
+    store = captured["graph_kwargs"]["memory_store"]
+    assert isinstance(store, UserMemoryStore)
+    assert store.db_path == memory_path
+    assert captured["config"]["configurable"]["user_id"] == "local-cli"
+    assert captured["config"]["configurable"]["thread_id"]
+    assert memory_path != tmp_path / "chatfit.db"
+    assert "已记住你的训练偏好。" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_evaluation_memory_is_shared_within_case_and_isolated_between_cases(
+    monkeypatch,
+):
+    """Breaks if evaluation cases reuse memory or turns change owner identity."""
+    monkeypatch.setattr(
+        "agents.memory.agent.create_chat_model", lambda config: _StructuredMemoryModel()
+    )
+    recordings = []
+
+    class RecordingEvaluationGraph:
+        def __init__(self, graph_record):
+            self.graph_record = graph_record
+
+        async def astream(self, state, *, config, stream_mode):
+            self.graph_record["configs"].append(config)
+            if False:
+                yield state, stream_mode
+
+        async def aget_state(self, config):
+            return SimpleNamespace(next=(), tasks=[])
+
+    def graph_factory(llm_config, db_path, vector_store, checkpointer, **kwargs):
+        store = kwargs["memory_store"]
+        record = {
+            "business_path": db_path,
+            "memory_path": str(store.db_path),
+            "memory_exists": store.db_path.is_file(),
+            "memory_interpreter": kwargs["memory_interpreter"],
+            "configs": [],
+        }
+        recordings.append(record)
+        return RecordingEvaluationGraph(record)
+
+    monkeypatch.setattr(evaluation_runner, "make_agent_graph", graph_factory)
+    cases = (
+        EvaluationCase.model_validate(
+            {
+                "case_id": "case-a",
+                "turns": [{"user_input": "first"}, {"user_input": "second"}],
+            }
+        ),
+        EvaluationCase.model_validate(
+            {"case_id": "case-b", "turns": [{"user_input": "only"}]}
+        ),
+    )
+
+    await asyncio.gather(
+        *(
+            evaluation_runner.evaluate_case(
+                case,
+                object(),
+                object(),
+                asyncio.Semaphore(2),
+                False,
+            )
+            for case in cases
+        )
+    )
+
+    by_user_id = {
+        record["configs"][0]["configurable"]["user_id"]: record for record in recordings
+    }
+    assert set(by_user_id) == {"case-a", "case-b"}
+    assert len(by_user_id["case-a"]["configs"]) == 2
+    assert all(
+        config["configurable"] == {"thread_id": "case-a", "user_id": "case-a"}
+        for config in by_user_id["case-a"]["configs"]
+    )
+    assert all(record["memory_exists"] for record in recordings)
+    assert all(
+        isinstance(record["memory_interpreter"], LLMMemoryInterpreter)
+        for record in recordings
+    )
+    assert len({record["memory_path"] for record in recordings}) == 2
+    assert all(
+        record["memory_path"] != record["business_path"] for record in recordings
+    )
 
 
 def test_langfuse_content_is_redacted_by_default_and_requires_explicit_opt_in(
