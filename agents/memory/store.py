@@ -335,13 +335,24 @@ class UserMemoryStore:
                     "The canonical key or an alias belongs to another memory"
                 ) from None
 
-    def forget(self, owner_key: str, memory_id: str) -> bool:
-        """Physically delete one owned memory and its cascading aliases."""
+    def forget(self, owner_key: str, memory_id: str, *, expected_version: int) -> bool:
+        """Delete one owned memory only when its expected version is current."""
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
-                "DELETE FROM user_memories WHERE owner_key = ? AND id = ?",
-                (owner_key, memory_id),
+                """
+                DELETE FROM user_memories
+                WHERE owner_key = ? AND id = ? AND version = ?
+                """,
+                (owner_key, memory_id, expected_version),
             )
+            if cursor.rowcount != 1:
+                current = self._find_by_id(connection, owner_key, memory_id)
+                if current is not None:
+                    raise StaleMemoryError(
+                        "The memory changed before it could be forgotten"
+                    )
+                connection.commit()
+                return False
             connection.commit()
-            return cursor.rowcount == 1
+            return True

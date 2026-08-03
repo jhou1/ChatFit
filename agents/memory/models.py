@@ -1,9 +1,9 @@
 """Typed records used by the durable user-memory store."""
 
 from enum import StrEnum
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class MemoryType(StrEnum):
@@ -71,7 +71,7 @@ class MemoryMutationDecision(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    intent: Literal["remember", "update", "forget", "clarify"]
+    intent: Literal["remember", "update", "forget", "clarify"] | None = None
     memory_type: MemoryType | None = None
     canonical_key: str | None = None
     display_name: str | None = None
@@ -86,10 +86,19 @@ class PendingMemoryAction(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    owner_key: str
+    operation: Literal["remember", "update", "forget"]
     decision: MemoryMutationDecision
     candidate_ids: tuple[str, ...] = ()
     candidate_versions: tuple[int, ...] = ()
     question: str
+
+    @model_validator(mode="after")
+    def candidate_versions_align(self) -> Self:
+        """Require one captured version for every captured candidate ID."""
+        if len(self.candidate_ids) != len(self.candidate_versions):
+            raise ValueError("candidate IDs and versions must have equal lengths")
+        return self
 
 
 class MemoryAgentResult(BaseModel):

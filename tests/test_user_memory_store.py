@@ -207,7 +207,14 @@ def test_alias_and_crud_operations_are_isolated_by_owner(tmp_path):
                 expected_version=original.version,
             ),
         )
-    assert store.forget(second_owner, original.id) is False
+    assert (
+        store.forget(
+            second_owner,
+            original.id,
+            expected_version=original.version,
+        )
+        is False
+    )
     assert store.list_memories(first_owner) == [original]
 
 
@@ -355,7 +362,7 @@ def test_forget_physically_deletes_memory_and_cascades_aliases(tmp_path):
     owner = owner_key_for("telegram-123")
     original = store.remember(owner, _training_template()).memory
 
-    assert store.forget(owner, original.id) is True
+    assert store.forget(owner, original.id, expected_version=original.version) is True
 
     with sqlite3.connect(db_path) as connection:
         memory_row_count = connection.execute(
@@ -368,7 +375,29 @@ def test_forget_physically_deletes_memory_and_cascades_aliases(tmp_path):
     assert alias_row_count == 0
     assert store.list_memories(owner) == []
     assert store.resolve(owner, "213") == []
-    assert store.forget(owner, original.id) is False
+    assert store.forget(owner, original.id, expected_version=original.version) is False
+
+
+def test_forget_rejects_stale_version_and_preserves_current_memory(tmp_path):
+    store = UserMemoryStore(tmp_path / "user-memory.db")
+    owner = owner_key_for("telegram-123")
+    original = store.remember(owner, _training_template()).memory
+    current = store.update(
+        owner,
+        original.id,
+        MemoryUpdate(
+            display_name=original.display_name,
+            content="concurrently updated content",
+            aliases=original.aliases,
+            expected_version=original.version,
+        ),
+    )
+
+    with pytest.raises(StaleMemoryError):
+        store.forget(owner, original.id, expected_version=original.version)
+
+    assert store.list_memories(owner) == [current]
+    assert store.forget(owner, "missing", expected_version=1) is False
 
 
 def test_concurrent_remember_creates_one_canonical_memory(tmp_path):
@@ -450,8 +479,8 @@ def test_operations_close_connections_on_success_and_failure(tmp_path, monkeypat
         )
     assert_all_connections_closed()
 
-    assert store.forget(owner, updated.id) is True
+    assert store.forget(owner, updated.id, expected_version=updated.version) is True
     assert_all_connections_closed()
-    assert store.forget(owner, updated.id) is False
+    assert store.forget(owner, updated.id, expected_version=updated.version) is False
     assert_all_connections_closed()
     assert len(opened_connections) == 9
