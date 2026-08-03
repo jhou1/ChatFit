@@ -9,7 +9,7 @@ from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from agents.memory.models import (
     MemoryConflictError,
@@ -66,6 +66,12 @@ CREATE TABLE IF NOT EXISTS user_memory_aliases (
 """
 
 
+def _initialize_schema(connection: sqlite3.Connection) -> None:
+    for statement in _SCHEMA.split(";"):
+        if statement.strip():
+            connection.execute(statement)
+
+
 def owner_key_for(user_id: str) -> str:
     """Return a stable, non-reversible owner identifier for a user ID."""
     return hashlib.sha256(f"chatfit-user-memory:{user_id}".encode()).hexdigest()
@@ -90,7 +96,7 @@ class UserMemoryStore:
 
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connection() as connection:
-            connection.executescript(_SCHEMA)
+            _initialize_schema(connection)
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -134,8 +140,9 @@ class UserMemoryStore:
         values["aliases"] = aliases
         return UserMemory.model_validate(values)
 
+    @classmethod
     def _find_canonical(
-        self,
+        cls,
         connection: sqlite3.Connection,
         owner_key: str,
         memory: NewUserMemory,
@@ -152,7 +159,103 @@ class UserMemoryStore:
                 normalize_memory_key(memory.canonical_key),
             ),
         ).fetchone()
-        return self._row_to_memory(connection, row) if row is not None else None
+        return cls._row_to_memory(connection, row) if row is not None else None
+
+    @classmethod
+    def reconcile_exact_in_transaction(
+        cls,
+        connection: sqlite3.Connection,
+        owner_key: str,
+        memory: NewUserMemory,
+    ) -> Literal["created", "unchanged", "updated"]:
+        """Reconcile an exact memory value inside the caller's write transaction."""
+        if not connection.in_transaction:
+            raise RuntimeError("An active SQLite transaction is required")
+        connection.row_factory = sqlite3.Row
+        _initialize_schema(connection)
+        try:
+            existing = cls._find_canonical(connection, owner_key, memory)
+            desired_aliases = cls._alias_values(memory.canonical_key, memory.aliases)
+            desired_display_aliases = {alias for _, alias in desired_aliases}
+            timestamp = datetime.now(timezone.utc).isoformat()
+            if existing is None:
+                memory_id = uuid.uuid4().hex
+                connection.execute(
+                    """
+                    INSERT INTO user_memories (
+                        id, owner_key, memory_type, canonical_key, display_name,
+                        content, version, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                    """,
+                    (
+                        memory_id,
+                        owner_key,
+                        memory.memory_type.value,
+                        normalize_memory_key(memory.canonical_key),
+                        memory.display_name,
+                        memory.content,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+                connection.executemany(
+                    """
+                    INSERT INTO user_memory_aliases (
+                        owner_key, normalized_alias, display_alias, memory_id
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        (owner_key, normalized_alias, display_alias, memory_id)
+                        for normalized_alias, display_alias in desired_aliases
+                    ),
+                )
+                return "created"
+
+            if (
+                existing.display_name == memory.display_name
+                and existing.content == memory.content
+                and set(existing.aliases) == desired_display_aliases
+            ):
+                return "unchanged"
+
+            connection.execute(
+                """
+                UPDATE user_memories
+                SET display_name = ?, content = ?, version = version + 1,
+                    updated_at = ?
+                WHERE owner_key = ? AND id = ?
+                """,
+                (
+                    memory.display_name,
+                    memory.content,
+                    timestamp,
+                    owner_key,
+                    existing.id,
+                ),
+            )
+            connection.execute(
+                """
+                DELETE FROM user_memory_aliases
+                WHERE owner_key = ? AND memory_id = ?
+                """,
+                (owner_key, existing.id),
+            )
+            connection.executemany(
+                """
+                INSERT INTO user_memory_aliases (
+                    owner_key, normalized_alias, display_alias, memory_id
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (
+                    (owner_key, normalized_alias, display_alias, existing.id)
+                    for normalized_alias, display_alias in desired_aliases
+                ),
+            )
+            return "updated"
+        except sqlite3.IntegrityError:
+            raise MemoryConflictError(
+                "The canonical key or an alias belongs to another memory"
+            ) from None
 
     def _find_by_id(
         self, connection: sqlite3.Connection, owner_key: str, memory_id: str

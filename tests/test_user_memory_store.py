@@ -176,6 +176,57 @@ def test_remember_is_idempotent_and_resolves_each_alias(tmp_path):
     assert {store.resolve(owner, alias)[0].id for alias in aliases} == {first.memory.id}
 
 
+def test_connection_scoped_reconcile_is_exact_and_caller_transactional(tmp_path):
+    db_path = tmp_path / "user-memory.db"
+    UserMemoryStore(db_path)
+    owner = owner_key_for("telegram-123")
+    initial = _training_template(content="old", aliases=("213",))
+    exact = _training_template(content="new", aliases=("213", "2-1-3", "壶铃213"))
+
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("BEGIN IMMEDIATE")
+        assert (
+            UserMemoryStore.reconcile_exact_in_transaction(connection, owner, initial)
+            == "created"
+        )
+        connection.rollback()
+
+    assert UserMemoryStore(db_path).list_memories(owner) == []
+
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("BEGIN IMMEDIATE")
+        assert (
+            UserMemoryStore.reconcile_exact_in_transaction(connection, owner, initial)
+            == "created"
+        )
+        connection.commit()
+
+    original = UserMemoryStore(db_path).list_memories(owner)[0]
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("BEGIN IMMEDIATE")
+        assert (
+            UserMemoryStore.reconcile_exact_in_transaction(connection, owner, exact)
+            == "updated"
+        )
+        assert (
+            UserMemoryStore.reconcile_exact_in_transaction(connection, owner, exact)
+            == "unchanged"
+        )
+        connection.commit()
+
+    updated = UserMemoryStore(db_path).list_memories(owner)[0]
+    assert updated.id == original.id
+    assert updated.version == original.version + 1
+    assert updated.content == "new"
+    assert set(updated.aliases) == {"213", "2-1-3", "壶铃213"}
+
+
 def test_remember_conflicting_content_preserves_existing_memory(tmp_path):
     store = UserMemoryStore(tmp_path / "user-memory.db")
     owner = owner_key_for("telegram-123")
