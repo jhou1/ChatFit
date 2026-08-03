@@ -622,6 +622,121 @@ async def test_direct_update_binds_alias_and_exact_content_to_user_message(tmp_p
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "target_expression",
+    (
+        "2-1-3.",
+        "壶铃213?!",
+        "「壶铃213」",
+        "『壶铃213』",
+        "“壶铃213”",
+        "「壶铃.213」",
+    ),
+)
+async def test_direct_forget_strips_only_target_edge_punctuation(
+    tmp_path, target_expression
+):
+    store = UserMemoryStore(tmp_path / "user-memory.db")
+    owner = owner_key_for("user-a")
+    store.remember(
+        owner,
+        NewUserMemory(
+            memory_type=MemoryType.TRAINING_TEMPLATE,
+            canonical_key="213",
+            display_name="壶铃213",
+            content="壶铃模板",
+            aliases=("2-1-3", "壶铃213", "壶铃.213"),
+        ),
+    )
+    morning = store.remember(
+        owner,
+        NewUserMemory(
+            memory_type=MemoryType.TRAINING_TEMPLATE,
+            canonical_key="morning",
+            display_name="晨练",
+            content="晨练模板",
+            aliases=("晨练",),
+        ),
+    ).memory
+    agent = MemoryAgent(
+        store=store,
+        interpreter=DeterministicInterpreter(
+            MemoryMutationDecision(intent="forget", target_query="晨练")
+        ),
+    )
+
+    result = await agent.handle(
+        user_id="user-a",
+        user_message=f"忘掉{target_expression}",
+        pending=None,
+    )
+
+    assert store.list_memories(owner) == [morning]
+    assert result.pending is None
+    assert "已忘掉" in result.response
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "target_expression",
+    (
+        "2-1-3.",
+        "壶铃213?!",
+        "「壶铃213」",
+        "『壶铃213』",
+        "“壶铃213”",
+        "「壶铃.213」",
+    ),
+)
+async def test_direct_update_strips_only_target_edge_punctuation(
+    tmp_path, target_expression
+):
+    store = UserMemoryStore(tmp_path / "user-memory.db")
+    owner = owner_key_for("user-a")
+    kettlebell = store.remember(
+        owner,
+        NewUserMemory(
+            memory_type=MemoryType.TRAINING_TEMPLATE,
+            canonical_key="213",
+            display_name="壶铃213",
+            content="壶铃模板",
+            aliases=("2-1-3", "壶铃213", "壶铃.213"),
+        ),
+    ).memory
+    morning = store.remember(
+        owner,
+        NewUserMemory(
+            memory_type=MemoryType.TRAINING_TEMPLATE,
+            canonical_key="morning",
+            display_name="晨练",
+            content="晨练模板",
+            aliases=("晨练",),
+        ),
+    ).memory
+    agent = MemoryAgent(
+        store=store,
+        interpreter=DeterministicInterpreter(
+            MemoryMutationDecision(intent="update", target_query="晨练")
+        ),
+    )
+
+    result = await agent.handle(
+        user_id="user-a",
+        user_message=f"把{target_expression}更新成  精确内容  ",
+        pending=None,
+    )
+
+    stored = store.list_memories(owner)
+    updated = next(memory for memory in stored if memory.id == kettlebell.id)
+    unchanged = next(memory for memory in stored if memory.id == morning.id)
+    assert updated.version == 2
+    assert updated.content == "  精确内容  "
+    assert unchanged == morning
+    assert result.pending is None
+    assert "已更新" in result.response
+
+
+@pytest.mark.asyncio
 async def test_ambiguous_forget_waits_then_deletes_only_confirmed_target(tmp_path):
     memory_db = tmp_path / "user-memory.db"
     store = UserMemoryStore(memory_db)
@@ -972,6 +1087,7 @@ async def test_recovered_update_confirmation_is_not_used_as_missing_content(tmp_
             MemoryMutationDecision(intent="update", target_query="晨练"),
             MemoryMutationDecision(intent="update", target_query="晨练"),
             MemoryMutationDecision(intent="forget", target_query="晨练"),
+            MemoryMutationDecision(intent="forget", target_query="晨练"),
         ),
     )
 
@@ -995,10 +1111,22 @@ async def test_recovered_update_confirmation_is_not_used_as_missing_content(tmp_
     assert confirmed_target.pending.candidate_ids == (kettlebell.id,)
     assert confirmed_target.pending.requires_confirmation is False
 
+    reconfirmed = await agent.handle(
+        user_id="user-a",
+        user_message="再次确认。",
+        pending=confirmed_target.pending,
+    )
+
+    assert store.list_memories(owner) == [kettlebell, morning]
+    assert reconfirmed.pending is not None
+    assert reconfirmed.pending.candidate_ids == (kettlebell.id,)
+    assert reconfirmed.pending.candidate_versions == (kettlebell.version,)
+    assert "已更新" not in reconfirmed.response
+
     updated = await agent.handle(
         user_id="user-a",
         user_message="  用户精确的新内容  ",
-        pending=confirmed_target.pending,
+        pending=reconfirmed.pending,
     )
 
     stored = store.list_memories(owner)
@@ -1009,6 +1137,91 @@ async def test_recovered_update_confirmation_is_not_used_as_missing_content(tmp_
     assert unchanged == morning
     assert updated.pending is None
     assert "已更新" in updated.response
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("confirmation", ("确认", "是", "对", "yes"))
+async def test_missing_update_content_rejects_bare_confirmation(tmp_path, confirmation):
+    store = UserMemoryStore(tmp_path / "user-memory.db")
+    owner = owner_key_for("user-a")
+    original = store.remember(
+        owner,
+        NewUserMemory(
+            memory_type=MemoryType.TRAINING_TEMPLATE,
+            canonical_key="213",
+            display_name="壶铃213",
+            content="旧内容",
+            aliases=("2-1-3", "壶铃213"),
+        ),
+    ).memory
+    agent = MemoryAgent(
+        store=store,
+        interpreter=DeterministicInterpreter(
+            MemoryMutationDecision(
+                intent="clarify",
+                memory_type=MemoryType.TRAINING_TEMPLATE,
+                clarification_question="请提供新的完整内容。",
+            ),
+            MemoryMutationDecision(intent="update", target_query="壶铃213"),
+        ),
+    )
+
+    missing = await agent.handle(
+        user_id="user-a", user_message="更新这个记忆", pending=None
+    )
+    assert missing.pending is not None
+    result = await agent.handle(
+        user_id="user-a",
+        user_message=f" {confirmation}。 ",
+        pending=missing.pending,
+    )
+
+    assert store.list_memories(owner) == [original]
+    assert result.pending is not None
+    assert result.pending.candidate_ids == (original.id,)
+    assert result.pending.candidate_versions == (original.version,)
+    assert "已更新" not in result.response
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("confirmation", ("确认", "是", "对", "yes"))
+async def test_missing_remember_content_rejects_bare_confirmation(
+    tmp_path, confirmation
+):
+    store = UserMemoryStore(tmp_path / "user-memory.db")
+    owner = owner_key_for("user-a")
+    agent = MemoryAgent(
+        store=store,
+        interpreter=DeterministicInterpreter(
+            MemoryMutationDecision(
+                intent="remember",
+                memory_type=MemoryType.PROFILE,
+                canonical_key="name",
+                display_name="姓名",
+                content="模型第一次猜测",
+                clarification_question="请提供需要记住的内容。",
+            ),
+            MemoryMutationDecision(
+                intent="remember",
+                memory_type=MemoryType.PROFILE,
+                canonical_key="name",
+                display_name="姓名",
+                content="模型不应保存的内容",
+            ),
+        ),
+    )
+
+    missing = await agent.handle(user_id="user-a", user_message="记住", pending=None)
+    assert missing.pending is not None
+    result = await agent.handle(
+        user_id="user-a",
+        user_message=f" {confirmation}。 ",
+        pending=missing.pending,
+    )
+
+    assert store.list_memories(owner) == []
+    assert result.pending == missing.pending
+    assert "已记住" not in result.response
 
 
 def test_pending_action_rejects_misaligned_candidate_versions(tmp_path):

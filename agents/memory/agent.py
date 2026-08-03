@@ -46,9 +46,12 @@ _EXPLICIT_UPDATE_PATTERN = re.compile(
     r"^(?:把)?(?P<target>.+?)(?:更新成|改成)(?P<content>.*)$",
     re.DOTALL,
 )
-_TARGET_EDGE_CHARACTERS = " \t\r\n，。！？、,:：;；"
+_TARGET_EDGE_CHARACTERS = " \t\r\n，。！？、,:：;；.?!「」『』“”‘’"
 _CONFIRMATION_REPLIES = frozenset(
     ("确认", "确认执行", "确认更新", "确定", "是的", "继续")
+)
+_BARE_CONFIRMATION_REPLIES = _CONFIRMATION_REPLIES | frozenset(
+    ("再次确认", "是", "对", "yes")
 )
 
 
@@ -168,6 +171,10 @@ def _is_confirmation_reply(user_message: str) -> bool:
     return _clean_target_query(user_message) in _CONFIRMATION_REPLIES
 
 
+def _is_bare_confirmation_reply(user_message: str) -> bool:
+    return _clean_target_query(user_message).casefold() in _BARE_CONFIRMATION_REPLIES
+
+
 class MemoryAgent:
     """Apply interpreted memory mutations through the transactional store."""
 
@@ -207,6 +214,15 @@ class MemoryAgent:
             decision = self._merge_pending_decision(pending.decision, decision)
             pending_content = pending.decision.content
             if pending_content is None or not pending_content.strip():
+                if (
+                    pending.operation in ("remember", "update")
+                    and not pending.requires_confirmation
+                    and _is_bare_confirmation_reply(user_message)
+                ):
+                    return MemoryAgentResult(
+                        response=pending.question,
+                        pending=pending,
+                    )
                 continuation_content: str | None = None
                 if pending.operation == "remember":
                     continuation_content = (
