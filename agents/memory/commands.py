@@ -20,6 +20,7 @@ _TARGET_EDGE_CHARACTERS = " \t\r\n，。！？、,:：;；.?!「」『』“”�
 _REFERENTIAL_REMEMBER_PAYLOADS = frozenset(
     ("我的名字", "我的姓名", "我的昵称", "这个内容", "这条内容")
 )
+_DURABLE_UPDATE_MARKERS = ("记忆", "偏好", "模板")
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,16 @@ class MemoryCommand:
     operation: MemoryOperation
     payload: str | None = None
     target_queries: tuple[str, ...] = ()
+    auto_route_memory: bool = True
+
+
+def should_auto_route_memory(command: MemoryCommand | None) -> bool:
+    """Return whether a parsed command is explicitly durable enough to route."""
+    return command is not None and command.auto_route_memory
+
+
+def _has_durable_update_marker(target: str) -> bool:
+    return any(marker in target for marker in _DURABLE_UPDATE_MARKERS)
 
 
 def _clean_target_query(value: str) -> str:
@@ -73,10 +84,12 @@ def parse_memory_command(user_message: str) -> MemoryCommand | None:
     for pattern in _UPDATE_PATTERNS:
         match = pattern.fullmatch(command_text)
         if match is not None:
+            target = match.group("target")
             return MemoryCommand(
                 operation="update",
                 payload=match.group("content"),
-                target_queries=_target_variants("update", match.group("target")),
+                target_queries=_target_variants("update", target),
+                auto_route_memory=_has_durable_update_marker(target),
             )
 
     for prefix in (

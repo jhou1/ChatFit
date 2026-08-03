@@ -13,7 +13,7 @@ from langgraph.graph.state import CompiledStateGraph
 from agents.models import AgentState
 from agents.llm_factory import create_chat_model, LLMConfig
 from agents.memory.agent import LLMMemoryInterpreter, MemoryAgent, MemoryInterpreter
-from agents.memory.commands import parse_memory_command
+from agents.memory.commands import parse_memory_command, should_auto_route_memory
 from agents.memory.context import append_agent_context, format_durable_memories
 from agents.memory.models import PendingMemoryAction
 from agents.memory.store import UserMemoryStore, owner_key_for
@@ -125,7 +125,8 @@ async def route_assistant_on_relevance(
         ),
         "",
     )
-    if pending_memory_action is not None or parse_memory_command(latest_user_message):
+    command = parse_memory_command(latest_user_message)
+    if pending_memory_action is not None or should_auto_route_memory(command):
         routed.insert(0, "memory_agent")
 
     routed = list(dict.fromkeys(routed))

@@ -1,6 +1,6 @@
 from collections.abc import Iterator
 import importlib
-import warnings
+import logging
 
 import aiosqlite
 import pytest
@@ -9,6 +9,7 @@ from langgraph.types import Command, interrupt
 
 from agents.checkpointing import ObservedAsyncSqliteSaver
 from agents.llm_factory import LLMConfig
+from agents.memory.commands import parse_memory_command
 from agents.memory.context import format_durable_memories
 from agents.memory.models import (
     MemoryMutationDecision,
@@ -42,6 +43,16 @@ class DeterministicInterpreter:
 class _UnusedSubgraph:
     async def ainvoke(self, state):
         raise AssertionError(f"unexpected subagent invocation: {state!r}")
+
+
+class _RecordingSubgraph:
+    def __init__(self, response: str) -> None:
+        self.response = response
+        self.seen_states: list[dict] = []
+
+    async def ainvoke(self, state):
+        self.seen_states.append(state)
+        return {"messages": [AIMessage(content=self.response)]}
 
 
 def _llm_config() -> LLMConfig:
@@ -396,6 +407,103 @@ async def test_shared_command_grammar_routes_and_applies_modify_template(
     assert stored[0].content == "新内容"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("message", "target_name", "replacement", "selected_agent"),
+    (
+        (
+            "修改今天的深蹲重量为100kg",
+            "今天的深蹲重量",
+            "100kg",
+            "training_agent",
+        ),
+        (
+            "把今天午餐更新成鸡胸肉沙拉",
+            "今天午餐",
+            "鸡胸肉沙拉",
+            "meal_agent",
+        ),
+    ),
+)
+async def test_generic_business_update_uses_specialist_without_mutating_memory(
+    message,
+    target_name,
+    replacement,
+    selected_agent,
+    tmp_path,
+    monkeypatch,
+):
+    """Breaks if a meal/training record edit is auto-routed as durable memory."""
+    store = UserMemoryStore(tmp_path / "user-memory.db")
+    owner = owner_key_for("user-a")
+    original = store.remember(
+        owner,
+        NewUserMemory(
+            memory_type=MemoryType.OTHER,
+            canonical_key=target_name,
+            display_name=target_name,
+            content="原始耐久记忆内容",
+        ),
+    ).memory
+    training = _RecordingSubgraph("training updated")
+    meal = _RecordingSubgraph("meal updated")
+    unused = _UnusedSubgraph()
+    monkeypatch.setattr(
+        "agents.roles.supervisor.make_training_agent_graph",
+        lambda *args, **kwargs: training,
+    )
+    monkeypatch.setattr(
+        "agents.roles.supervisor.make_meal_subagent_graph",
+        lambda *args, **kwargs: meal,
+    )
+    monkeypatch.setattr(
+        "agents.roles.supervisor.make_insights_agent_graph",
+        lambda *args, **kwargs: unused,
+    )
+    monkeypatch.setattr(
+        "agents.roles.supervisor.create_chat_model", lambda config: object()
+    )
+
+    async def route_business_update(llm, messages):
+        del llm, messages
+        return {"messages": AIMessage(content=selected_agent)}
+
+    monkeypatch.setattr(
+        "agents.roles.supervisor._execute_llm_query_safely",
+        route_business_update,
+    )
+    app = make_agent_graph(
+        _llm_config(),
+        ":memory:",
+        None,
+        memory_store=store,
+        memory_interpreter=DeterministicInterpreter(
+            MemoryMutationDecision(
+                intent="update",
+                memory_type=MemoryType.OTHER,
+                target_query=target_name,
+                content=replacement,
+            )
+        ),
+    )
+    command = parse_memory_command(message)
+    assert command is not None
+    assert command.operation == "update"
+    assert command.payload == replacement
+    assert command.target_queries[0] == target_name
+    assert command.auto_route_memory is False
+
+    result = await app.ainvoke(
+        {"messages": [HumanMessage(content=message)]},
+        config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+    )
+
+    assert result["assistant_names"] == [selected_agent]
+    assert len(training.seen_states) == (selected_agent == "training_agent")
+    assert len(meal.seen_states) == (selected_agent == "meal_agent")
+    assert store.list_memories(owner) == [original]
+
+
 def _name_clarification_decision() -> MemoryMutationDecision:
     return MemoryMutationDecision(
         intent="clarify",
@@ -407,9 +515,22 @@ def _name_clarification_decision() -> MemoryMutationDecision:
     )
 
 
+def _assert_json_primitives(value) -> None:
+    if isinstance(value, dict):
+        assert all(type(key) is str for key in value)
+        for nested in value.values():
+            _assert_json_primitives(nested)
+        return
+    if isinstance(value, list):
+        for nested in value:
+            _assert_json_primitives(nested)
+        return
+    assert type(value) in (str, int, bool, type(None))
+
+
 @pytest.mark.asyncio
 async def test_pending_state_round_trips_as_json_without_serializer_warning(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, caplog
 ):
     """Breaks if checkpoint state contains an unregistered Pydantic instance."""
     memory_store = UserMemoryStore(tmp_path / "user-memory.db")
@@ -422,8 +543,7 @@ async def test_pending_state_round_trips_as_json_without_serializer_warning(
         }
     }
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
+    with caplog.at_level(logging.WARNING):
         async with aiosqlite.connect(checkpoint_path) as connection:
             saver = ObservedAsyncSqliteSaver(connection)
             await saver.setup()
@@ -443,9 +563,11 @@ async def test_pending_state_round_trips_as_json_without_serializer_warning(
     assert isinstance(pending, dict)
     assert pending["operation"] == "remember"
     assert pending["decision"]["content"] is None
-    warning_messages = [str(warning.message).lower() for warning in caught]
+    _assert_json_primitives(pending)
+    warning_messages = [record.getMessage().lower() for record in caplog.records]
     assert not any(
-        "unregistered type" in message or "future block" in message
+        "deserializing unregistered type" in message
+        or ("future" in message and "block" in message)
         for message in warning_messages
     )
 
