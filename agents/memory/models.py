@@ -91,6 +91,7 @@ class PendingMemoryAction(BaseModel):
     decision: MemoryMutationDecision
     candidate_ids: tuple[str, ...] = ()
     candidate_versions: tuple[int, ...] = ()
+    requires_confirmation: bool = False
     question: str
 
     @model_validator(mode="after")
