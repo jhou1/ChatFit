@@ -6,6 +6,7 @@ from threading import Barrier
 import pytest
 from pydantic import ValidationError
 
+import agents.memory.store as memory_store_module
 from agents.memory.models import (
     MemoryConflictError,
     MemoryType,
@@ -395,3 +396,62 @@ def test_concurrent_remember_creates_one_canonical_memory(tmp_path):
     assert sorted(result.status for result in results) == ["created", "unchanged"]
     assert len(canonical_rows) == 1
     assert {result.memory.id for result in results} == {canonical_rows[0][0]}
+
+
+def test_operations_close_connections_on_success_and_failure(tmp_path, monkeypatch):
+    real_connect = sqlite3.connect
+    opened_connections = []
+
+    def tracking_connect(*args, **kwargs):
+        connection = real_connect(*args, **kwargs)
+        opened_connections.append(connection)
+        return connection
+
+    def assert_all_connections_closed():
+        for connection in opened_connections:
+            with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+                connection.execute("SELECT 1")
+
+    monkeypatch.setattr(memory_store_module.sqlite3, "connect", tracking_connect)
+    store = UserMemoryStore(tmp_path / "user-memory.db")
+    assert_all_connections_closed()
+    owner = owner_key_for("telegram-123")
+
+    original = store.remember(owner, _training_template()).memory
+    assert_all_connections_closed()
+    assert store.list_memories(owner) == [original]
+    assert_all_connections_closed()
+    assert store.resolve(owner, "壶铃213") == [original]
+    assert_all_connections_closed()
+
+    with pytest.raises(MemoryConflictError):
+        store.remember(owner, _training_template(content="conflicting content"))
+    assert_all_connections_closed()
+
+    updated = store.update(
+        owner,
+        original.id,
+        MemoryUpdate(
+            display_name="Updated 2-1-3",
+            content="updated content",
+            expected_version=original.version,
+        ),
+    )
+    assert_all_connections_closed()
+    with pytest.raises(StaleMemoryError):
+        store.update(
+            owner,
+            original.id,
+            MemoryUpdate(
+                display_name="Stale 2-1-3",
+                content="stale content",
+                expected_version=original.version,
+            ),
+        )
+    assert_all_connections_closed()
+
+    assert store.forget(owner, updated.id) is True
+    assert_all_connections_closed()
+    assert store.forget(owner, updated.id) is False
+    assert_all_connections_closed()
+    assert len(opened_connections) == 9

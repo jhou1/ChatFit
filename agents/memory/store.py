@@ -5,6 +5,8 @@ import re
 import sqlite3
 import unicodedata
 import uuid
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -87,18 +89,22 @@ class UserMemoryStore:
             )
 
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.executescript(_SCHEMA)
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(
-            self.db_path,
-            timeout=_BUSY_TIMEOUT_MILLISECONDS / 1_000,
-        )
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MILLISECONDS}")
-        return connection
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        with closing(
+            sqlite3.connect(
+                self.db_path,
+                timeout=_BUSY_TIMEOUT_MILLISECONDS / 1_000,
+            )
+        ) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MILLISECONDS}")
+            with connection:
+                yield connection
 
     @staticmethod
     def _alias_values(
@@ -163,7 +169,7 @@ class UserMemoryStore:
 
     def list_memories(self, owner_key: str) -> list[UserMemory]:
         """Return every durable memory owned by ``owner_key``."""
-        with self._connect() as connection:
+        with self._connection() as connection:
             rows = connection.execute(
                 """
                 SELECT *
@@ -177,7 +183,7 @@ class UserMemoryStore:
 
     def resolve(self, owner_key: str, query: str) -> list[UserMemory]:
         """Resolve one normalized canonical key or alias for an owner."""
-        with self._connect() as connection:
+        with self._connection() as connection:
             rows = connection.execute(
                 """
                 SELECT memories.*
@@ -194,7 +200,7 @@ class UserMemoryStore:
 
     def remember(self, owner_key: str, memory: NewUserMemory) -> RememberResult:
         """Create one canonical memory or return its identical existing row."""
-        with self._connect() as connection:
+        with self._connection() as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 existing = self._find_canonical(connection, owner_key, memory)
@@ -258,7 +264,7 @@ class UserMemoryStore:
         self, owner_key: str, memory_id: str, change: MemoryUpdate
     ) -> UserMemory:
         """Replace one owned memory when its expected version is current."""
-        with self._connect() as connection:
+        with self._connection() as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 current = self._find_by_id(connection, owner_key, memory_id)
@@ -331,7 +337,7 @@ class UserMemoryStore:
 
     def forget(self, owner_key: str, memory_id: str) -> bool:
         """Physically delete one owned memory and its cascading aliases."""
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
                 "DELETE FROM user_memories WHERE owner_key = ? AND id = ?",
