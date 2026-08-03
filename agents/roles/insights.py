@@ -16,6 +16,7 @@ from agents.sqlite_handler import (
     get_meal_records_of_last_n_days,
 )
 from agents.llm_factory import create_chat_model, LLMConfig
+from agents.memory.context import append_agent_context
 from agents.utils import extract_text
 from tools.safe_execution import SafeToolNode, _execute_llm_query_safely
 
@@ -98,8 +99,11 @@ def make_insights_agent_graph(
                 f"for the fixed reporting window {start_date.isoformat()} through "
                 f"{end_date.isoformat()}, inclusive."
             )
-        if summary := state.get("summary"):
-            system_prompt += f"\n\n[Historical Conversation Summary]:\n{summary}"
+        system_prompt = append_agent_context(
+            system_prompt,
+            memory_context=state.get("memory_context"),
+            summary=state.get("summary"),
+        )
         messages = [SystemMessage(content=system_prompt)] + state["messages"]
         return await _execute_llm_query_safely(llm_with_tools, messages)
 

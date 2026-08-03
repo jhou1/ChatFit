@@ -3,6 +3,7 @@ from datetime import datetime
 from agents.models import MealInfo, AgentState
 from agents.sqlite_handler import add_meal_log
 from agents.llm_factory import create_chat_model, LLMConfig
+from agents.memory.context import append_agent_context
 from agents.rag import create_recipe_rag_chain
 
 from langchain_core.tools import tool
@@ -64,9 +65,11 @@ def make_meal_subagent_graph(llm_config: LLMConfig, db_path: str, vector_store):
         system_prompt = prompt_template.format(
             current_time=datetime.now().date().isoformat()
         )
-        # adding summary as context
-        if summary := state.get("summary"):
-            system_prompt += f"\n\n[Historical Conversation Summary:]\n{summary}"
+        system_prompt = append_agent_context(
+            system_prompt,
+            memory_context=state.get("memory_context"),
+            summary=state.get("summary"),
+        )
         messages = [SystemMessage(content=system_prompt)] + state["messages"]
         return await _execute_llm_query_safely(llm_with_tools, messages)
 

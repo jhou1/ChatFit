@@ -4,6 +4,7 @@ from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
 from agents.roles.supervisor import make_agent_graph
 from agents.llm_factory import LLMConfig
+from agents.memory.store import UserMemoryStore
 from agents.sqlite_handler import init_db
 
 
@@ -12,6 +13,22 @@ def temp_db_path(tmp_path):
     db_path = tmp_path / "test.db"
     init_db(db_path)
     return db_path
+
+
+class _UnusedMemoryInterpreter:
+    async def interpret(self, *, user_message, memories, pending):
+        del user_message, memories, pending
+        raise AssertionError("context governance must not interpret a memory command")
+
+
+def _make_test_graph(llm_config, temp_db_path):
+    return make_agent_graph(
+        llm_config,
+        str(temp_db_path),
+        None,
+        memory_store=UserMemoryStore(f"{temp_db_path}.user-memory.db"),
+        memory_interpreter=_UnusedMemoryInterpreter(),
+    )
 
 
 @pytest.mark.asyncio
@@ -29,7 +46,7 @@ async def test_context_governance_truncates_messages(
     }
 
     llm_config = LLMConfig(provider="google", model_name="gemini-3.5-flash", kwargs={})
-    app = make_agent_graph(llm_config, str(temp_db_path), None)
+    app = _make_test_graph(llm_config, temp_db_path)
 
     messages = []
     for i in range(25):
@@ -40,7 +57,9 @@ async def test_context_governance_truncates_messages(
     state = {"messages": messages}
 
     # We invoke the graph. It should run context_governance -> assistant_selector -> chatter
-    response = await app.ainvoke(state)
+    response = await app.ainvoke(
+        state, config={"configurable": {"thread_id": "context-test"}}
+    )
 
     # Check that the summary was updated
     # Wait, ainvoke returns the final state! So response is the AgentState
@@ -59,6 +78,7 @@ async def test_context_governance_truncates_messages(
     assert "msg 0" in prompt_sent
     assert "msg 9" in prompt_sent
     assert "msg 10" not in prompt_sent
+    assert "conversation context summarizer" in prompt_sent
 
 
 @pytest.mark.asyncio
@@ -72,7 +92,7 @@ async def test_context_governance_preserves_tool_calls(
     mock_execute.return_value = {"messages": AIMessage(content="Summary with tool.")}
 
     llm_config = LLMConfig(provider="google", model_name="gemini-3.5-flash", kwargs={})
-    app = make_agent_graph(llm_config, str(temp_db_path), None)
+    app = _make_test_graph(llm_config, temp_db_path)
 
     messages = []
     for i in range(10):
@@ -99,7 +119,9 @@ async def test_context_governance_preserves_tool_calls(
 
     state = {"messages": messages}
 
-    response = await app.ainvoke(state)
+    response = await app.ainvoke(
+        state, config={"configurable": {"thread_id": "context-test"}}
+    )
 
     assert "summary" in response
     assert response["summary"] == "Summary with tool."

@@ -1,4 +1,7 @@
+import re
+
 from langchain_core.prompts.prompt import PromptTemplate
+from langchain_core.runnables import RunnableConfig
 from langchain_core.messages import (
     AIMessage,
     HumanMessage,
@@ -11,6 +14,9 @@ from langgraph.graph.state import CompiledStateGraph
 
 from agents.models import AgentState
 from agents.llm_factory import create_chat_model, LLMConfig
+from agents.memory.agent import LLMMemoryInterpreter, MemoryAgent, MemoryInterpreter
+from agents.memory.context import append_agent_context, format_durable_memories
+from agents.memory.store import UserMemoryStore, owner_key_for
 from agents.roles.meal import make_meal_subagent_graph
 from agents.roles.training import make_training_agent_graph
 from agents.roles.insights import make_insights_agent_graph
@@ -23,6 +29,7 @@ INSTRUCTION_FOR_ROUTING_SUBAGENTS = """
 You skilled at assigning user input to the correct subagents.
 
 These are the subagents you can assign to:
+- memory_agent: responsible only for explicit requests to remember, update, or forget durable user memories.
 - training_agent: responsible for saving user training sessions to the database, invoke it when user tells you about their training/workout sessions.
 - meal_agent: responsible for saving user meal details to the database, invoke it when user tells you about their meals.
 - insights_agent: responsible for analyzing training progress, intensity, recovery, waveness, or answering questions about "am I training too much", "how is my consistency".
@@ -55,7 +62,7 @@ chatter
 """
 
 CONTEXT_GOVERNANCE_PROMPT = """
-You are an assistant memory manager. Compress the following conversation history into a concise summary.
+You are a conversation context summarizer. Compress the following conversation history into a concise summary.
 Focus on training(fitness) goals, dietary context, user preferences, and any important ongoing context.
 
 Here is the existing summary that you must merge with the new information:
@@ -65,14 +72,42 @@ Here is the new conversation history to compress:
 {summary_text}
 """
 
+_EXPLICIT_MEMORY_UPDATE = re.compile(
+    r"(?:记忆|偏好|模板).*(?:更新成|改成)|(?:更新|修改).*(?:记忆|偏好|模板)",
+    re.DOTALL,
+)
+_ROUTABLE_AGENTS = frozenset(
+    ("training_agent", "meal_agent", "insights_agent", "chatter")
+)
+
+
+def _is_explicit_memory_command(message: str) -> bool:
+    stripped = message.strip()
+    return (
+        stripped.startswith("记住")
+        or stripped.endswith(("，记下来", ",记下来"))
+        or stripped.startswith("忘掉")
+        or stripped.startswith(("删除这个记忆", "删除这条记忆"))
+        or _EXPLICIT_MEMORY_UPDATE.search(stripped) is not None
+    )
+
 
 async def route_assistant_on_relevance(
-    llm_config: LLMConfig, messages: list
+    llm_config: LLMConfig,
+    messages: list,
+    *,
+    pending_memory_action=None,
+    memory_context: str | None = None,
+    summary: str | None = None,
 ) -> list[str]:
     """Select the appropriate assistant based on conversation history"""
 
     prompt_template = PromptTemplate.from_template(INSTRUCTION_FOR_ROUTING_SUBAGENTS)
-    system_prompt = prompt_template.format()
+    system_prompt = append_agent_context(
+        prompt_template.format(),
+        memory_context=memory_context,
+        summary=summary,
+    )
 
     recent_messages = messages[-10:]
     history_text = "\n".join(
@@ -89,18 +124,48 @@ async def route_assistant_on_relevance(
     response = await _execute_llm_query_safely(llm, routing_messages)
     content_str = extract_text(response["messages"])
 
-    if "LLM request timeout exceeded" in content_str:
-        return ["chatter"]
+    routed = []
+    if "LLM request timeout exceeded" not in content_str:
+        routed = [
+            agent.strip()
+            for agent in content_str.split(",")
+            if agent.strip() in _ROUTABLE_AGENTS
+        ]
 
-    decision = [agent.strip() for agent in content_str.split(",") if "agent" in agent]
-    if not decision:
-        return ["chatter"]
-    return decision
+    latest_user_message = next(
+        (
+            extract_text(message)
+            for message in reversed(messages)
+            if isinstance(message, HumanMessage)
+        ),
+        "",
+    )
+    if pending_memory_action is not None or _is_explicit_memory_command(
+        latest_user_message
+    ):
+        routed.insert(0, "memory_agent")
+
+    routed = list(dict.fromkeys(routed))
+    if any(agent != "chatter" for agent in routed):
+        routed = [agent for agent in routed if agent != "chatter"]
+    return routed or ["chatter"]
 
 
 def make_agent_graph(
-    llm_config: LLMConfig, db_path: str, vector_store, checkpointer=None
+    llm_config: LLMConfig,
+    db_path: str,
+    vector_store,
+    checkpointer=None,
+    *,
+    memory_store: UserMemoryStore | None = None,
+    memory_interpreter: MemoryInterpreter | None = None,
 ) -> CompiledStateGraph:
+    memory_store = memory_store or UserMemoryStore(f"{db_path}.user-memory.db")
+    memory_interpreter = memory_interpreter or LLMMemoryInterpreter(llm_config)
+    durable_memory_agent = MemoryAgent(
+        store=memory_store,
+        interpreter=memory_interpreter,
+    )
     training_recorder_node = make_training_agent_graph(llm_config, db_path)
     meal_recorder_node = make_meal_subagent_graph(llm_config, db_path, vector_store)
     insights_recorder_node = make_insights_agent_graph(llm_config, db_path)
@@ -124,14 +189,53 @@ def make_agent_graph(
         with observe_span("agent.chatter"):
             llm = create_chat_model(llm_config)
             system_msg = "You are ChatFit, a friendly fitness and nutrition assistant. Answer general questions, say hello, and be helpful."
-            # adding previous conversation summary as context
-            if state.get("summary"):
-                system_msg += (
-                    f"\n\n[Historical Conversation Summary]:\n{state['summary']}"
-                )
+            system_msg = append_agent_context(
+                system_msg,
+                memory_context=state.get("memory_context"),
+                summary=state.get("summary"),
+            )
             messages = [SystemMessage(content=system_msg)] + state["messages"]
             response = await _execute_llm_query_safely(llm, messages)
             return {"messages": [response["messages"]]}
+
+    def configured_user_id(config: RunnableConfig) -> str:
+        configurable = config.get("configurable", {})
+        user_id = configurable.get("user_id") or configurable.get("thread_id")
+        if not isinstance(user_id, str) or not user_id:
+            raise ValueError("configurable.user_id or thread_id is required")
+        return user_id
+
+    async def load_memories_node(
+        state: AgentState, config: RunnableConfig
+    ) -> dict[str, str]:
+        del state
+        user_id = configured_user_id(config)
+        memories = memory_store.list_memories(owner_key_for(user_id))
+        return {"memory_context": format_durable_memories(memories)}
+
+    async def memory_agent_node(
+        state: AgentState, config: RunnableConfig
+    ) -> dict[str, object]:
+        user_message = next(
+            (
+                extract_text(message)
+                for message in reversed(state["messages"])
+                if isinstance(message, HumanMessage)
+            ),
+            "",
+        )
+        user_id = configured_user_id(config)
+        result = await durable_memory_agent.handle(
+            user_id=user_id,
+            user_message=user_message,
+            pending=state.get("pending_memory_action"),
+        )
+        refreshed = memory_store.list_memories(owner_key_for(user_id))
+        return {
+            "messages": [AIMessage(content=result.response)],
+            "pending_memory_action": result.pending,
+            "memory_context": format_durable_memories(refreshed),
+        }
 
     async def context_governance_node(state: AgentState):
         """cut off the messages when its length exceeds max length
@@ -202,7 +306,13 @@ def make_agent_graph(
             "assistant_selector",
             {"context.messages": len(state["messages"])},
         ):
-            decision = await route_assistant_on_relevance(llm_config, state["messages"])
+            decision = await route_assistant_on_relevance(
+                llm_config,
+                state["messages"],
+                pending_memory_action=state.get("pending_memory_action"),
+                memory_context=state.get("memory_context"),
+                summary=state.get("summary"),
+            )
             emit_event(
                 "agent.route.decided",
                 {
@@ -219,14 +329,17 @@ def make_agent_graph(
         return state["assistant_names"]
 
     builder = StateGraph(AgentState)
+    builder.add_node("load_memories", load_memories_node)
     builder.add_node("context_governance", context_governance_node)
     builder.add_node("training", training_wrapper)
     builder.add_node("meal", meal_wrapper)
     builder.add_node("insights", insights_wrapper)
     builder.add_node("chatter", chatter_node)
     builder.add_node("assistant_selector", assistant_selector_node)
+    builder.add_node("memory", memory_agent_node)
 
-    builder.add_edge(START, "context_governance")
+    builder.add_edge(START, "load_memories")
+    builder.add_edge("load_memories", "context_governance")
     builder.add_edge("context_governance", "assistant_selector")
     builder.add_conditional_edges(
         "assistant_selector",
@@ -235,6 +348,7 @@ def make_agent_graph(
             "training_agent": "training",
             "meal_agent": "meal",
             "insights_agent": "insights",
+            "memory_agent": "memory",
             "chatter": "chatter",
         },
     )
