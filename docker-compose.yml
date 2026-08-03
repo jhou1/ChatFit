@@ -17,6 +17,7 @@ services:
     environment:
     - CHECKPOINTER_DB_PATH=/app/data/checkpointer.db
     - USER_MEMORY_DB_PATH=/app/data/user-memory.db
+    - CHATFIT_API_TOKEN=${CHATFIT_API_TOKEN:?CHATFIT_API_TOKEN is required}
     extra_hosts:
     - host.docker.internal:host-gateway
 
@@ -33,5 +34,6 @@ services:
     - API_CLEAR_URL=http://api:8000/clear
     - API_RESUME_URL=http://api:8000/resume
     - API_PROACTIVE_REVIEW_URL=http://api:8000/proactive-review
+    - CHATFIT_API_TOKEN=${CHATFIT_API_TOKEN:?CHATFIT_API_TOKEN is required}
     extra_hosts:
     - host.docker.internal:host-gateway

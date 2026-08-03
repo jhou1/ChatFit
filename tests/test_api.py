@@ -20,6 +20,33 @@ from agents.models import MealInfo, TrainingInputRecorder, TrainingSession, Trai
 from agents.sqlite_handler import add_meal_log, add_training_session, init_db
 from evaluation.models import EvaluationCase
 
+TEST_CHATFIT_API_TOKEN = "test-chatfit-api-token"
+
+
+@pytest.fixture(autouse=True)
+def isolate_api_globals():
+    """Restore mutable module-level API state after every test."""
+    original_state = dict(api_module.app.state._state)
+    original_sessions = dict(api_module.user_sessions)
+    original_token = api_module.os.environ.get("CHATFIT_API_TOKEN")
+    api_module.os.environ["CHATFIT_API_TOKEN"] = TEST_CHATFIT_API_TOKEN
+    try:
+        yield
+    finally:
+        api_module.app.state._state.clear()
+        api_module.app.state._state.update(original_state)
+        api_module.user_sessions.clear()
+        api_module.user_sessions.update(original_sessions)
+        if original_token is None:
+            api_module.os.environ.pop("CHATFIT_API_TOKEN", None)
+        else:
+            api_module.os.environ["CHATFIT_API_TOKEN"] = original_token
+
+
+@pytest.fixture
+def api_auth_headers() -> dict[str, str]:
+    return {"Authorization": f"Bearer {TEST_CHATFIT_API_TOKEN}"}
+
 
 @pytest.fixture
 def temp_db_path(tmp_path):
@@ -103,6 +130,91 @@ class FakeParallelInterruptAgent(FakeAgent):
                 ),
             ]
         }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "headers", "expected_status"),
+    (
+        ("/chat", {}, 401),
+        ("/chat", {"Authorization": "Bearer wrong-secret"}, 403),
+        ("/clear", {}, 401),
+        ("/clear", {"Authorization": "Bearer wrong-secret"}, 403),
+    ),
+)
+async def test_untrusted_identity_cannot_access_victim_chat_or_clear_state(
+    path, headers, expected_status, tmp_path, caplog
+):
+    """Breaks if an untrusted caller can select another user's memory owner."""
+    agent = FakeAgent()
+    api_module.app.state.agent = agent
+    store = UserMemoryStore(tmp_path / "user-memory.db")
+    victim_owner = owner_key_for("victim")
+    store.remember(
+        victim_owner,
+        NewUserMemory(
+            memory_type=MemoryType.HEALTH_CONSTRAINT,
+            canonical_key="private-health",
+            display_name="私密健康信息",
+            content="victim-private-memory",
+        ),
+    )
+    api_module.app.state.user_memory_store = store
+    api_module.user_sessions.clear()
+    api_module.user_sessions["victim"] = "victim-thread"
+
+    transport = httpx.ASGITransport(app=api_module.app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        response = await client.post(
+            path,
+            headers=headers,
+            json={"user_id": "victim", "message": "记住攻击者内容"},
+        )
+
+    assert response.status_code == expected_status
+    assert api_module.user_sessions == {"victim": "victim-thread"}
+    assert agent.configs == []
+    assert [memory.content for memory in store.list_memories(victim_owner)] == [
+        "victim-private-memory"
+    ]
+    assert "wrong-secret" not in caplog.text
+    assert TEST_CHATFIT_API_TOKEN not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "user_id"),
+    (
+        ("/chat", "   "),
+        ("/chat", "x" * 129),
+        ("/clear", "   "),
+        ("/clear", "x" * 129),
+    ),
+)
+async def test_invalid_user_identity_is_rejected_before_session_or_graph_access(
+    path, user_id, api_auth_headers
+):
+    """Breaks if blank or unbounded identities can become durable owners."""
+    agent = FakeAgent()
+    api_module.app.state.agent = agent
+    api_module.user_sessions.clear()
+    transport = httpx.ASGITransport(app=api_module.app, raise_app_exceptions=False)
+
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        headers=api_auth_headers,
+    ) as client:
+        response = await client.post(
+            path,
+            json={"user_id": user_id, "message": "hello"},
+        )
+
+    assert response.status_code == 422
+    assert api_module.user_sessions == {}
+    assert agent.configs == []
 
 
 @pytest.mark.asyncio
@@ -291,14 +403,14 @@ async def test_proactive_review_weekly_timeout_returns_daily_question(
 
 
 @pytest.mark.asyncio
-async def test_empty_chat_response_preserves_correlation_headers():
+async def test_empty_chat_response_preserves_correlation_headers(api_auth_headers):
     transport = httpx.ASGITransport(app=api_module.app, raise_app_exceptions=False)
     async with httpx.AsyncClient(
         transport=transport, base_url="http://testserver"
     ) as client:
         response = await client.post(
             "/chat",
-            headers={"X-Request-ID": "empty-message-request"},
+            headers={**api_auth_headers, "X-Request-ID": "empty-message-request"},
             json={"user_id": "test-user", "message": "   "},
         )
 
@@ -309,7 +421,7 @@ async def test_empty_chat_response_preserves_correlation_headers():
 
 @pytest.mark.asyncio
 async def test_chat_uses_langfuse_v4_callback_without_removed_host_argument(
-    monkeypatch,
+    monkeypatch, api_auth_headers
 ):
     callback = object()
     callback_kwargs = {}
@@ -330,7 +442,7 @@ async def test_chat_uses_langfuse_v4_callback_without_removed_host_argument(
         raise_app_exceptions=False,
     )
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://testserver"
+        transport=transport, base_url="http://testserver", headers=api_auth_headers
     ) as client:
         response = await client.post(
             "/chat", json={"user_id": "test-user", "message": "hello"}
@@ -350,7 +462,7 @@ async def test_chat_uses_langfuse_v4_callback_without_removed_host_argument(
 
 @pytest.mark.asyncio
 async def test_chat_remains_available_when_langfuse_callback_initialization_fails(
-    monkeypatch,
+    monkeypatch, api_auth_headers
 ):
     def incompatible_callback_factory(**kwargs):
         raise TypeError("unexpected callback constructor argument")
@@ -365,7 +477,7 @@ async def test_chat_remains_available_when_langfuse_callback_initialization_fail
         raise_app_exceptions=False,
     )
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://testserver"
+        transport=transport, base_url="http://testserver", headers=api_auth_headers
     ) as client:
         response = await client.post(
             "/chat", json={"user_id": "test-user", "message": "hello"}
@@ -378,7 +490,7 @@ async def test_chat_remains_available_when_langfuse_callback_initialization_fail
 
 @pytest.mark.asyncio
 async def test_chat_interrupt_trace_contains_interrupt_id_and_interrupted_status(
-    monkeypatch,
+    monkeypatch, api_auth_headers
 ):
     async def approval_message(tool_calls, llm_config):
         return "Please approve"
@@ -396,7 +508,9 @@ async def test_chat_interrupt_trace_contains_interrupt_id_and_interrupted_status
     transport = httpx.ASGITransport(app=api_module.app, raise_app_exceptions=False)
     with observation_sink(sink):
         async with httpx.AsyncClient(
-            transport=transport, base_url="http://testserver"
+            transport=transport,
+            base_url="http://testserver",
+            headers=api_auth_headers,
         ) as client:
             response = await client.post(
                 "/chat", json={"user_id": "test-user", "message": "save lunch"}
@@ -419,7 +533,9 @@ async def test_chat_interrupt_trace_contains_interrupt_id_and_interrupted_status
 
 
 @pytest.mark.asyncio
-async def test_chat_passes_complete_revision_reply_to_pending_interrupt(monkeypatch):
+async def test_chat_passes_complete_revision_reply_to_pending_interrupt(
+    monkeypatch, api_auth_headers
+):
     monkeypatch.setattr(api_module, "CallbackHandler", lambda **kwargs: object())
     agent = FakeResumeAgent()
     api_module.app.state.agent = agent
@@ -430,7 +546,9 @@ async def test_chat_passes_complete_revision_reply_to_pending_interrupt(monkeypa
     transport = httpx.ASGITransport(app=api_module.app, raise_app_exceptions=False)
     with observation_sink(sink):
         async with httpx.AsyncClient(
-            transport=transport, base_url="http://testserver"
+            transport=transport,
+            base_url="http://testserver",
+            headers=api_auth_headers,
         ) as client:
             response = await client.post(
                 "/chat",
@@ -453,7 +571,9 @@ async def test_chat_passes_complete_revision_reply_to_pending_interrupt(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_chat_flattens_all_parallel_interrupt_tool_calls(monkeypatch):
+async def test_chat_flattens_all_parallel_interrupt_tool_calls(
+    monkeypatch, api_auth_headers
+):
     captured_tool_calls = []
 
     async def approval_message(tool_calls, llm_config):
@@ -473,7 +593,9 @@ async def test_chat_flattens_all_parallel_interrupt_tool_calls(monkeypatch):
     transport = httpx.ASGITransport(app=api_module.app, raise_app_exceptions=False)
     with observation_sink(sink):
         async with httpx.AsyncClient(
-            transport=transport, base_url="http://testserver"
+            transport=transport,
+            base_url="http://testserver",
+            headers=api_auth_headers,
         ) as client:
             response = await client.post(
                 "/chat",
@@ -531,7 +653,7 @@ def test_user_memory_path_defaults_without_reusing_other_databases(
 
     memory_path = api_module.get_user_memory_db_path()
 
-    assert memory_path == "user-memory.db"
+    assert memory_path == str(tmp_path / "user-memory.db")
     assert memory_path != api_module.get_checkpointer_db_path()
     assert memory_path != str(tmp_path / "business.db")
     assert not (tmp_path / memory_path).exists()
@@ -559,9 +681,108 @@ def test_user_memory_path_rejects_directory_mount(monkeypatch, tmp_path):
         api_module.get_user_memory_db_path()
 
 
+@pytest.mark.parametrize(
+    "memory_path",
+    (
+        ":memory:",
+        "file::memory:?cache=shared",
+        "file:chatfit-memory?mode=memory&cache=shared",
+    ),
+)
+def test_user_memory_path_rejects_non_persistent_sqlite_modes(monkeypatch, memory_path):
+    """Breaks if durable memory can silently become process-local storage."""
+    monkeypatch.setenv("USER_MEMORY_DB_PATH", memory_path)
+
+    with pytest.raises(RuntimeError, match="on-disk SQLite file"):
+        api_module.get_user_memory_db_path()
+
+
+def _patch_api_startup_for_path_validation(monkeypatch, business_path):
+    original_resolver = api_module.resolve_sqlite_file_path
+
+    def resolve_test_path(value, *, setting_name):
+        if value == "~/.iron/iron.db":
+            value = business_path
+        return original_resolver(value, setting_name=setting_name)
+
+    monkeypatch.setattr(api_module, "resolve_sqlite_file_path", resolve_test_path)
+    monkeypatch.setattr(
+        api_module,
+        "create_langfuse_client",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("Langfuse initialized before database validation")
+        ),
+    )
+    monkeypatch.setattr(
+        api_module,
+        "get_or_create_vector_store",
+        lambda *args: (_ for _ in ()).throw(
+            AssertionError("external setup ran before database validation")
+        ),
+    )
+    monkeypatch.setattr(
+        api_module,
+        "UserMemoryStore",
+        lambda path: (_ for _ in ()).throw(
+            AssertionError("memory store initialized before collision validation")
+        ),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("collision_kind", ("same", "relative_absolute", "symlink"))
+async def test_api_startup_rejects_physical_database_aliases_before_store_init(
+    monkeypatch, tmp_path, collision_kind
+):
+    """Breaks if business, checkpoint, and memory schemas can share one file."""
+    monkeypatch.chdir(tmp_path)
+    business_path = tmp_path / "business.db"
+    business_path.touch()
+    checkpointer_path = tmp_path / "checkpointer.db"
+    if collision_kind == "same":
+        memory_path = str(business_path)
+    elif collision_kind == "relative_absolute":
+        checkpointer_path = tmp_path / "shared.db"
+        memory_path = "shared.db"
+    else:
+        memory_link = tmp_path / "memory-link.db"
+        try:
+            memory_link.symlink_to(business_path)
+        except OSError as error:
+            pytest.skip(f"symlinks unavailable: {error}")
+        memory_path = str(memory_link)
+
+    monkeypatch.setenv("CHECKPOINTER_DB_PATH", str(checkpointer_path))
+    monkeypatch.setenv("USER_MEMORY_DB_PATH", memory_path)
+    _patch_api_startup_for_path_validation(monkeypatch, business_path)
+
+    with pytest.raises(RuntimeError, match="distinct physical files"):
+        async with api_module.app.router.lifespan_context(api_module.app):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_main_rejects_business_and_memory_database_collision_before_setup(
+    monkeypatch, tmp_path
+):
+    """Breaks if CLI user memory can be mixed into the business database."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("USER_MEMORY_DB_PATH", str(tmp_path / "chatfit.db"))
+    monkeypatch.setattr(
+        main_module,
+        "get_or_create_vector_store",
+        lambda *args: (_ for _ in ()).throw(
+            AssertionError("external setup ran before database validation")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="distinct physical files"):
+        await main_module.main()
+
+
 @pytest.mark.asyncio
 async def test_chat_configurable_user_and_thread_ids_are_stable_per_request_owner(
-    monkeypatch,
+    monkeypatch, api_auth_headers
 ):
     """Breaks if memory ownership is omitted, hashed, or tied to one request."""
     monkeypatch.setattr(api_module, "CallbackHandler", lambda **kwargs: object())
@@ -571,10 +792,10 @@ async def test_chat_configurable_user_and_thread_ids_are_stable_per_request_owne
 
     transport = httpx.ASGITransport(app=api_module.app, raise_app_exceptions=False)
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://testserver"
+        transport=transport, base_url="http://testserver", headers=api_auth_headers
     ) as client:
         first = await client.post(
-            "/chat", json={"user_id": "stable-user", "message": "hello"}
+            "/chat", json={"user_id": "  stable-user  ", "message": "hello"}
         )
         second = await client.post(
             "/chat", json={"user_id": "stable-user", "message": "hello again"}
@@ -588,7 +809,7 @@ async def test_chat_configurable_user_and_thread_ids_are_stable_per_request_owne
 
 @pytest.mark.asyncio
 async def test_clear_rotates_only_conversation_thread_and_preserves_memory(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, api_auth_headers
 ):
     """Breaks if clearing short-term chat state deletes durable user memory."""
     store = UserMemoryStore(tmp_path / "user-memory.db")
@@ -608,7 +829,7 @@ async def test_clear_rotates_only_conversation_thread_and_preserves_memory(
 
     transport = httpx.ASGITransport(app=api_module.app, raise_app_exceptions=False)
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://testserver"
+        transport=transport, base_url="http://testserver", headers=api_auth_headers
     ) as client:
         response = await client.post(
             "/clear", json={"user_id": "clear-user", "message": "clear"}
@@ -648,14 +869,14 @@ def _patch_api_lifespan_dependencies(monkeypatch, tmp_path):
     business_path = tmp_path / "business.db"
     checkpointer_path = tmp_path / "checkpointer.db"
     memory_path = tmp_path / "user-memory.db"
-    original_expanduser = api_module.os.path.expanduser
+    original_resolver = api_module.resolve_sqlite_file_path
 
-    def expand_business_path(path):
-        if path == "~/.iron/iron.db":
-            return str(business_path)
-        return original_expanduser(path)
+    def resolve_test_path(value, *, setting_name):
+        if value == "~/.iron/iron.db":
+            value = business_path
+        return original_resolver(value, setting_name=setting_name)
 
-    monkeypatch.setattr(api_module.os.path, "expanduser", expand_business_path)
+    monkeypatch.setattr(api_module, "resolve_sqlite_file_path", resolve_test_path)
     monkeypatch.setenv("CHECKPOINTER_DB_PATH", str(checkpointer_path))
     monkeypatch.setenv("USER_MEMORY_DB_PATH", str(memory_path))
     monkeypatch.setattr(api_module, "create_langfuse_client", lambda: None)
@@ -698,7 +919,7 @@ def _patch_api_lifespan_dependencies(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_memory_survives_full_api_restart_new_thread_and_stays_user_isolated(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, api_auth_headers
 ):
     """Breaks if API startup uses transient, shared, or thread-owned memory."""
     business_path, checkpointer_path, memory_path = _patch_api_lifespan_dependencies(
@@ -712,7 +933,9 @@ async def test_memory_survives_full_api_restart_new_thread_and_stays_user_isolat
         assert api_module.app.state.user_memory_store.db_path == memory_path
         transport = httpx.ASGITransport(app=api_module.app, raise_app_exceptions=False)
         async with httpx.AsyncClient(
-            transport=transport, base_url="http://testserver"
+            transport=transport,
+            base_url="http://testserver",
+            headers=api_auth_headers,
         ) as client:
             remembered = await client.post(
                 "/chat",
@@ -732,7 +955,9 @@ async def test_memory_survives_full_api_restart_new_thread_and_stays_user_isolat
         assert api_module.app.state.user_memory_store.db_path == memory_path
         transport = httpx.ASGITransport(app=api_module.app, raise_app_exceptions=False)
         async with httpx.AsyncClient(
-            transport=transport, base_url="http://testserver"
+            transport=transport,
+            base_url="http://testserver",
+            headers=api_auth_headers,
         ) as client:
             same_user = await client.post(
                 "/chat", json={"user_id": "persistent-user", "message": "你好"}

@@ -210,6 +210,26 @@ class SlowSuccessfulAsyncClient(FakeAsyncClient):
         return await super().post(url)
 
 
+class RecordingChatFitApiClient:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def __aenter__(self) -> "RecordingChatFitApiClient":
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        return None
+
+    async def post(self, url: str, **kwargs: Any) -> httpx.Response:
+        self.calls.append({"url": url, **kwargs})
+        request = httpx.Request("POST", url)
+        return httpx.Response(
+            200,
+            request=request,
+            json={"response": "backend response"},
+        )
+
+
 class FakeScheduledBot:
     def __init__(self, outcomes: list[Exception | None] | None = None) -> None:
         self.outcomes = list(outcomes or [])
@@ -251,6 +271,48 @@ def patch_backend_post(
         return response_text
 
     monkeypatch.setattr(bot, "post_message_to_api", fake_post_message_to_api)
+
+
+@pytest.mark.asyncio
+async def test_chatfit_backend_helpers_send_required_bearer_credential(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    token = "independent-service-secret"
+    client = RecordingChatFitApiClient()
+    monkeypatch.setenv("CHATFIT_API_TOKEN", token)
+    monkeypatch.setattr(bot.httpx, "AsyncClient", lambda **kwargs: client)
+
+    message = await bot.post_message_to_api("123", "hello")
+    cleared = await bot.post_clear_to_api("123")
+
+    assert message == "backend response"
+    assert cleared == "backend response"
+    assert client.calls == [
+        {
+            "url": bot.API_URL,
+            "json": {"user_id": "123", "message": "hello"},
+            "headers": {"Authorization": f"Bearer {token}"},
+        },
+        {
+            "url": bot.API_CLEAR_URL,
+            "json": {"user_id": "123", "message": "/clear"},
+            "headers": {"Authorization": f"Bearer {token}"},
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_chatfit_backend_helper_fails_closed_without_api_token(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    client = RecordingChatFitApiClient()
+    monkeypatch.delenv("CHATFIT_API_TOKEN", raising=False)
+    monkeypatch.setattr(bot.httpx, "AsyncClient", lambda **kwargs: client)
+
+    with pytest.raises(RuntimeError, match="CHATFIT_API_TOKEN"):
+        await bot.post_message_to_api("123", "hello")
+
+    assert client.calls == []
 
 
 @pytest.mark.asyncio
@@ -778,6 +840,7 @@ def test_main_registers_photo_message_handler(monkeypatch):
     app = FakeApplication()
 
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("CHATFIT_API_TOKEN", "test-api-token")
     monkeypatch.setenv("PROACTIVE_REVIEWS_ENABLED", "false")
     monkeypatch.delenv("TELEGRAM_PROXY", raising=False)
     monkeypatch.delenv("LLM_PROXY", raising=False)
@@ -802,6 +865,7 @@ def test_main_registers_enabled_proactive_review_job(monkeypatch):
     app = FakeApplication()
 
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("CHATFIT_API_TOKEN", "test-api-token")
     monkeypatch.setenv("PROACTIVE_REVIEWS_ENABLED", "true")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "456")
     monkeypatch.delenv("TELEGRAM_PROXY", raising=False)
@@ -818,6 +882,7 @@ def test_main_registers_enabled_proactive_review_job(monkeypatch):
 
 def test_main_exits_with_non_sensitive_settings_error(monkeypatch, capsys):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "secret-token")
+    monkeypatch.setenv("CHATFIT_API_TOKEN", "test-api-token")
     monkeypatch.setenv("PROACTIVE_REVIEWS_ENABLED", "yes")
 
     with pytest.raises(SystemExit) as error:
@@ -827,6 +892,26 @@ def test_main_exits_with_non_sensitive_settings_error(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "PROACTIVE_REVIEWS_ENABLED must be true or false" in output
     assert "secret-token" not in output
+
+
+def test_main_fails_closed_before_polling_without_chatfit_api_token(
+    monkeypatch, capsys
+):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.delenv("CHATFIT_API_TOKEN", raising=False)
+    monkeypatch.setattr(
+        bot,
+        "ApplicationBuilder",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("Telegram initialized without CHATFIT_API_TOKEN")
+        ),
+    )
+
+    with pytest.raises(SystemExit) as error:
+        bot.main()
+
+    assert error.value.code == 1
+    assert "CHATFIT_API_TOKEN must be configured" in capsys.readouterr().out
 
 
 def test_telegram_proxy_does_not_reuse_llm_proxy(monkeypatch):

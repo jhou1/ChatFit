@@ -1,7 +1,6 @@
 import os
 import uuid
 import asyncio
-from pathlib import Path
 
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
@@ -14,6 +13,10 @@ from rich.markdown import Markdown
 
 from agents.llm_factory import LLMConfig
 from agents.memory.agent import LLMMemoryInterpreter
+from agents.memory.config import (
+    require_distinct_sqlite_files,
+    resolve_sqlite_file_path,
+)
 from agents.memory.store import UserMemoryStore
 from agents.sqlite_handler import init_db
 from agents.roles.supervisor import make_agent_graph
@@ -31,7 +34,17 @@ async def main():
         kwargs={"client_args": {"proxy": "socks5://127.0.0.1:8990"}},
     )
 
-    db_path = "chatfit.db"
+    business_db = resolve_sqlite_file_path(
+        "chatfit.db", setting_name="CLI business database path"
+    )
+    memory_db = resolve_sqlite_file_path(
+        os.environ.get("USER_MEMORY_DB_PATH", "user-memory.db"),
+        setting_name="USER_MEMORY_DB_PATH",
+    )
+    require_distinct_sqlite_files(
+        {"CLI business database": business_db, "user-memory database": memory_db}
+    )
+    db_path = str(business_db)
     if not os.path.exists(db_path):
         init_db(db_path)
 
@@ -41,9 +54,7 @@ async def main():
         )
 
     # init memory
-    memory_store = UserMemoryStore(
-        Path(os.environ.get("USER_MEMORY_DB_PATH", "user-memory.db"))
-    )
+    memory_store = UserMemoryStore(memory_db)
     memory_interpreter = LLMMemoryInterpreter(llm_config)
     app = make_agent_graph(
         llm_config,

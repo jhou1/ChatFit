@@ -1,23 +1,28 @@
 import os
+import secrets
 import uuid
 import logging
 import re
 from collections.abc import Awaitable, Callable
 from datetime import date
-from typing import Any
+from typing import Annotated, Any
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import aiosqlite
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, StringConstraints
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from agents.checkpointing import ObservedAsyncSqliteSaver
 from agents.llm_factory import LLMConfig, create_chat_model
 from agents.memory.agent import LLMMemoryInterpreter
+from agents.memory.config import (
+    require_distinct_sqlite_files,
+    resolve_sqlite_file_path,
+)
 from agents.memory.store import UserMemoryStore
 from langfuse import Langfuse
 from langfuse.langchain import CallbackHandler  # type: ignore
@@ -37,9 +42,14 @@ from agents.observability import (
 )
 from proactive_reviews import build_proactive_review, today_in_shanghai
 
+UserIdentifier = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=128),
+]
+
 
 class ChatRequest(BaseModel):
-    user_id: str
+    user_id: UserIdentifier
     message: str
 
 
@@ -62,6 +72,33 @@ def get_thread_id(user_id: str) -> str:
     if user_id not in user_sessions:
         user_sessions[user_id] = str(uuid.uuid4())
     return user_sessions[user_id]
+
+
+def get_chatfit_api_token() -> str:
+    """Return the required service-to-service API credential."""
+
+    token = os.environ.get("CHATFIT_API_TOKEN", "")
+    if not token.strip():
+        raise RuntimeError("CHATFIT_API_TOKEN must be configured")
+    return token
+
+
+def require_trusted_api_client(request: Request) -> None:
+    """Authenticate the caller before accepting its asserted user identity."""
+
+    expected_token = get_chatfit_api_token()
+    authorization = request.headers.get("Authorization", "")
+    scheme, separator, supplied_token = authorization.partition(" ")
+    if scheme.casefold() != "bearer" or not separator or not supplied_token:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing bearer credential",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if not secrets.compare_digest(
+        supplied_token.encode("utf-8"), expected_token.encode("utf-8")
+    ):
+        raise HTTPException(status_code=403, detail="Invalid bearer credential")
 
 
 def create_langfuse_callback(trace_id: str) -> Any | None:
@@ -117,29 +154,41 @@ def get_correlation_id(request: Request, header_name: str) -> str | None:
 def get_checkpointer_db_path() -> str:
     """Resolve a writable SQLite file and reject directory-shaped bind mounts."""
 
-    db_path = Path(os.environ.get("CHECKPOINTER_DB_PATH", "checkpointer.db"))
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    if db_path.exists() and not db_path.is_file():
-        raise RuntimeError(
-            f"CHECKPOINTER_DB_PATH must be a file path, not a directory: {db_path}"
+    return str(
+        resolve_sqlite_file_path(
+            os.environ.get("CHECKPOINTER_DB_PATH", "checkpointer.db"),
+            setting_name="CHECKPOINTER_DB_PATH",
         )
-    return str(db_path)
+    )
 
 
 def get_user_memory_db_path() -> str:
     """Resolve the dedicated durable-memory SQLite file."""
 
-    db_path = Path(os.environ.get("USER_MEMORY_DB_PATH", "user-memory.db"))
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    if db_path.exists() and not db_path.is_file():
-        raise RuntimeError(
-            f"USER_MEMORY_DB_PATH must be a file path, not a directory: {db_path}"
+    return str(
+        resolve_sqlite_file_path(
+            os.environ.get("USER_MEMORY_DB_PATH", "user-memory.db"),
+            setting_name="USER_MEMORY_DB_PATH",
         )
-    return str(db_path)
+    )
 
 
 @asynccontextmanager
 async def startup_event(fastapi_app: FastAPI):
+    get_chatfit_api_token()
+    business_db = resolve_sqlite_file_path(
+        "~/.iron/iron.db", setting_name="business database path"
+    )
+    checkpointer_db = Path(get_checkpointer_db_path())
+    user_memory_db = Path(get_user_memory_db_path())
+    require_distinct_sqlite_files(
+        {
+            "business database": business_db,
+            "checkpointer database": checkpointer_db,
+            "user-memory database": user_memory_db,
+        }
+    )
+
     langfuse_client = create_langfuse_client()
     fastapi_app.state.langfuse_client = langfuse_client
 
@@ -156,7 +205,7 @@ async def startup_event(fastapi_app: FastAPI):
         kwargs=kwargs,
     )
 
-    db_path = os.path.expanduser("~/.iron/iron.db")
+    db_path = str(business_db)
 
     if not os.path.exists(db_path):
         init_db(db_path)
@@ -169,12 +218,11 @@ async def startup_event(fastapi_app: FastAPI):
 
     print("Initializing Agent Graph...")
     # TODO make this configurable
-    checkpointer_db = get_checkpointer_db_path()
-    user_memory_store = UserMemoryStore(get_user_memory_db_path())
+    user_memory_store = UserMemoryStore(user_memory_db)
     memory_interpreter = LLMMemoryInterpreter(llm_config)
     fastapi_app.state.user_memory_store = user_memory_store
     fastapi_app.state.memory_interpreter = memory_interpreter
-    async with aiosqlite.connect(checkpointer_db) as conn:
+    async with aiosqlite.connect(str(checkpointer_db)) as conn:
         checkpointer = ObservedAsyncSqliteSaver(conn)
         await checkpointer.setup()
         fastapi_app.state.agent = make_agent_graph(
@@ -251,6 +299,7 @@ async def generate_conversational_approval(
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(req: ChatRequest, request: Request, response: Response):
+    require_trusted_api_client(request)
     # Use the Telegram user_id to resolve the current LangGraph session.
     thread_id = get_thread_id(req.user_id)
     request_id = request.state.request_id
@@ -401,7 +450,8 @@ async def proactive_review_endpoint(request: Request) -> ProactiveReviewResponse
 
 
 @app.post("/clear")
-def clear_endpoint(req: ChatRequest):
+def clear_endpoint(req: ChatRequest, request: Request):
+    require_trusted_api_client(request)
     user_sessions[req.user_id] = str(uuid.uuid4())
     return ChatResponse(
         response="Conversation context cleared! You are starting fresh."

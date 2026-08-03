@@ -236,6 +236,15 @@ def build_ocr_agent_message(extracted_text: str) -> str:
     )
 
 
+def get_chatfit_api_headers() -> dict[str, str]:
+    """Build the required credential header for the trusted backend service."""
+
+    token = os.environ.get("CHATFIT_API_TOKEN", "")
+    if not token.strip():
+        raise RuntimeError("CHATFIT_API_TOKEN must be configured")
+    return {"Authorization": f"Bearer {token}"}
+
+
 def select_largest_photo(photo_sizes: Sequence[Any]) -> Any:
     return max(
         photo_sizes,
@@ -247,16 +256,31 @@ def select_largest_photo(photo_sizes: Sequence[Any]) -> Any:
 
 
 async def post_message_to_api(user_id: str, message: str) -> str:
+    headers = get_chatfit_api_headers()
     async with httpx.AsyncClient(timeout=120.0, proxy=None) as client:
         response = await client.post(
             API_URL,
             json={"user_id": user_id, "message": message},
+            headers=headers,
         )
         response.raise_for_status()
         data = response.json()
         return data.get("response") or (
             "Sorry, I processed that but didn't generate a response."
         )
+
+
+async def post_clear_to_api(user_id: str) -> str:
+    headers = get_chatfit_api_headers()
+    async with httpx.AsyncClient(timeout=30.0, proxy=None) as client:
+        response = await client.post(
+            API_CLEAR_URL,
+            json={"user_id": user_id, "message": "/clear"},
+            headers=headers,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data.get("response") or "Context cleared."
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -286,18 +310,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"Network error while sending typing action: {ne}")
 
     try:
-        # Increase timeout because agent chains can take a while to complete.
-        # Explicitly set proxy to None for the local API call so it doesn't get routed through the SOCKS5 proxy.
-        async with httpx.AsyncClient(timeout=120.0, proxy=None) as client:
-            response = await client.post(
-                API_URL, json={"user_id": user_id, "message": user_message}
-            )
-            response.raise_for_status()
-            data = response.json()
-            bot_reply = data.get("response")
-
-            if not bot_reply:
-                bot_reply = "Sorry, I processed that but didn't generate a response."
+        bot_reply = await post_message_to_api(user_id, user_message)
 
     except httpx.HTTPError as e:
         bot_reply = (
@@ -376,19 +389,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not user_message:
             bot_reply = "Could not transcribe the voice message."
         else:
-            # Forward transcribed text to the API
-            async with httpx.AsyncClient(timeout=120.0, proxy=None) as http_client:
-                api_res = await http_client.post(
-                    API_URL, json={"user_id": user_id, "message": user_message}
-                )
-                api_res.raise_for_status()
-                data = api_res.json()
-                bot_reply = data.get("response")
-
-                if not bot_reply:
-                    bot_reply = (
-                        "Sorry, I processed that but didn't generate a response."
-                    )
+            bot_reply = await post_message_to_api(user_id, user_message)
 
     except httpx.HTTPError as e:
         bot_reply = (
@@ -526,6 +527,12 @@ def main():
         exit(1)
 
     try:
+        get_chatfit_api_headers()
+    except RuntimeError as error:
+        print(f"Error: {error}")
+        exit(1)
+
+    try:
         proactive_settings = load_proactive_settings()
     except ValueError as error:
         print(f"Error: {error}")
@@ -555,14 +562,8 @@ async def clear_context(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
 
     try:
-        async with httpx.AsyncClient(timeout=30.0, proxy=None) as client:
-            response = await client.post(
-                API_CLEAR_URL, json={"user_id": user_id, "message": "/clear"}
-            )
-            response.raise_for_status()
-            data = response.json()
-            reply = data.get("response", "Context cleared.")
-            await update.message.reply_text(reply)
+        reply = await post_clear_to_api(user_id)
+        await update.message.reply_text(reply)
     except Exception as e:
         await update.message.reply_text(f"Failed to clear context: {e}")
 

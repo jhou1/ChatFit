@@ -42,7 +42,11 @@ database and `/clear` only rotates short-term conversation state.
 - `.gitignore`
 - `.superpowers/sdd/2026-08-03-long-term-user-memory/task-5-report.md`
 
-No config-helper file outside the approved Task 5 file list was changed.
+The security hardening review added the shared
+`agents/memory/config.py` SQLite-path validator plus the existing Bot and Bot
+test files. This was the minimum scope needed to enforce one authenticated
+trust boundary and one physical-file separation policy across all production
+entry points.
 
 ## TDD Evidence
 
@@ -188,3 +192,108 @@ restart, user-isolation, CLI-output, evaluation-isolation, and runtime-config
 requirement. It also confirmed the report is intentionally ignored by
 `.superpowers/sdd/.gitignore` and therefore requires force-add for the single
 Task 5 commit.
+
+## Security review fix round 1
+
+The post-implementation security review identified four concrete boundary
+issues. All four were reproduced by new tests before changing production code.
+
+### Trusted API identity
+
+`/chat` and `/clear` now require `Authorization: Bearer <CHATFIT_API_TOKEN>`.
+The configured token is mandatory, compared with `secrets.compare_digest`,
+and never included in logs or error details. A missing or malformed header
+returns 401 with a Bearer challenge; an incorrect token returns 403. Both
+checks run before session lookup, rotation, graph access, or durable-memory
+access. Every Bot chat and clear request goes through centralized helpers that
+attach the same header. Compose requires the shared setting for both services,
+and `.env.example` instructs operators to generate an independent random
+secret.
+
+RED: four authenticated-boundary cases returned 200 and allowed access.
+GREEN: all four return 401/403 as specified, with the victim's session and real
+SQLite memory row unchanged and with no token value captured in logs.
+
+### Normalized stable identity
+
+`ChatRequest.user_id` now strips surrounding whitespace, requires at least one
+character, and permits at most 128 characters. FastAPI returns 422 before the
+endpoint for blank or overlong identities, and the normalized value is the
+only value used for both session and durable-memory ownership.
+
+RED: the four invalid chat/clear cases returned 200, while whitespace variants
+created two user entries. GREEN: all invalid cases return 422 without session
+or graph access, and both normalized requests use the same owner and thread.
+
+### Physical SQLite separation
+
+`agents/memory/config.py` provides a shared canonical SQLite-file resolver and
+separation validator. It rejects `:memory:`, `file::memory:` and URI
+`mode=memory` targets; expands `~`; resolves relative, absolute, and symlinked
+paths; rejects directory targets; and also detects existing hard links via
+`samefile`. API startup validates the business, checkpoint, and memory files
+pairwise before constructing any database, store, vector, or graph dependency.
+The CLI applies the same rule to business and durable-memory files.
+
+RED: all seven memory-target and collision cases crossed the required boundary.
+GREEN: all seven fail with a clear physical-file error before dependency
+construction.
+
+### Test-state isolation
+
+An autouse API fixture snapshots and restores the complete FastAPI state
+dictionary, user-session mapping, and API-token environment value for every
+test. This prevents closed graphs and mutated globals from leaking between
+lifespans or making outcomes order-dependent.
+
+### Independent-review startup ordering fixes
+
+The first verifier of this security snapshot found two Important operational
+ordering gaps. New regressions were added before the fixes. All three API
+collision variants initially reached Langfuse initialization and the Bot
+without `CHATFIT_API_TOKEN` initially reached Telegram construction, producing
+four expected failures. API path separation now runs immediately after token
+validation, before Langfuse or any other dependency is initialized. Bot startup
+now validates the API credential before constructing the Telegram application
+or beginning polling. The exact four-test command then passed 4/4.
+
+### Final local gates after security fixes
+
+Focused regressions:
+
+```text
+tests/test_api.py + tests/test_bot.py: 86 passed
+tests/test_memory_graph.py + tests/test_user_memory_store.py: 39 passed
+```
+
+Repository verification:
+
+```text
+make verify: 295 passed, 3 deselected; all verification checks passed
+make quality: Ruff clean; Black unchanged across 55 files; mypy clean across
+55 source files; Bandit reported zero issues; all static checks passed
+git diff --check: exit 0 with no output
+```
+
+### Final independent security verification
+
+A second brand-new verifier reviewed the corrected stable snapshot and returned
+**READY — Task 5 security fix**, with no Critical, Important, Minor, warning,
+or code finding. Its independent evidence was:
+
+- focused API, Bot, and memory suites: `125 passed`;
+- order-sensitivity probes: `2 passed`;
+- `make verify`: `295 passed, 3 deselected`;
+- `make quality`: Ruff, Black, mypy, and Bandit clean with zero findings;
+- `git diff --check`: clean;
+- manual probes confirming all required 401/403 outcomes, accepted valid auth,
+  startup fail-closed ordering, memory-mode and directory rejection, and
+  hard-link collision detection;
+- identical pre/post HEAD, status, untracked-file list, and diff stat, proving
+  the verifier made no changes.
+
+The verifier confirmed the RED/GREEN evidence against baseline `9edd83e`. It
+also recorded the durable-memory/auth README and site documentation as the
+explicitly approved Task 7 follow-up, not a blocker for this scoped security
+fix. One initial command encountered only the sandbox's uv-cache permission
+boundary; the identical authorized command completed successfully.
