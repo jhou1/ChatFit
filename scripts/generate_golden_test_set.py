@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Any
 
 
 def get_rubrics(case_type):
@@ -58,8 +59,10 @@ def get_rubrics(case_type):
     return rubrics
 
 
-def create_dataset():
-    cases = []
+def create_dataset(
+    out_path: str | Path = "evaluation/chatfit_golden_test_set.jsonl",
+):
+    cases: list[dict[str, Any]] = []
 
     # =========================================================================
     # 1. Tool Calling (工具调用) - 20% (6条)
@@ -551,12 +554,27 @@ def create_dataset():
             {
                 "case_id": "ME_02",
                 "capability_tags": ["Memory & Cross-turn"],
-                "description": "通过 Supervisor 提取长期偏好",
+                "description": "显式保存长期训练偏好",
                 "turns": [
                     {
-                        "user_input": "我以后周三都不练了，变成休息日",
-                        "expected_trajectory": ["Context Governance -> Save memory"],
-                        "expected_result": "提取偏好",
+                        "user_input": "记住我以后周三都不练了，变成休息日",
+                        "expected_trajectory": [
+                            "Router -> memory_agent",
+                            "MemoryAgent -> remember",
+                        ],
+                        "expected_trajectory_eval": [
+                            {
+                                "eval_type": "routing",
+                                "expected_agent": "memory_agent",
+                            },
+                            {
+                                "eval_type": "db_state",
+                                "database": "memory",
+                                "query": "SELECT COUNT(*) FROM user_memories",
+                                "expected_value": 1,
+                            },
+                        ],
+                        "expected_result": "将周三休息日保存为长期训练偏好",
                     },
                     {
                         "user_input": "总结一下我目前的训练习惯",
@@ -572,7 +590,22 @@ def create_dataset():
                 "turns": [
                     {
                         "user_input": "记住我乳糖不耐受",
-                        "expected_trajectory": ["Context Governance -> Save memory"],
+                        "expected_trajectory": [
+                            "Router -> memory_agent",
+                            "MemoryAgent -> remember",
+                        ],
+                        "expected_trajectory_eval": [
+                            {
+                                "eval_type": "routing",
+                                "expected_agent": "memory_agent",
+                            },
+                            {
+                                "eval_type": "db_state",
+                                "database": "memory",
+                                "query": "SELECT COUNT(*) FROM user_memories",
+                                "expected_value": 1,
+                            },
+                        ],
                         "expected_result": "保存偏好",
                     },
                     {
@@ -629,20 +662,50 @@ def create_dataset():
                 "turns": [
                     {
                         "user_input": "我不吃香菜，记下来",
-                        "expected_trajectory": ["Context Governance -> Save memory"],
+                        "expected_trajectory": [
+                            "Router -> memory_agent",
+                            "MemoryAgent -> remember",
+                        ],
+                        "expected_trajectory_eval": [
+                            {
+                                "eval_type": "routing",
+                                "expected_agent": "memory_agent",
+                            },
+                            {
+                                "eval_type": "db_state",
+                                "database": "memory",
+                                "query": "SELECT COUNT(*) FROM user_memories",
+                                "expected_value": 1,
+                            },
+                        ],
                         "expected_result": "记住不吃香菜",
                     },
                     {
-                        "user_input": "算了，香菜好像也挺好吃的，把那条删了吧",
-                        "expected_trajectory": ["Context Governance -> Delete memory"],
-                        "expected_result": "更新或删除关于不吃香菜的记忆状态。",
+                        "user_input": "忘掉不吃香菜",
+                        "expected_trajectory": [
+                            "Router -> memory_agent",
+                            "MemoryAgent -> forget",
+                        ],
+                        "expected_trajectory_eval": [
+                            {
+                                "eval_type": "routing",
+                                "expected_agent": "memory_agent",
+                            },
+                            {
+                                "eval_type": "db_state",
+                                "database": "memory",
+                                "query": "SELECT COUNT(*) FROM user_memories",
+                                "expected_value": 0,
+                            },
+                        ],
+                        "expected_result": "删除关于不吃香菜的长期记忆。",
                     },
                 ],
             },
         ]
     )
 
-    out_path = Path("evaluation/chatfit_golden_test_set.jsonl")
+    out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Inject rubrics to all turns

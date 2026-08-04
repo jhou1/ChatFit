@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,7 +8,12 @@ from langchain_core.messages import AIMessage
 from pydantic import ValidationError
 
 from evaluation.graders import Trajectory, grade_turn
-from evaluation.models import EvaluationTurn, load_evaluation_cases
+from evaluation.models import (
+    EvaluationTurn,
+    ExpectedTrajectoryAssertion,
+    load_evaluation_cases,
+)
+from evaluation.runner import query_expected_scalar
 from evaluation.report import (
     CaseResult,
     ExperimentMetadata,
@@ -15,6 +21,7 @@ from evaluation.report import (
     ReleaseThresholds,
 )
 from scripts.llm_judge import evaluate_trace, parse_judge_response
+from scripts.generate_golden_test_set import create_dataset
 
 
 def test_repository_evaluation_dataset_is_valid_and_unique():
@@ -61,6 +68,124 @@ def test_evaluation_dataset_rejects_empty_case_list(tmp_path: Path):
 def test_evaluation_schema_rejects_unknown_fields_and_empty_contracts(invalid_turn):
     with pytest.raises(ValidationError):
         EvaluationTurn.model_validate(invalid_turn)
+
+
+def test_db_state_assertion_accepts_memory_and_defaults_to_business():
+    memory_assertion = ExpectedTrajectoryAssertion.model_validate(
+        {
+            "eval_type": "db_state",
+            "database": "memory",
+            "query": (
+                "SELECT COUNT(*) FROM user_memories " "WHERE canonical_key='乳糖不耐受'"
+            ),
+            "expected_value": 1,
+        }
+    )
+    legacy_assertion = ExpectedTrajectoryAssertion.model_validate(
+        {
+            "eval_type": "db_state",
+            "query": "SELECT COUNT(*) FROM training_sessions",
+            "expected_value": 1,
+        }
+    )
+
+    assert memory_assertion.database == "memory"
+    assert legacy_assertion.database == "business"
+
+
+def test_db_state_assertion_rejects_unknown_database():
+    with pytest.raises(ValidationError):
+        ExpectedTrajectoryAssertion.model_validate(
+            {
+                "eval_type": "db_state",
+                "database": "checkpoint",
+                "query": "SELECT 1",
+                "expected_value": 1,
+            }
+        )
+
+
+def test_query_expected_scalar_selects_real_business_or_memory_database(tmp_path):
+    business_path = tmp_path / "business.db"
+    memory_path = tmp_path / "user-memory.db"
+    for path, stored_value in ((business_path, 7), (memory_path, 11)):
+        with sqlite3.connect(path) as connection:
+            connection.execute("CREATE TABLE marker (value INTEGER NOT NULL)")
+            connection.execute("INSERT INTO marker (value) VALUES (?)", (stored_value,))
+
+    business_assertion = ExpectedTrajectoryAssertion.model_validate(
+        {"eval_type": "db_state", "query": "SELECT value FROM marker"}
+    )
+    memory_assertion = ExpectedTrajectoryAssertion.model_validate(
+        {
+            "eval_type": "db_state",
+            "database": "memory",
+            "query": "SELECT value FROM marker",
+        }
+    )
+
+    assert (
+        query_expected_scalar(
+            business_assertion,
+            business_db_path=business_path,
+            memory_db_path=memory_path,
+        )
+        == 7
+    )
+    assert (
+        query_expected_scalar(
+            memory_assertion,
+            business_db_path=business_path,
+            memory_db_path=memory_path,
+        )
+        == 11
+    )
+
+
+def test_generated_memory_cases_use_memory_agent_and_memory_database(tmp_path):
+    generated_path = tmp_path / "generated.jsonl"
+    create_dataset(generated_path)
+    cases = {case.case_id: case for case in load_evaluation_cases(generated_path)}
+
+    expected_mutation_turns = {
+        "ME_02": [(0, "remember", 1)],
+        "ME_03": [(0, "remember", 1)],
+        "ME_06": [(0, "remember", 1), (1, "forget", 0)],
+    }
+    for case_id, turns in expected_mutation_turns.items():
+        for turn_index, operation, expected_count in turns:
+            turn = cases[case_id].turns[turn_index]
+            assert turn.expected_trajectory == [
+                "Router -> memory_agent",
+                f"MemoryAgent -> {operation}",
+            ]
+            assert [
+                assertion.model_dump(exclude_none=True)
+                for assertion in turn.expected_trajectory_eval
+            ] == [
+                {
+                    "eval_type": "routing",
+                    "database": "business",
+                    "expected_agent": "memory_agent",
+                },
+                {
+                    "eval_type": "db_state",
+                    "database": "memory",
+                    "query": "SELECT COUNT(*) FROM user_memories",
+                    "expected_value": expected_count,
+                },
+            ]
+
+
+def test_golden_dataset_generation_is_byte_deterministic_and_checked_in(tmp_path):
+    first_path = tmp_path / "first.jsonl"
+    second_path = tmp_path / "second.jsonl"
+
+    create_dataset(first_path)
+    create_dataset(second_path)
+
+    expected_bytes = Path("evaluation/chatfit_golden_test_set.jsonl").read_bytes()
+    assert first_path.read_bytes() == second_path.read_bytes() == expected_bytes
 
 
 def test_deterministic_grader_rejects_unexpected_routes():

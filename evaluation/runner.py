@@ -20,7 +20,7 @@ from agents.sqlite_handler import init_db
 from agents.utils import extract_text
 
 from evaluation.graders import Trajectory, grade_turn
-from evaluation.models import load_evaluation_cases
+from evaluation.models import ExpectedTrajectoryAssertion, load_evaluation_cases
 from evaluation.report import (
     CaseResult,
     DimensionStat,
@@ -32,6 +32,20 @@ from scripts.llm_judge import evaluate_trace
 
 # Suppress asyncio's "Task was destroyed but it is pending" stderr prints
 logging.getLogger("asyncio").setLevel(logging.CRITICAL)
+_MISSING_DB_ROW = object()
+
+
+def query_expected_scalar(
+    assertion: ExpectedTrajectoryAssertion,
+    *,
+    business_db_path: str | Path,
+    memory_db_path: str | Path,
+):
+    """Return the first scalar selected by one database-state assertion."""
+    db_path = memory_db_path if assertion.database == "memory" else business_db_path
+    with sqlite3.connect(db_path) as connection:
+        row = connection.execute(assertion.query or "").fetchone()
+    return row[0] if row is not None else _MISSING_DB_ROW
 
 
 class MockLangfuse:
@@ -179,29 +193,28 @@ async def evaluate_case(case, llm_config, vector_store, sem, enable_llm_judge):
                             f"  [{case.case_id}] [Fail] Turn {turn_idx}: {failure.code} - {failure.message}"
                         )
 
-                if expected_db_state:
-                    with sqlite3.connect(db_path) as conn:
-                        cursor = conn.cursor()
-                        for state_check in expected_db_state:
-                            cursor.execute(state_check.query)
-                            row = cursor.fetchone()
-                            if row is None:
-                                case_passed = False
-                                code = "db_missing"
-                                failure_codes.append(code)
-                                print(
-                                    f"  [{case.case_id}] [Fail] Turn {turn_idx}: {code} - DB query {state_check.query} returned no results"
-                                )
-                            else:
-                                result = row[0]
-                                expected_val = state_check.expected_value
-                                if result != expected_val:
-                                    case_passed = False
-                                    code = "db_mismatch"
-                                    failure_codes.append(code)
-                                    print(
-                                        f"  [{case.case_id}] [Fail] Turn {turn_idx}: {code} - DB query {state_check.query} returned {result}, expected {expected_val}"
-                                    )
+                for state_check in expected_db_state:
+                    result = query_expected_scalar(
+                        state_check,
+                        business_db_path=db_path,
+                        memory_db_path=memory_path,
+                    )
+                    if result is _MISSING_DB_ROW:
+                        case_passed = False
+                        code = "db_missing"
+                        failure_codes.append(code)
+                        print(
+                            f"  [{case.case_id}] [Fail] Turn {turn_idx}: {code} - DB query {state_check.query} returned no results"
+                        )
+                    else:
+                        expected_val = state_check.expected_value
+                        if result != expected_val:
+                            case_passed = False
+                            code = "db_mismatch"
+                            failure_codes.append(code)
+                            print(
+                                f"  [{case.case_id}] [Fail] Turn {turn_idx}: {code} - DB query {state_check.query} returned {result}, expected {expected_val}"
+                            )
 
                 if (
                     enable_llm_judge
