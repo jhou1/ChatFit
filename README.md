@@ -89,6 +89,10 @@ TELEGRAM_BOT_TOKEN=your-telegram-bot-token
 CHATFIT_API_TOKEN=replace-with-an-independent-random-secret
 ```
 
+Compose 会通过 `env_file` 把 `.env` 注入 API 与 Bot 容器。编辑 `.env` 不会让直接在
+宿主机启动的 `api.py` 自动加载这些变量；宿主机命令需要先 `source`/`export`，或使用
+明确支持 env file 的启动器参数。
+
 常用可选配置：
 
 | 变量 | 说明 |
@@ -139,6 +143,8 @@ Langfuse 是可选依赖。Tracing 初始化或导出失败时，系统会记录
 如果你的目录不同，请修改 Compose 文件中的 volume 路径。Checkpoint 应挂载目录
 `runtime-data/`，不要把一个不存在的宿主机文件直接绑定到
 `/app/data/checkpointer.db`，否则容器运行时可能将其创建成目录。
+`/app/data/user-memory.db` 是容器内路径；宿主机直接运行时应使用项目内或其他宿主机
+可写路径。
 
 ### 3. 启动服务
 
@@ -165,6 +171,10 @@ docker compose logs -f api bot
 ### 4. 验证聊天接口
 
 ```bash
+set -a
+source .env
+set +a
+test -n "$CHATFIT_API_TOKEN"
 curl -X POST http://localhost:8000/chat \
   -H "Authorization: Bearer $CHATFIT_API_TOKEN" \
   -H 'Content-Type: application/json' \
@@ -232,6 +242,10 @@ curl -X POST http://localhost:8000/chat \
 
 ```bash
 uv sync --dev
+mkdir -p runtime-data
+export CHATFIT_API_TOKEN='replace-with-an-independent-random-secret'
+export CHECKPOINTER_DB_PATH=./runtime-data/checkpointer.db
+export USER_MEMORY_DB_PATH=./runtime-data/user-memory.db
 uv run uvicorn api:app --reload
 ```
 

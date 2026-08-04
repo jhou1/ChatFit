@@ -104,7 +104,10 @@ def test_landing_page_uses_supported_public_claims_and_examples() -> None:
     html = page_html()
     for supported_copy in (
         "Source available",
-        "Structured records stay local",
+        "Structured records use local databases",
+        "Saved preferences are stored in a local database",
+        "sent to your configured AI model",
+        "tracing content capture",
         "Built with Gemini",
         "Add Gemini key",
         "Saved to your training log.",
@@ -118,6 +121,7 @@ def test_landing_page_uses_supported_public_claims_and_examples() -> None:
         "open source",
         "open-source",
         "your data stays local",
+        "saved preferences stay local",
         "choose your ai model",
         "configure model",
         "weekly training volume is trending up",

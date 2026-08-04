@@ -559,8 +559,8 @@ def create_dataset(
                     {
                         "user_input": "记住我以后周三都不练了，变成休息日",
                         "expected_trajectory": [
-                            "Router -> memory_agent",
-                            "MemoryAgent -> remember",
+                            "assistant_selector -> memory_agent",
+                            "memory",
                         ],
                         "expected_trajectory_eval": [
                             {
@@ -570,7 +570,13 @@ def create_dataset(
                             {
                                 "eval_type": "db_state",
                                 "database": "memory",
-                                "query": "SELECT COUNT(*) FROM user_memories",
+                                "query": (
+                                    "SELECT COUNT(*) FROM user_memories "
+                                    "WHERE owner_key='20c3d1ca7e5381f4a9449436800a7bf48834f87faf18fe91dfa759850f4efc45' "
+                                    "AND memory_type='training_preference' "
+                                    "AND canonical_key='周三休息日' "
+                                    "AND content='我以后周三都不练了，变成休息日'"
+                                ),
                                 "expected_value": 1,
                             },
                         ],
@@ -591,8 +597,8 @@ def create_dataset(
                     {
                         "user_input": "记住我乳糖不耐受",
                         "expected_trajectory": [
-                            "Router -> memory_agent",
-                            "MemoryAgent -> remember",
+                            "assistant_selector -> memory_agent",
+                            "memory",
                         ],
                         "expected_trajectory_eval": [
                             {
@@ -602,7 +608,13 @@ def create_dataset(
                             {
                                 "eval_type": "db_state",
                                 "database": "memory",
-                                "query": "SELECT COUNT(*) FROM user_memories",
+                                "query": (
+                                    "SELECT COUNT(*) FROM user_memories "
+                                    "WHERE owner_key='b891e1a326797bd181feb6be5416957b09065c928b915af6860df6052e2c71b4' "
+                                    "AND memory_type='health_constraint' "
+                                    "AND canonical_key='乳糖不耐受' "
+                                    "AND content='我乳糖不耐受'"
+                                ),
                                 "expected_value": 1,
                             },
                         ],
@@ -663,8 +675,8 @@ def create_dataset(
                     {
                         "user_input": "我不吃香菜，记下来",
                         "expected_trajectory": [
-                            "Router -> memory_agent",
-                            "MemoryAgent -> remember",
+                            "assistant_selector -> memory_agent",
+                            "memory",
                         ],
                         "expected_trajectory_eval": [
                             {
@@ -674,7 +686,13 @@ def create_dataset(
                             {
                                 "eval_type": "db_state",
                                 "database": "memory",
-                                "query": "SELECT COUNT(*) FROM user_memories",
+                                "query": (
+                                    "SELECT COUNT(*) FROM user_memories "
+                                    "WHERE owner_key='883a1f10c12f6dea69e6163a8d5e5628e862edd6cc6a5d60682a7ec0abdb6bbf' "
+                                    "AND memory_type='dietary_preference' "
+                                    "AND canonical_key='不吃香菜' "
+                                    "AND content='我不吃香菜'"
+                                ),
                                 "expected_value": 1,
                             },
                         ],
@@ -683,8 +701,8 @@ def create_dataset(
                     {
                         "user_input": "忘掉不吃香菜",
                         "expected_trajectory": [
-                            "Router -> memory_agent",
-                            "MemoryAgent -> forget",
+                            "assistant_selector -> memory_agent",
+                            "memory",
                         ],
                         "expected_trajectory_eval": [
                             {
@@ -694,7 +712,13 @@ def create_dataset(
                             {
                                 "eval_type": "db_state",
                                 "database": "memory",
-                                "query": "SELECT COUNT(*) FROM user_memories",
+                                "query": (
+                                    "SELECT COUNT(*) FROM user_memories "
+                                    "WHERE owner_key='883a1f10c12f6dea69e6163a8d5e5628e862edd6cc6a5d60682a7ec0abdb6bbf' "
+                                    "AND memory_type='dietary_preference' "
+                                    "AND canonical_key='不吃香菜' "
+                                    "AND content='我不吃香菜'"
+                                ),
                                 "expected_value": 0,
                             },
                         ],

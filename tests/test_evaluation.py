@@ -7,6 +7,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from pydantic import ValidationError
 
+import evaluation.runner as evaluation_runner
 from evaluation.graders import Trajectory, grade_turn
 from evaluation.models import (
     EvaluationTurn,
@@ -142,39 +143,172 @@ def test_query_expected_scalar_selects_real_business_or_memory_database(tmp_path
     )
 
 
+def test_query_expected_scalar_closes_connection_on_success_and_query_error(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "business.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("CREATE TABLE marker (value INTEGER NOT NULL)")
+        connection.execute("INSERT INTO marker (value) VALUES (7)")
+
+    real_connect = sqlite3.connect
+    opened_connections = []
+
+    def tracking_connect(*args, **kwargs):
+        connection = real_connect(*args, **kwargs)
+        opened_connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(evaluation_runner.sqlite3, "connect", tracking_connect)
+    valid = ExpectedTrajectoryAssertion.model_validate(
+        {"eval_type": "db_state", "query": "SELECT value FROM marker"}
+    )
+    invalid = ExpectedTrajectoryAssertion.model_validate(
+        {"eval_type": "db_state", "query": "SELECT missing FROM marker"}
+    )
+
+    assert (
+        query_expected_scalar(
+            valid,
+            business_db_path=db_path,
+            memory_db_path=tmp_path / "unused.db",
+        )
+        == 7
+    )
+    with pytest.raises(sqlite3.OperationalError, match="no such column"):
+        query_expected_scalar(
+            invalid,
+            business_db_path=db_path,
+            memory_db_path=tmp_path / "unused.db",
+        )
+
+    assert len(opened_connections) == 2
+    for connection in opened_connections:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            connection.execute("SELECT 1")
+
+
 def test_generated_memory_cases_use_memory_agent_and_memory_database(tmp_path):
     generated_path = tmp_path / "generated.jsonl"
     create_dataset(generated_path)
     cases = {case.case_id: case for case in load_evaluation_cases(generated_path)}
 
     expected_mutation_turns = {
-        "ME_02": [(0, "remember", 1)],
-        "ME_03": [(0, "remember", 1)],
-        "ME_06": [(0, "remember", 1), (1, "forget", 0)],
+        "ME_02": [(0, 1)],
+        "ME_03": [(0, 1)],
+        "ME_06": [(0, 1), (1, 0)],
     }
     for case_id, turns in expected_mutation_turns.items():
-        for turn_index, operation, expected_count in turns:
+        for turn_index, expected_count in turns:
             turn = cases[case_id].turns[turn_index]
             assert turn.expected_trajectory == [
-                "Router -> memory_agent",
-                f"MemoryAgent -> {operation}",
+                "assistant_selector -> memory_agent",
+                "memory",
             ]
-            assert [
-                assertion.model_dump(exclude_none=True)
-                for assertion in turn.expected_trajectory_eval
-            ] == [
-                {
-                    "eval_type": "routing",
-                    "database": "business",
-                    "expected_agent": "memory_agent",
-                },
-                {
-                    "eval_type": "db_state",
-                    "database": "memory",
-                    "query": "SELECT COUNT(*) FROM user_memories",
-                    "expected_value": expected_count,
-                },
-            ]
+            route_assertion, db_assertion = turn.expected_trajectory_eval
+            assert route_assertion.expected_agent == "memory_agent"
+            assert db_assertion.eval_type == "db_state"
+            assert db_assertion.database == "memory"
+            assert db_assertion.expected_value == expected_count
+
+
+def test_generated_memory_queries_reject_unrelated_rows(tmp_path):
+    generated_path = tmp_path / "generated.jsonl"
+    create_dataset(generated_path)
+    cases = {case.case_id: case for case in load_evaluation_cases(generated_path)}
+    expected_rows = {
+        "ME_02": {
+            "owner_key": "20c3d1ca7e5381f4a9449436800a7bf48834f87faf18fe91dfa759850f4efc45",
+            "memory_type": "training_preference",
+            "canonical_key": "周三休息日",
+            "content": "我以后周三都不练了，变成休息日",
+        },
+        "ME_03": {
+            "owner_key": "b891e1a326797bd181feb6be5416957b09065c928b915af6860df6052e2c71b4",
+            "memory_type": "health_constraint",
+            "canonical_key": "乳糖不耐受",
+            "content": "我乳糖不耐受",
+        },
+        "ME_06": {
+            "owner_key": "883a1f10c12f6dea69e6163a8d5e5628e862edd6cc6a5d60682a7ec0abdb6bbf",
+            "memory_type": "dietary_preference",
+            "canonical_key": "不吃香菜",
+            "content": "我不吃香菜",
+        },
+    }
+
+    for case_id, expected_row in expected_rows.items():
+        memory_path = tmp_path / f"{case_id}.memory.db"
+        business_path = tmp_path / f"{case_id}.business.db"
+        with sqlite3.connect(memory_path) as connection:
+            connection.execute("""
+                CREATE TABLE user_memories (
+                    owner_key TEXT NOT NULL,
+                    memory_type TEXT NOT NULL,
+                    canonical_key TEXT NOT NULL,
+                    content TEXT NOT NULL
+                )
+                """)
+            connection.execute(
+                "INSERT INTO user_memories VALUES (?, ?, ?, ?)",
+                (
+                    "unrelated-owner",
+                    expected_row["memory_type"],
+                    expected_row["canonical_key"],
+                    expected_row["content"],
+                ),
+            )
+        with sqlite3.connect(business_path):
+            pass
+
+        remember_assertion = next(
+            assertion
+            for assertion in cases[case_id].turns[0].expected_trajectory_eval
+            if assertion.eval_type == "db_state"
+        )
+        assert remember_assertion.expected_value == 1
+        assert (
+            query_expected_scalar(
+                remember_assertion,
+                business_db_path=business_path,
+                memory_db_path=memory_path,
+            )
+            == 0
+        )
+
+        with sqlite3.connect(memory_path) as connection:
+            connection.execute(
+                "INSERT INTO user_memories VALUES (?, ?, ?, ?)",
+                tuple(expected_row.values()),
+            )
+        assert (
+            query_expected_scalar(
+                remember_assertion,
+                business_db_path=business_path,
+                memory_db_path=memory_path,
+            )
+            == 1
+        )
+
+        if case_id == "ME_06":
+            with sqlite3.connect(memory_path) as connection:
+                connection.execute(
+                    "DELETE FROM user_memories WHERE owner_key = ?",
+                    (expected_row["owner_key"],),
+                )
+            forget_assertion = next(
+                assertion
+                for assertion in cases[case_id].turns[1].expected_trajectory_eval
+                if assertion.eval_type == "db_state"
+            )
+            assert (
+                query_expected_scalar(
+                    forget_assertion,
+                    business_db_path=business_path,
+                    memory_db_path=memory_path,
+                )
+                == 0
+            )
 
 
 def test_golden_dataset_generation_is_byte_deterministic_and_checked_in(tmp_path):

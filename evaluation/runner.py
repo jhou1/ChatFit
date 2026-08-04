@@ -4,6 +4,7 @@ import logging
 import sqlite3
 import sys
 import tempfile
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
@@ -43,7 +44,7 @@ def query_expected_scalar(
 ):
     """Return the first scalar selected by one database-state assertion."""
     db_path = memory_db_path if assertion.database == "memory" else business_db_path
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection, connection:
         row = connection.execute(assertion.query or "").fetchone()
     return row[0] if row is not None else _MISSING_DB_ROW
 
