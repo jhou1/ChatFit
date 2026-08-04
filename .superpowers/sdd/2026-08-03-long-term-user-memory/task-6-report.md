@@ -15,7 +15,9 @@ without printing note bodies, and optionally creates or updates the canonical
 - Resolves filesystem paths without creating directories during validation;
   rejects missing/directory/non-SQLite sources, directory/non-SQLite
   destinations, SQLite URI/memory values, and identical/symlink/hard-link
-  source and destination files.
+  source and destination files. Apply additionally requires the destination's
+  immediate parent to exist already; neither validation nor apply creates a
+  destination directory.
 - Refuses nonempty source WAL/rollback journals, snapshots source main/WAL/SHM
   metadata and SHA-256, then opens the source exclusively with a `file:` URI,
   `mode=ro&immutable=1`, and `PRAGMA query_only`. A post-scan snapshot check
@@ -94,7 +96,7 @@ implementation.
 The same focused command after the final review fixes reported:
 
 ```text
-53 passed
+58 passed
 ```
 
 The tests use real temporary SQLite files and a real `UserMemoryStore`; no LLM,
@@ -112,8 +114,8 @@ Focused migration plus production store regression:
 uv run pytest tests/test_memory_migration.py tests/test_user_memory_store.py -v
 ```
 
-Final results: migration `53 passed`; production store `17 passed`; combined
-suite `70 passed in 68.08s`.
+Final results: migration `58 passed`; production store `17 passed`; combined
+suite `75 passed in 76.85s`.
 
 The first targeted lint pass found one unused import and Black requested
 formatting. Both findings were corrected, then the complete quality gate was
@@ -133,7 +135,7 @@ Full verification:
 make verify
 ```
 
-Final result: `373 passed, 3 deselected in 69.13s`; final line
+Final result: `378 passed, 3 deselected in 79.12s`; final line
 `All verification checks passed.`
 
 `git diff --check` exited 0 with no output.
@@ -433,3 +435,55 @@ contracts. Repository status and SHA-256 hashes were identical before and
 after verification, HEAD remained `65d3f0d103dc241c71b72d6e734a93d6794e123b`,
 and the verifier modified no repository file. The approved README and
 `docs/index.html` deferral remains assigned to Task 7.
+
+## Review Fix Round 7: Existing Parent Contract
+
+The next review identified one Important local path-creation contract gap.
+Although validation itself did not create directories, apply retained an
+`anchor=None` branch that recursively created a missing destination parent and
+only anchored it afterward. In addition, opening the complete parent pathname
+with `O_NOFOLLOW` protected its final component but could still traverse a
+symbolic link in an earlier component.
+
+Five focused cases were added before production changes: apply with
+`missing-a/missing-b/memory.db`, dry-run of the same candidate, a `Path.mkdir`
+hook that would redirect a creation attempt, an immediate-parent symbolic
+link, and an earlier parent-component symbolic link. The old snapshot reported
+three expected failures: apply created the missing tree, called the hook, and
+followed the earlier link. Dry-run already performed zero creation, and the
+immediate-parent link was already rejected.
+
+Apply now returns a controlled nonzero error when the validated immediate
+parent has no anchor; the recursive production `mkdir` branch was removed.
+Parent anchoring starts at the filesystem root and opens each lexical component
+separately with `O_DIRECTORY|O_NOFOLLOW` and relative dirfd operations. Parent
+identity revalidation repeats that component walk, so no component may become
+a symbolic link while the command is running. Dry-run still reports recognized
+candidates without creating any destination directory or file.
+
+The new path-contract cases plus ordinary new-destination, existing-destination,
+and idempotency coverage report `7 passed`. Fresh local evidence after round 7
+is migration `58 passed`, store `17 passed`, combined focused regression `75
+passed in 76.85s`, full verification `378 passed, 3 deselected in 79.12s`, and
+a clean quality gate across Ruff, Black, mypy, and Bandit. `git diff --check`
+exits zero with no output.
+
+## Round 7 Independent Verification
+
+A new read-only verifier reviewed the exact parent-path contract snapshot and
+returned **READY**, with zero Critical, Important, Minor, code, or report
+findings. Its fresh evidence was migration `58 passed in 83.33s`, store `17
+passed in 1.17s`, full verification `378 passed, 3 deselected`, clean Ruff,
+Black, mypy, and Bandit gates with zero warnings/issues, and a clean
+`git diff --check`.
+
+Independent real-SQLite and filesystem checks confirmed controlled apply
+failure with no artifacts for absent nested parents, candidate-only dry-run
+with no creation, zero production `Path.mkdir`/`os.mkdir` calls, rejection of
+both immediate and earlier parent-component symbolic links, normal
+`created → unchanged` idempotency, and existing-database `updated → unchanged`
+reconciliation with stable identity and exact aliases. Inspection confirmed
+root-to-parent component-wise `O_DIRECTORY|O_NOFOLLOW` traversal, equivalent
+identity revalidation, and no recursive production directory-creation branch.
+Pre/post repository status, HEAD, and all recorded SHA-256 hashes were
+identical; the verifier modified no repository file.

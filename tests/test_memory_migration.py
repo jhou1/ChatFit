@@ -298,6 +298,87 @@ def test_source_with_active_wal_fails_without_creating_or_changing_sidecars(tmp_
     assert not memory_db.parent.exists()
 
 
+def test_apply_requires_existing_immediate_parent_without_creating_tree(tmp_path):
+    source_db = tmp_path / "source.db"
+    memory_db = tmp_path / "missing-a" / "missing-b" / "memory.db"
+    _create_source(source_db, [HISTORICAL_NOTE])
+    source_before = _source_snapshot(source_db)
+    tree_before = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
+
+    result = _run_migration(source_db, memory_db, apply=True)
+
+    assert result.returncode != 0
+    assert "parent" in result.stderr.lower()
+    assert "Traceback" not in result.stderr
+    assert {path.relative_to(tmp_path) for path in tmp_path.rglob("*")} == tree_before
+    assert _source_snapshot(source_db) == source_before
+
+
+def test_dry_run_reports_candidate_without_creating_missing_parent_tree(tmp_path):
+    source_db = tmp_path / "source.db"
+    memory_db = tmp_path / "missing-a" / "missing-b" / "memory.db"
+    _create_source(source_db, [HISTORICAL_NOTE])
+    tree_before = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
+
+    result = _run_migration(source_db, memory_db)
+
+    assert result.returncode == 0, result.stderr
+    assert "recognized=1" in result.stdout
+    assert {path.relative_to(tmp_path) for path in tmp_path.rglob("*")} == tree_before
+
+
+def test_apply_never_calls_mkdir_for_missing_destination_parent(
+    tmp_path, monkeypatch
+) -> None:
+    source_db = tmp_path / "source.db"
+    memory_db = tmp_path / "missing-a" / "missing-b" / "memory.db"
+    redirect_parent = tmp_path / "redirect-parent"
+    _create_source(source_db, [HISTORICAL_NOTE])
+    redirect_parent.mkdir()
+    mkdir_called = False
+
+    def redirecting_mkdir(path, *_args, **_kwargs):
+        nonlocal mkdir_called
+        mkdir_called = True
+        Path(path).symlink_to(redirect_parent, target_is_directory=True)
+
+    monkeypatch.setattr(Path, "mkdir", redirecting_mkdir)
+
+    with pytest.raises(migration_module.MigrationError, match="parent"):
+        migration_module.run(_run_args(source_db, memory_db))
+
+    assert not mkdir_called
+    assert not (redirect_parent / "memory.db").exists()
+    assert not memory_db.parent.exists()
+
+
+@pytest.mark.parametrize("symlink_position", ["immediate-parent", "ancestor"])
+def test_apply_rejects_symlink_in_any_destination_parent_component(
+    tmp_path, symlink_position
+) -> None:
+    source_db = tmp_path / "source.db"
+    real_parent = tmp_path / "real-parent"
+    linked_parent = tmp_path / "linked-parent"
+    _create_source(source_db, [HISTORICAL_NOTE])
+    real_parent.mkdir()
+    if symlink_position == "immediate-parent":
+        linked_parent.symlink_to(real_parent, target_is_directory=True)
+        memory_db = linked_parent / "memory.db"
+        redirected_db = real_parent / "memory.db"
+    else:
+        (real_parent / "nested").mkdir()
+        linked_parent.symlink_to(real_parent, target_is_directory=True)
+        memory_db = linked_parent / "nested" / "memory.db"
+        redirected_db = real_parent / "nested" / "memory.db"
+
+    result = _run_migration(source_db, memory_db, apply=True)
+
+    assert result.returncode != 0
+    assert "parent" in result.stderr.lower()
+    assert "Traceback" not in result.stderr
+    assert not redirected_db.exists()
+
+
 def test_dry_run_only_stats_wal_destination_without_creating_shm(tmp_path):
     source_db = tmp_path / "source.db"
     memory_db = tmp_path / "memory.db"

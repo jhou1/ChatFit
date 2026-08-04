@@ -118,13 +118,27 @@ def _require_dirfd_support() -> None:
         raise MigrationError("secure destination directory access is unsupported")
 
 
-def _open_destination_anchor(destination_path: Path) -> _DestinationAnchor:
+def _open_directory_without_symlinks(directory_path: Path) -> int:
     _require_dirfd_support()
+    parts = directory_path.parts
+    if not directory_path.is_absolute() or not parts:
+        raise OSError("destination directory path must be absolute")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptor = os.open(parts[0], flags)
     try:
-        descriptor = os.open(
-            destination_path.parent,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-        )
+        for component in parts[1:]:
+            next_descriptor = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _open_destination_anchor(destination_path: Path) -> _DestinationAnchor:
+    try:
+        descriptor = _open_directory_without_symlinks(destination_path.parent)
     except OSError as error:
         raise MigrationError(
             "destination database parent could not be securely opened"
@@ -159,7 +173,11 @@ def _close_destination_anchor(anchor: _DestinationAnchor | None) -> None:
 
 def _require_parent_identity(anchor: _DestinationAnchor) -> None:
     try:
-        current = os.stat(anchor.parent_path, follow_symlinks=False)
+        descriptor = _open_directory_without_symlinks(anchor.parent_path)
+        try:
+            current = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
     except OSError as error:
         raise MigrationError(
             "destination database parent changed during migration"
@@ -896,14 +914,11 @@ def _build_parser() -> argparse.ArgumentParser:
 def _run(args: argparse.Namespace) -> int:
     if not args.user_id.strip():
         raise MigrationError("user ID must not be empty")
-    source_path, destination_path, anchor = _validate_paths(
-        args.source_db, args.memory_db
-    )
+    source_path, _, anchor = _validate_paths(args.source_db, args.memory_db)
     try:
         return _run_validated(
             args,
             source_path,
-            destination_path,
             anchor,
         )
     finally:
@@ -913,7 +928,6 @@ def _run(args: argparse.Namespace) -> int:
 def _run_validated(
     args: argparse.Namespace,
     source_path: Path,
-    destination_path: Path,
     anchor: _DestinationAnchor | None,
 ) -> int:
     source_before = _file_family_snapshot(source_path)
@@ -939,27 +953,15 @@ def _run_validated(
     if not definitions or not args.apply:
         return 0
 
-    created_anchor = False
     if anchor is None:
-        try:
-            destination_path.parent.mkdir(parents=True, exist_ok=True)
-        except OSError as error:
-            raise MigrationError(
-                "destination database parent could not be created"
-            ) from error
-        anchor = _open_destination_anchor(destination_path)
-        created_anchor = True
-    try:
-        return _apply_validated_definition(
-            args,
-            source_path,
-            source_before,
-            anchor,
-            definitions[0],
-        )
-    finally:
-        if created_anchor:
-            _close_destination_anchor(anchor)
+        raise MigrationError("destination database immediate parent must already exist")
+    return _apply_validated_definition(
+        args,
+        source_path,
+        source_before,
+        anchor,
+        definitions[0],
+    )
 
 
 def _apply_validated_definition(
