@@ -21,14 +21,16 @@ without printing note bodies, and optionally creates or updates the canonical
   `mode=ro&immutable=1`, and `PRAGMA query_only`. A post-scan snapshot check
   proves the source family did not change.
 - Runs one deterministic `SELECT DISTINCT` over `training_sessions.note` for
-  known positive and negative memory markers. BLOB candidates are counted as
-  unrecognized without decoding or printing them.
+  marker-related candidates. BLOB candidates are counted as unrecognized
+  without decoding or printing them.
 - Uses one anchored, full-note regular expression. Only the complete explicit
-  legacy `2-1-3 是一个训练模板……它代表<definition>` form with a positive
-  marker is recognized. Negative markers and definitions missing any required
-  component/count/hand/minute are unrecognized; ordinary 213 records, missing
-  markers, and other keys are not migrated. Approved whitespace, Chinese or
-  English punctuation, and case variations remain accepted.
+  legacy `2-1-3 是一个训练模板（你需要记忆一下），它代表<definition>` form is
+  recognized. The approved preamble grammar is enumerated rather than inferred
+  from positive substrings or negative blacklists. Negative/indirect markers
+  and definitions missing any required component/count/hand/minute are
+  unrecognized; ordinary 213 records, missing markers, and other keys are not
+  migrated. Approved whitespace, Chinese or English parentheses/punctuation,
+  and definition case variations remain accepted.
 - Reports recognized/unrecognized counts and the safe canonical identity, but
   never emits the original notes or extracted definition.
 - Dry-run validates an existing destination only through raw magic bytes and
@@ -38,19 +40,28 @@ without printing note bodies, and optionally creates or updates the canonical
   key `213`, display name `2-1-3`, the complete extracted definition, and
   aliases `213`, `2-1-3`, and `壶铃213`.
 - Apply refuses destination WAL/SHM state that is not cleanly checkpointed and
-  closed. For a missing destination, it calls the production store on a private
-  same-directory staging database, verifies source/destination snapshots, and
-  installs the result with an atomic hard-link create that cannot replace a
-  concurrent file. Staging main/WAL/SHM/journal files are cleaned on every
-  success and failure path.
+  closed. It opens and holds the verified destination parent directory with
+  `O_DIRECTORY|O_NOFOLLOW`; unsupported dirfd/follow-symlink platforms fail
+  closed. For a missing destination, private staging creation, atomic
+  no-replace hard-link installation, rollback, and cleanup use relative dirfd
+  operations in that physical directory. The staging file's creation fd fixes
+  its initial inode and complete state before close; it is then reopened
+  `O_NOFOLLOW` relative to the held parent and kept open while SQLite uses
+  `mode=rw`. Parent/path/inode/source-distinct identity is checked immediately
+  after SQLite connect and before any SQL, then around commit. The user-visible
+  parent identity is checked before and after commit, so rename-plus-symlink
+  replacement cannot redirect writes or leak staging files.
 - An existing destination is never copied or exchanged. It is reconciled in
   place through one SQLite connection and one `BEGIN IMMEDIATE` transaction,
   so SQLite serializes concurrent writers. The connection-scoped production
   store operation creates, exactly updates, or leaves unchanged the canonical
   value while retaining IDs and incrementing versions only on updates. The
-  destination inode, source isolation, and full source family are checked after
-  transaction binding, before commit, and after commit; path replacement,
-  alias conflict, stale state, or source changes return nonzero.
+  destination is first opened relative to the held parent with `O_NOFOLLOW` and
+  matched to the snapshot/source inode before SQLite connect. Parent/path/inode
+  identity is checked again immediately after connect and before any SQL or
+  `BEGIN`, then after transaction binding, before commit, and after commit.
+  Path replacement, alias conflict, stale state, or source changes return
+  nonzero without creating sidecars through a source hard-link alias.
 
 ## Files
 
@@ -83,7 +94,7 @@ implementation.
 The same focused command after the final review fixes reported:
 
 ```text
-40 passed in 65.60s
+53 passed
 ```
 
 The tests use real temporary SQLite files and a real `UserMemoryStore`; no LLM,
@@ -101,8 +112,8 @@ Focused migration plus production store regression:
 uv run pytest tests/test_memory_migration.py tests/test_user_memory_store.py -v
 ```
 
-Final results: migration `40 passed in 65.60s`; production store `17 passed in
-1.51s`.
+Final results: migration `53 passed`; production store `17 passed`; combined
+suite `70 passed in 68.08s`.
 
 The first targeted lint pass found one unused import and Black requested
 formatting. Both findings were corrected, then the complete quality gate was
@@ -122,7 +133,7 @@ Full verification:
 make verify
 ```
 
-Final result: `360 passed, 3 deselected in 65.71s`; final line
+Final result: `373 passed, 3 deselected in 69.13s`; final line
 `All verification checks passed.`
 
 `git diff --check` exited 0 with no output.
@@ -290,3 +301,135 @@ instead of `status=created`.
 Fresh local evidence after round 3 is migration `40 passed in 65.60s`, store
 `17 passed in 1.51s`, full verification `360 passed, 3 deselected in 65.71s`,
 and a clean quality gate across Ruff, Black, mypy, and Bandit.
+
+## Review Fix Round 4: Marker Grammar and Parent Anchoring
+
+The original reviewer returned two further Important findings. The first was a
+recognition-policy flaw: arbitrary positive substrings plus a finite negative
+blacklist accepted indirect or negative phrases. Real-SQLite parameterized
+tests showed three exact false positives (`不需要记忆`, `不必记住`, and
+`没有让你记住`); the other three required negatives were already rejected.
+Recognition now anchors the complete approved historical preamble grammar.
+All six negative/indirect forms are unrecognized, while Chinese/English
+parentheses and reasonable spacing preserve the exact approved definition.
+
+The second finding was a filesystem parent TOCTOU. Three RED tests renamed the
+validated destination parent and replaced its user path with a symlink after
+validation, after staging, and immediately before install. The former path-only
+implementation either installed into the replacement directory or leaked the
+staging database in the moved physical directory. A fourth RED swapped an
+existing destination to a hard link of a clean persistent-WAL source; SQLite
+created alias WAL/SHM before the old post-`BEGIN` identity check.
+
+The migration now holds the verified physical parent dirfd for its full
+lifetime. Destination snapshots and all missing-target file mutations are
+relative to that fd, and cleanup remains anchored even after parent rename.
+Existing targets are opened `O_NOFOLLOW` relative to the fd and fully matched
+to the expected main-file snapshot and source identity before SQLite connect;
+the path is revalidated after connect before the first PRAGMA or transaction.
+The existing connection uses SQLite URI `mode=rw`, so removal after verified
+open cannot implicitly create a replacement database.
+Darwin resolves the held directory through `F_GETPATH`, Linux through
+`/proc/self/fd`; missing flags, relative-operation support, or platform path
+resolution fails closed.
+
+An additional narrow RED removed the existing destination immediately after
+the verified dirfd-relative open. Plain `sqlite3.connect(path)` recreated an
+empty file before identity validation; `mode=rw` now fails without creating a
+main file or sidecars.
+
+Fresh evidence after this review fix is migration `48 passed in 68.28s`, store
+`17 passed in 1.44s`, full verification `368 passed, 3 deselected in 70.30s`,
+and a clean quality gate across Ruff, Black, mypy, and Bandit. All three parent
+swap regressions leave both replacement and moved directories without an
+installed destination or staging artifact; the clean-WAL source hard-link
+regression leaves source hashes/mtimes unchanged and creates no alias WAL/SHM.
+
+## Review Fix Round 5: Staging Identity Before SQLite
+
+The next fresh verifier returned NOT READY with two missing-destination
+findings. Replacing the private staging entry with a source hard link
+immediately before the old path-based `_apply_memory` call caused SQLite to
+create the memory schema in the source before the later commit check rejected
+the migration. Renaming the validated parent and replacing its user path with
+a symlink at the same point redirected the cached SQLite staging path into the
+replacement directory and leaked a populated staging database there.
+
+Both attacks were captured as real-SQLite RED regressions. Missing-destination
+apply now mirrors the verified existing-destination binding: it validates the
+staging path's complete creation state, opens it `O_NOFOLLOW` relative to the
+held parent dirfd, compares the opened fd inode to the creation inode and the
+source inode, derives the current physical held-parent path only for a
+`mode=rw` SQLite connect, and revalidates parent/path/fd/source identity after
+connect before the first PRAGMA or `BEGIN`. Transaction reconciliation uses
+the production connection-scoped store operation, with identity checks around
+commit. The hard-link attack now returns nonzero without creating memory tables
+or source sidecars; the parent swap leaves no target or staging file in either
+the replacement directory or moved physical directory.
+
+Final diff review exposed one still-earlier staging window: if the newly
+created entry was replaced before its first path snapshot, the replacement
+inode became the apparent baseline and an unrelated hard-linked SQLite victim
+could be modified. A third RED reproduced the victim mutation. Staging
+creation now records the empty regular file's full state directly from the
+exclusive creation fd before close and requires the dirfd-relative path to
+match it exactly. The victim remains byte/metadata-identical and the migration
+fails safely.
+
+Fresh local evidence after round 5 is migration `51 passed`, store `17 passed`,
+combined focused regression `68 passed in 67.98s`, full verification `371
+passed, 3 deselected in 69.73s`, and a clean quality gate across Ruff, Black,
+mypy, and Bandit. `git diff --check` exits zero with no output.
+
+## Review Fix Round 6: Install Binding and Recoverable Cleanup
+
+The round-5 verifier reran every required gate and the earlier adversarial
+checks, then returned NOT READY with two additional Important local-file
+correctness findings. First, replacing the populated staging entry after its
+SQLite transaction but immediately before installation caused the old code to
+hard-link the source database into the destination and report
+`status=created`. Second, moving an unrelated single-link SQLite file onto the
+random staging name before its first state check made safe-failure cleanup
+unlink that file's only recoverable path.
+
+Both exact real-SQLite scenarios were added as regressions and first reported
+two expected failures. New-destination commit now revalidates the populated
+staging entry against its creation device/inode and source identity immediately
+before installation. After the no-replace hard link, it repeats that check and
+requires the installed destination to have the creation inode. A mismatch
+enters rollback; rollback accepts either the known creation inode or the
+just-linked current staging inode, removes only the link created by this
+operation, and does not mutate the source or replacement database.
+
+Staging cleanup is now identity-aware. It removes the main staging name only
+when it still has the expected creation device/inode or is an additional safe
+hard-link alias with another recoverable link. An unrelated replacement with a
+single link is preserved at the random path and the command returns nonzero.
+Unknown sidecar names are likewise preserved and reported rather than deleted
+by pathname. The close/fstat path also closes the exclusive creation fd through
+a `finally` block before any error cleanup.
+
+The two new focused regressions are GREEN, and the combined install/cleanup,
+pre-SQL hard-link, parent-swap, first-snapshot replacement, and close-failure
+group reports `9 passed`. Fresh local evidence after round 6 is migration `53
+passed`, store `17 passed`, combined focused regression `70 passed in 68.08s`,
+full verification `373 passed, 3 deselected in 69.13s`, and a clean quality
+gate across Ruff, Black, mypy, and Bandit. `git diff --check` exits zero with no
+output.
+
+## Final Independent Verification
+
+A new read-only verifier reviewed the exact round-6 snapshot and returned
+**READY**, with zero Critical, Important, or Minor code/report findings. Its
+fresh results were migration `53 passed`, store `17 passed`, full verification
+`373 passed, 3 deselected`, and clean Ruff, Black, mypy, and Bandit gates with
+no warnings or issues. The focused local-file identity and consistency group
+reported `9 passed`; marker coverage rejected all six required negative forms
+and preserved the approved definition exactly.
+
+Independent real-SQLite checks confirmed the final staging creation,
+transaction, installation, rollback, and recoverable-cleanup identity
+contracts. Repository status and SHA-256 hashes were identical before and
+after verification, HEAD remained `65d3f0d103dc241c71b72d6e734a93d6794e123b`,
+and the verifier modified no repository file. The approved README and
+`docs/index.html` deferral remains assigned to Task 7.

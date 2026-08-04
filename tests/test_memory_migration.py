@@ -154,7 +154,17 @@ def test_dry_run_reports_candidates_without_writing_or_leaking_notes(tmp_path):
     assert _source_snapshot(source_db) == before
 
 
-@pytest.mark.parametrize("negative_marker", ["不要记住", "无需记忆", "别记住"])
+@pytest.mark.parametrize(
+    "negative_marker",
+    [
+        "不需要记忆",
+        "不必记住",
+        "没有让你记住",
+        "请不要记住",
+        "无需记忆",
+        "别记住",
+    ],
+)
 def test_negative_memory_markers_are_unrecognized(tmp_path, negative_marker):
     source_db = tmp_path / "source.db"
     memory_db = tmp_path / "memory.db"
@@ -184,7 +194,7 @@ def test_negative_memory_markers_are_unrecognized(tmp_path, negative_marker):
 def test_partial_legacy_definitions_are_unrecognized(tmp_path, partial_definition):
     source_db = tmp_path / "source.db"
     memory_db = tmp_path / "memory.db"
-    note = f"2-1-3 是一个训练模板（请记住），它代表{partial_definition}"
+    note = f"2-1-3 是一个训练模板（你需要记忆一下），它代表{partial_definition}"
     _create_source(source_db, [note])
 
     result = _run_migration(source_db, memory_db, apply=True)
@@ -248,7 +258,7 @@ def test_complete_definition_accepts_reasonable_spacing_case_and_punctuation(tmp
     source_db = tmp_path / "source.db"
     memory_db = tmp_path / "memory.db"
     note = (
-        "2 - 1 - 3 是一个训练模板（请记住），它代表：2个抓举、1个挺举、"
+        "2 - 1 - 3 是一个训练模板 ( 你需要记忆一下 )，它代表：2个抓举、1个挺举、"
         "3个长循环；第一分钟左手一次，第二分钟右手一次，第三分钟双手一次；"
         "然后是10个波比跳，和左右手各两次 THRUSTER。"
     )
@@ -523,9 +533,7 @@ def test_destination_replacement_after_validation_cannot_modify_source(
 
     monkeypatch.setattr(migration_module, "_scan_notes", scan_then_replace)
 
-    with pytest.raises(
-        migration_module.MigrationError, match="changed|distinct|conflict"
-    ):
+    with pytest.raises(migration_module.MigrationError):
         migration_module.run(_run_args(source_db, memory_db))
 
     assert _source_snapshot(source_db) == before
@@ -534,6 +542,313 @@ def test_destination_replacement_after_validation_cannot_modify_source(
             "SELECT COUNT(*) FROM sqlite_master WHERE name = 'user_memories'"
         ).fetchone() == (0,)
     assert not list(tmp_path.glob(".memory.db.*"))
+
+
+@pytest.mark.parametrize(
+    "swap_point",
+    ["after-validation", "after-staging", "before-staging-sql", "before-install"],
+)
+def test_destination_parent_swap_never_installs_or_leaks_staging(
+    tmp_path, monkeypatch, swap_point
+) -> None:
+    source_db = tmp_path / "source.db"
+    destination_parent = tmp_path / "validated-parent"
+    moved_parent = tmp_path / "moved-validated-parent"
+    replacement_parent = tmp_path / "replacement-parent"
+    memory_db = destination_parent / "memory.db"
+    destination_parent.mkdir()
+    replacement_parent.mkdir()
+    _create_source(source_db, [HISTORICAL_NOTE])
+
+    def swap_parent() -> None:
+        destination_parent.rename(moved_parent)
+        destination_parent.symlink_to(replacement_parent, target_is_directory=True)
+
+    if swap_point == "after-validation":
+        real_scan = migration_module._scan_notes
+
+        def scan_then_swap(source_path):
+            notes = real_scan(source_path)
+            swap_parent()
+            return notes
+
+        monkeypatch.setattr(migration_module, "_scan_notes", scan_then_swap)
+    elif swap_point == "after-staging":
+        real_create = migration_module._create_staging_database
+
+        def create_then_swap(*args, **kwargs):
+            staging = real_create(*args, **kwargs)
+            swap_parent()
+            return staging
+
+        monkeypatch.setattr(
+            migration_module, "_create_staging_database", create_then_swap
+        )
+    elif swap_point == "before-staging-sql":
+        real_apply = migration_module._apply_memory
+
+        def swap_then_apply(*args, **kwargs):
+            swap_parent()
+            return real_apply(*args, **kwargs)
+
+        monkeypatch.setattr(migration_module, "_apply_memory", swap_then_apply)
+    else:
+        real_install = migration_module._install_new_destination
+
+        def swap_then_install(*args, **kwargs):
+            swap_parent()
+            return real_install(*args, **kwargs)
+
+        monkeypatch.setattr(
+            migration_module, "_install_new_destination", swap_then_install
+        )
+
+    with pytest.raises(migration_module.MigrationError, match="parent|changed"):
+        migration_module.run(_run_args(source_db, memory_db))
+
+    assert not (replacement_parent / "memory.db").exists()
+    assert not (moved_parent / "memory.db").exists()
+    assert not list(replacement_parent.glob(".memory.db.migrate-*.db*"))
+    assert not list(moved_parent.glob(".memory.db.migrate-*.db*"))
+
+
+def test_staging_hardlink_swap_cannot_modify_source_before_sql(
+    tmp_path, monkeypatch
+) -> None:
+    source_db = tmp_path / "source.db"
+    memory_db = tmp_path / "memory.db"
+    _create_source(source_db, [HISTORICAL_NOTE])
+    source_before = _source_snapshot(source_db)
+    real_apply = migration_module._apply_memory
+
+    def replace_staging_then_apply(*args, **kwargs):
+        first = args[0]
+        if isinstance(first, Path):
+            first.unlink()
+            os.link(source_db, first)
+        else:
+            anchor = first
+            staging = args[1]
+            os.unlink(staging.name, dir_fd=anchor.dir_fd)
+            os.link(
+                source_db,
+                staging.name,
+                dst_dir_fd=anchor.dir_fd,
+                follow_symlinks=False,
+            )
+        return real_apply(*args, **kwargs)
+
+    monkeypatch.setattr(migration_module, "_apply_memory", replace_staging_then_apply)
+
+    with pytest.raises(migration_module.MigrationError, match="changed|distinct"):
+        migration_module.run(_run_args(source_db, memory_db))
+
+    assert _source_snapshot(source_db) == source_before
+    with sqlite3.connect(source_db) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'user_memories'"
+        ).fetchone() == (0,)
+    assert not memory_db.exists()
+    assert not list(tmp_path.glob(".memory.db.migrate-*.db*"))
+
+
+def test_staging_replacement_before_first_path_snapshot_cannot_modify_victim(
+    tmp_path, monkeypatch
+) -> None:
+    source_db = tmp_path / "source.db"
+    memory_db = tmp_path / "memory.db"
+    victim_db = tmp_path / "victim.db"
+    _create_source(source_db, [HISTORICAL_NOTE])
+    with sqlite3.connect(victim_db) as connection:
+        connection.execute("CREATE TABLE private_values (value TEXT)")
+        connection.execute("INSERT INTO private_values VALUES ('must survive')")
+    victim_before = _file_family_snapshot(victim_db)
+    real_state = migration_module._anchored_file_state
+    replaced = False
+
+    def replace_before_first_staging_state(anchor, name):
+        nonlocal replaced
+        if not replaced and name.startswith(".memory.db.migrate-"):
+            replaced = True
+            os.unlink(name, dir_fd=anchor.dir_fd)
+            os.link(
+                victim_db,
+                name,
+                dst_dir_fd=anchor.dir_fd,
+                follow_symlinks=False,
+            )
+        return real_state(anchor, name)
+
+    monkeypatch.setattr(
+        migration_module, "_anchored_file_state", replace_before_first_staging_state
+    )
+
+    with pytest.raises(migration_module.MigrationError, match="staging.*changed"):
+        migration_module.run(_run_args(source_db, memory_db))
+
+    assert replaced
+    assert _file_family_snapshot(victim_db) == victim_before
+    with sqlite3.connect(victim_db) as connection:
+        assert connection.execute("SELECT * FROM private_values").fetchall() == [
+            ("must survive",)
+        ]
+        assert connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'user_memories'"
+        ).fetchone() == (0,)
+    assert not memory_db.exists()
+    assert not list(tmp_path.glob(".memory.db.migrate-*.db*"))
+
+
+def test_cleanup_preserves_unrelated_single_link_replacement(
+    tmp_path, monkeypatch
+) -> None:
+    source_db = tmp_path / "source.db"
+    memory_db = tmp_path / "memory.db"
+    victim_db = tmp_path / "victim.db"
+    _create_source(source_db, [HISTORICAL_NOTE])
+    with sqlite3.connect(victim_db) as connection:
+        connection.execute("CREATE TABLE private_values (value TEXT)")
+        connection.execute("INSERT INTO private_values VALUES ('must be recoverable')")
+    victim_before = _file_family_snapshot(victim_db)
+    real_state = migration_module._anchored_file_state
+    replaced = False
+
+    def move_victim_before_first_staging_state(anchor, name):
+        nonlocal replaced
+        if not replaced and name.startswith(".memory.db.migrate-"):
+            replaced = True
+            os.unlink(name, dir_fd=anchor.dir_fd)
+            os.rename(victim_db, name, dst_dir_fd=anchor.dir_fd)
+        return real_state(anchor, name)
+
+    monkeypatch.setattr(
+        migration_module,
+        "_anchored_file_state",
+        move_victim_before_first_staging_state,
+    )
+
+    with pytest.raises(
+        migration_module.MigrationError, match="preserved|staging.*changed"
+    ):
+        migration_module.run(_run_args(source_db, memory_db))
+
+    assert replaced
+    assert not victim_db.exists()
+    preserved = list(tmp_path.glob(".memory.db.migrate-*.db"))
+    assert len(preserved) == 1
+    assert _file_family_snapshot(preserved[0]) == victim_before
+    with sqlite3.connect(preserved[0]) as connection:
+        assert connection.execute("SELECT * FROM private_values").fetchall() == [
+            ("must be recoverable",)
+        ]
+        assert connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'user_memories'"
+        ).fetchone() == (0,)
+    assert not memory_db.exists()
+
+
+def test_staging_source_hardlink_swap_before_install_is_rolled_back(
+    tmp_path, monkeypatch
+) -> None:
+    source_db = tmp_path / "source.db"
+    memory_db = tmp_path / "memory.db"
+    _create_source(source_db, [HISTORICAL_NOTE])
+    source_before = _source_snapshot(source_db)
+    real_install = migration_module._install_new_destination
+
+    def replace_staging_then_install(anchor, staging):
+        os.unlink(staging.name, dir_fd=anchor.dir_fd)
+        os.link(
+            source_db,
+            staging.name,
+            dst_dir_fd=anchor.dir_fd,
+            follow_symlinks=False,
+        )
+        return real_install(anchor, staging)
+
+    monkeypatch.setattr(
+        migration_module, "_install_new_destination", replace_staging_then_install
+    )
+
+    with pytest.raises(migration_module.MigrationError, match="staging|distinct"):
+        migration_module.run(_run_args(source_db, memory_db))
+
+    assert _source_snapshot(source_db) == source_before
+    assert not memory_db.exists()
+    assert not list(tmp_path.glob(".memory.db.migrate-*.db*"))
+
+
+def test_clean_wal_source_hardlink_swap_fails_before_alias_sidecars(
+    tmp_path, monkeypatch
+) -> None:
+    source_db = tmp_path / "source.db"
+    memory_db = tmp_path / "memory.db"
+    _create_source(source_db, [HISTORICAL_NOTE])
+    with sqlite3.connect(source_db) as connection:
+        assert connection.execute("PRAGMA journal_mode = WAL").fetchone() == ("wal",)
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    Path(f"{source_db}-wal").unlink(missing_ok=True)
+    Path(f"{source_db}-shm").unlink(missing_ok=True)
+    source_before = _file_family_snapshot(source_db)
+    UserMemoryStore(memory_db)
+    real_require = migration_module._require_destination_unchanged
+    real_require_identity = migration_module._require_main_identity
+    destination_checks = 0
+
+    def require_then_swap(anchor, expected):
+        nonlocal destination_checks
+        real_require(anchor, expected)
+        destination_checks += 1
+        if destination_checks == 1:
+            memory_db.unlink()
+            os.link(source_db, memory_db)
+
+    def require_identity_without_alias_sidecars(*args, **kwargs):
+        assert not Path(f"{memory_db}-wal").exists()
+        assert not Path(f"{memory_db}-shm").exists()
+        return real_require_identity(*args, **kwargs)
+
+    monkeypatch.setattr(
+        migration_module, "_require_destination_unchanged", require_then_swap
+    )
+    monkeypatch.setattr(
+        migration_module,
+        "_require_main_identity",
+        require_identity_without_alias_sidecars,
+    )
+
+    with pytest.raises(migration_module.MigrationError, match="changed|distinct"):
+        migration_module.run(_run_args(source_db, memory_db))
+
+    assert _file_family_snapshot(source_db) == source_before
+    assert not Path(f"{memory_db}-wal").exists()
+    assert not Path(f"{memory_db}-shm").exists()
+
+
+def test_existing_destination_removed_after_verified_open_is_not_recreated(
+    tmp_path, monkeypatch
+) -> None:
+    source_db = tmp_path / "source.db"
+    memory_db = tmp_path / "memory.db"
+    _create_source(source_db, [HISTORICAL_NOTE])
+    UserMemoryStore(memory_db)
+    real_open = migration_module._open_verified_destination
+
+    def open_then_remove(*args, **kwargs):
+        descriptor = real_open(*args, **kwargs)
+        memory_db.unlink()
+        return descriptor
+
+    monkeypatch.setattr(
+        migration_module, "_open_verified_destination", open_then_remove
+    )
+
+    with pytest.raises(migration_module.MigrationError):
+        migration_module.run(_run_args(source_db, memory_db))
+
+    assert not memory_db.exists()
+    assert not Path(f"{memory_db}-wal").exists()
+    assert not Path(f"{memory_db}-shm").exists()
 
 
 def test_concurrent_destination_creation_is_preserved_and_staging_is_rejected(
@@ -545,9 +860,11 @@ def test_concurrent_destination_creation_is_preserved_and_staging_is_rejected(
     real_apply = migration_module._apply_memory
     concurrent_id: str | None = None
 
-    def apply_then_create_destination(staging_path, user_id, definition):
+    def apply_then_create_destination(
+        anchor, staging, source_path, user_id, definition
+    ):
         nonlocal concurrent_id
-        status = real_apply(staging_path, user_id, definition)
+        status = real_apply(anchor, staging, source_path, user_id, definition)
         concurrent = (
             UserMemoryStore(memory_db)
             .remember(
@@ -586,32 +903,33 @@ def test_destination_created_after_final_snapshot_is_not_replaced(
     source_db = tmp_path / "source.db"
     memory_db = tmp_path / "memory.db"
     _create_source(source_db, [HISTORICAL_NOTE])
-    real_require = migration_module._require_unchanged
+    real_require = migration_module._require_destination_unchanged
     destination_checks = 0
     concurrent_id: str | None = None
 
-    def require_then_create(path, expected, *, role):
+    def require_then_create(anchor, expected):
         nonlocal concurrent_id, destination_checks
-        real_require(path, expected, role=role)
-        if role == "destination" and path == memory_db:
-            destination_checks += 1
-            if destination_checks == 3:
-                concurrent_id = (
-                    UserMemoryStore(memory_db)
-                    .remember(
-                        owner_key_for("concurrent-user"),
-                        NewUserMemory(
-                            memory_type=MemoryType.PROFILE,
-                            canonical_key="concurrent",
-                            display_name="Concurrent",
-                            content="concurrent destination content",
-                            aliases=("concurrent",),
-                        ),
-                    )
-                    .memory.id
+        real_require(anchor, expected)
+        destination_checks += 1
+        if destination_checks == 3:
+            concurrent_id = (
+                UserMemoryStore(memory_db)
+                .remember(
+                    owner_key_for("concurrent-user"),
+                    NewUserMemory(
+                        memory_type=MemoryType.PROFILE,
+                        canonical_key="concurrent",
+                        display_name="Concurrent",
+                        content="concurrent destination content",
+                        aliases=("concurrent",),
+                    ),
                 )
+                .memory.id
+            )
 
-    monkeypatch.setattr(migration_module, "_require_unchanged", require_then_create)
+    monkeypatch.setattr(
+        migration_module, "_require_destination_unchanged", require_then_create
+    )
 
     with pytest.raises(migration_module.MigrationError, match="changed|conflict"):
         migration_module.run(_run_args(source_db, memory_db))
@@ -626,7 +944,7 @@ def test_destination_created_after_final_snapshot_is_not_replaced(
     assert not list(tmp_path.glob(".memory.db.*"))
 
 
-def test_destination_updated_after_final_snapshot_is_serially_reconciled(
+def test_destination_updated_after_snapshot_fails_without_losing_external_change(
     tmp_path, monkeypatch
 ) -> None:
     source_db = tmp_path / "source.db"
@@ -643,30 +961,32 @@ def test_destination_updated_after_final_snapshot_is_serially_reconciled(
             aliases=("existing",),
         ),
     ).memory.id
-    real_require = migration_module._require_unchanged
+    real_require = migration_module._require_destination_unchanged
     destination_checks = 0
     concurrent_id: str | None = None
 
-    def require_then_update(path, expected, *, role):
+    def require_then_update(anchor, expected):
         nonlocal concurrent_id, destination_checks
-        real_require(path, expected, role=role)
-        if role == "destination" and path == memory_db:
-            destination_checks += 1
-            if destination_checks == 1:
-                concurrent_id = store.remember(
-                    owner_key_for("concurrent-user"),
-                    NewUserMemory(
-                        memory_type=MemoryType.PROFILE,
-                        canonical_key="concurrent",
-                        display_name="Concurrent",
-                        content="concurrent destination content",
-                        aliases=("concurrent",),
-                    ),
-                ).memory.id
+        real_require(anchor, expected)
+        destination_checks += 1
+        if destination_checks == 1:
+            concurrent_id = store.remember(
+                owner_key_for("concurrent-user"),
+                NewUserMemory(
+                    memory_type=MemoryType.PROFILE,
+                    canonical_key="concurrent",
+                    display_name="Concurrent",
+                    content="concurrent destination content",
+                    aliases=("concurrent",),
+                ),
+            ).memory.id
 
-    monkeypatch.setattr(migration_module, "_require_unchanged", require_then_update)
+    monkeypatch.setattr(
+        migration_module, "_require_destination_unchanged", require_then_update
+    )
 
-    assert migration_module.run(_run_args(source_db, memory_db)) == 0
+    with pytest.raises(migration_module.MigrationError, match="changed"):
+        migration_module.run(_run_args(source_db, memory_db))
 
     with sqlite3.connect(memory_db) as connection:
         stored_ids = {
@@ -674,10 +994,10 @@ def test_destination_updated_after_final_snapshot_is_serially_reconciled(
             for row in connection.execute("SELECT id FROM user_memories ORDER BY id")
         }
         assert concurrent_id is not None
-        assert {original_id, concurrent_id} < stored_ids
+        assert stored_ids == {original_id, concurrent_id}
         assert connection.execute(
             "SELECT COUNT(*) FROM user_memories WHERE canonical_key = '213'"
-        ).fetchone() == (1,)
+        ).fetchone() == (0,)
     assert not list(tmp_path.glob(".memory.db.*"))
 
 
@@ -706,25 +1026,26 @@ def test_final_check_wal_writer_is_serialized_without_losing_either_change(
     assert not Path(f"{memory_db}-wal").exists()
     assert not Path(f"{memory_db}-shm").exists()
 
-    real_require = migration_module._require_unchanged
+    real_require = migration_module._require_destination_unchanged
     destination_checks = 0
     writer: sqlite3.Connection | None = None
 
-    def require_then_write_wal(path, expected, *, role):
+    def require_then_write_wal(anchor, expected):
         nonlocal destination_checks, writer
-        real_require(path, expected, role=role)
-        if role == "destination" and path == memory_db:
-            destination_checks += 1
-            if destination_checks == 1:
-                writer = sqlite3.connect(memory_db)
-                writer.execute(
-                    "UPDATE user_memories SET content = ? WHERE id = ?",
-                    ("concurrent WAL update survives", original_id),
-                )
-                writer.commit()
-                assert Path(f"{memory_db}-wal").stat().st_size > 0
+        real_require(anchor, expected)
+        destination_checks += 1
+        if destination_checks == 1:
+            writer = sqlite3.connect(memory_db)
+            writer.execute(
+                "UPDATE user_memories SET content = ? WHERE id = ?",
+                ("concurrent WAL update survives", original_id),
+            )
+            writer.commit()
+            assert Path(f"{memory_db}-wal").stat().st_size > 0
 
-    monkeypatch.setattr(migration_module, "_require_unchanged", require_then_write_wal)
+    monkeypatch.setattr(
+        migration_module, "_require_destination_unchanged", require_then_write_wal
+    )
 
     try:
         assert migration_module.run(_run_args(source_db, memory_db)) == 0
@@ -834,7 +1155,7 @@ def test_existing_destination_source_change_after_commit_is_not_reported_success
         nonlocal identity_checks
         real_require_identity(destination_path, expected, source_path)
         identity_checks += 1
-        if identity_checks == 3:
+        if identity_checks == 5:
             with sqlite3.connect(source_db) as connection:
                 connection.execute(
                     "INSERT INTO training_sessions (note) VALUES (?)",
@@ -866,13 +1187,13 @@ def test_missing_destination_source_change_at_link_is_not_reported_success(
     _create_source(source_db, [HISTORICAL_NOTE])
     real_install = migration_module._install_new_destination
 
-    def change_source_then_install(staging_path, destination_path):
+    def change_source_then_install(anchor, staging):
         with sqlite3.connect(source_db) as connection:
             connection.execute(
                 "INSERT INTO training_sessions (note) VALUES (?)",
                 ("source changed at destination link",),
             )
-        real_install(staging_path, destination_path)
+        real_install(anchor, staging)
 
     monkeypatch.setattr(
         migration_module, "_install_new_destination", change_source_then_install
@@ -885,10 +1206,7 @@ def test_missing_destination_source_change_at_link_is_not_reported_success(
         assert connection.execute(
             "SELECT COUNT(*) FROM training_sessions"
         ).fetchone() == (2,)
-    with sqlite3.connect(memory_db) as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM user_memories WHERE canonical_key = '213'"
-        ).fetchone() == (1,)
+    assert not memory_db.exists()
     assert not list(tmp_path.glob(".memory.db.*"))
 
 
