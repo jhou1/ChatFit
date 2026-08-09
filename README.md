@@ -174,7 +174,7 @@ docker compose logs -f api bot
 set -a
 source .env
 set +a
-test -n "$CHATFIT_API_TOKEN"
+: "${CHATFIT_API_TOKEN:?set CHATFIT_API_TOKEN in .env}"
 curl -X POST http://localhost:8000/chat \
   -H "Authorization: Bearer $CHATFIT_API_TOKEN" \
   -H 'Content-Type: application/json' \
@@ -243,7 +243,11 @@ curl -X POST http://localhost:8000/chat \
 ```bash
 uv sync --dev
 mkdir -p runtime-data
-export CHATFIT_API_TOKEN='replace-with-an-independent-random-secret'
+set -a
+source .env
+set +a
+: "${GOOGLE_API_KEY:?set GOOGLE_API_KEY in .env}"
+: "${CHATFIT_API_TOKEN:?set CHATFIT_API_TOKEN in .env}"
 export CHECKPOINTER_DB_PATH=./runtime-data/checkpointer.db
 export USER_MEMORY_DB_PATH=./runtime-data/user-memory.db
 uv run uvicorn api:app --reload
