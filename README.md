@@ -93,6 +93,7 @@ TELEGRAM_BOT_TOKEN=your-telegram-bot-token
 | `LANGFUSE_SECRET_KEY` | Langfuse Secret Key |
 | `LANGFUSE_CAPTURE_CONTENT` | 是否允许 Langfuse 保存 prompt/output；默认 `false` |
 | `CHECKPOINTER_DB_PATH` | LangGraph checkpoint SQLite 文件路径 |
+| `TZ` | API/Bot 容器的本地时区，用于未明确指定日期的训练和饮食记录；默认 `Asia/Shanghai`，应使用 IANA 时区名称 |
 | `OBSERVABILITY_HASH_KEY` | 对用户标识和敏感内容生成稳定 keyed hash 的随机密钥 |
 | `PROACTIVE_REVIEWS_ENABLED` | 是否启用每日/每周 Telegram 主动回顾；默认 `false` |
 | `TELEGRAM_CHAT_ID` | 启用主动回顾时必填的整数 Telegram chat ID；关闭时不需要设置 |
@@ -142,6 +143,9 @@ docker compose up -d --build
 ```bash
 podman-compose up -d --build
 ```
+
+容器通过 `.env` 中的 `TZ` 计算本地日期。修改时请使用 IANA 时区名称（例如
+`Asia/Shanghai`、`Europe/Berlin`），然后重新创建或重启 API 与 Bot 容器使其生效。
 
 API 默认监听 `http://localhost:8000`，交互式接口文档位于
 `http://localhost:8000/docs`。

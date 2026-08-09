@@ -16,6 +16,7 @@ services:
     - .env
     environment:
     - CHECKPOINTER_DB_PATH=/app/data/checkpointer.db
+    - TZ=${TZ:-Asia/Shanghai}
     extra_hosts:
     - host.docker.internal:host-gateway
 
@@ -32,5 +33,6 @@ services:
     - API_CLEAR_URL=http://api:8000/clear
     - API_RESUME_URL=http://api:8000/resume
     - API_PROACTIVE_REVIEW_URL=http://api:8000/proactive-review
+    - TZ=${TZ:-Asia/Shanghai}
     extra_hosts:
     - host.docker.internal:host-gateway
