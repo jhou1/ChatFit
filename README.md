@@ -174,11 +174,14 @@ docker compose logs -f api bot
 set -a
 source .env
 set +a
-: "${CHATFIT_API_TOKEN:?set CHATFIT_API_TOKEN in .env}"
-curl -X POST http://localhost:8000/chat \
-  -H "Authorization: Bearer $CHATFIT_API_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"user_id":"readme-smoke-test","message":"你好"}'
+if [ -z "${CHATFIT_API_TOKEN:-}" ]; then
+  echo "CHATFIT_API_TOKEN is required; set it in .env." >&2
+else
+  curl -X POST http://localhost:8000/chat \
+    -H "Authorization: Bearer $CHATFIT_API_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d '{"user_id":"readme-smoke-test","message":"你好"}'
+fi
 ```
 
 成功响应示例：
@@ -242,15 +245,17 @@ curl -X POST http://localhost:8000/chat \
 
 ```bash
 uv sync --dev
-mkdir -p runtime-data
 set -a
 source .env
 set +a
-: "${GOOGLE_API_KEY:?set GOOGLE_API_KEY in .env}"
-: "${CHATFIT_API_TOKEN:?set CHATFIT_API_TOKEN in .env}"
-export CHECKPOINTER_DB_PATH=./runtime-data/checkpointer.db
-export USER_MEMORY_DB_PATH=./runtime-data/user-memory.db
-uv run uvicorn api:app --reload
+if [ -z "${GOOGLE_API_KEY:-}" ] || [ -z "${CHATFIT_API_TOKEN:-}" ]; then
+  echo "GOOGLE_API_KEY and CHATFIT_API_TOKEN must both be set in .env." >&2
+else
+  mkdir -p runtime-data
+  export CHECKPOINTER_DB_PATH=./runtime-data/checkpointer.db
+  export USER_MEMORY_DB_PATH=./runtime-data/user-memory.db
+  uv run uvicorn api:app --reload
+fi
 ```
 
 也可以运行终端交互版本：
