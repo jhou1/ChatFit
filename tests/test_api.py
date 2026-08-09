@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import closing
 import sqlite3
 from types import SimpleNamespace
 from datetime import date
@@ -1090,21 +1091,21 @@ async def test_memory_survives_full_api_restart_new_thread_and_stays_user_isolat
     assert same_user.status_code == other_user.status_code == 200
     assert "我乳糖不耐受" in same_user.json()["response"]
     assert "我乳糖不耐受" not in other_user.json()["response"]
-    with sqlite3.connect(memory_path) as connection:
+    with closing(sqlite3.connect(memory_path)) as connection:
         memory_tables = {
             row[0]
             for row in connection.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             )
         }
-    with sqlite3.connect(business_path) as connection:
+    with closing(sqlite3.connect(business_path)) as connection:
         business_tables = {
             row[0]
             for row in connection.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             )
         }
-    with sqlite3.connect(checkpointer_path) as connection:
+    with closing(sqlite3.connect(checkpointer_path)) as connection:
         checkpointer_tables = {
             row[0]
             for row in connection.execute(

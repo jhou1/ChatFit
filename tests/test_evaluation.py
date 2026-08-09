@@ -1,4 +1,5 @@
 import json
+from contextlib import closing
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -110,7 +111,7 @@ def test_query_expected_scalar_selects_real_business_or_memory_database(tmp_path
     business_path = tmp_path / "business.db"
     memory_path = tmp_path / "user-memory.db"
     for path, stored_value in ((business_path, 7), (memory_path, 11)):
-        with sqlite3.connect(path) as connection:
+        with closing(sqlite3.connect(path)) as connection, connection:
             connection.execute("CREATE TABLE marker (value INTEGER NOT NULL)")
             connection.execute("INSERT INTO marker (value) VALUES (?)", (stored_value,))
 
@@ -147,7 +148,7 @@ def test_query_expected_scalar_closes_connection_on_success_and_query_error(
     tmp_path, monkeypatch
 ):
     db_path = tmp_path / "business.db"
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection, connection:
         connection.execute("CREATE TABLE marker (value INTEGER NOT NULL)")
         connection.execute("INSERT INTO marker (value) VALUES (7)")
 
@@ -251,7 +252,7 @@ def test_generated_memory_queries_reject_unrelated_rows(tmp_path):
     for case_id, expected_row in expected_rows.items():
         memory_path = tmp_path / f"{case_id}.memory.db"
         business_path = tmp_path / f"{case_id}.business.db"
-        with sqlite3.connect(memory_path) as connection:
+        with closing(sqlite3.connect(memory_path)) as connection, connection:
             connection.execute("""
                 CREATE TABLE user_memories (
                     owner_key TEXT NOT NULL,
@@ -269,7 +270,7 @@ def test_generated_memory_queries_reject_unrelated_rows(tmp_path):
                     expected_row["content"],
                 ),
             )
-        with sqlite3.connect(business_path):
+        with closing(sqlite3.connect(business_path)):
             pass
 
         remember_assertion = next(
@@ -287,7 +288,7 @@ def test_generated_memory_queries_reject_unrelated_rows(tmp_path):
             == 0
         )
 
-        with sqlite3.connect(memory_path) as connection:
+        with closing(sqlite3.connect(memory_path)) as connection, connection:
             connection.execute(
                 "INSERT INTO user_memories VALUES (?, ?, ?, ?)",
                 tuple(expected_row.values()),
@@ -302,7 +303,7 @@ def test_generated_memory_queries_reject_unrelated_rows(tmp_path):
         )
 
         if case_id == "ME_06":
-            with sqlite3.connect(memory_path) as connection:
+            with closing(sqlite3.connect(memory_path)) as connection, connection:
                 connection.execute(
                     "DELETE FROM user_memories WHERE owner_key = ?",
                     (expected_row["owner_key"],),

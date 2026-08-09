@@ -1,4 +1,5 @@
 import argparse
+from contextlib import closing
 import hashlib
 import os
 import sqlite3
@@ -27,7 +28,7 @@ EXPECTED_DEFINITION = (
 
 
 def _create_source(path: Path, notes: list[object]) -> None:
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute(
             "CREATE TABLE training_sessions (id INTEGER PRIMARY KEY, note TEXT)"
         )
@@ -58,7 +59,7 @@ def _run_migration(
 
 def _source_snapshot(path: Path) -> tuple[bytes, list[tuple], list[tuple]]:
     file_bytes = path.read_bytes()
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         schema = connection.execute(
             "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY name"
         ).fetchall()
@@ -69,7 +70,7 @@ def _source_snapshot(path: Path) -> tuple[bytes, list[tuple], list[tuple]]:
 
 
 def _memory_rows(path: Path) -> tuple[list[tuple], list[tuple]]:
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         memories = connection.execute("""
             SELECT id, owner_key, memory_type, canonical_key, display_name,
                    content, version
@@ -618,7 +619,7 @@ def test_destination_replacement_after_validation_cannot_modify_source(
         migration_module.run(_run_args(source_db, memory_db))
 
     assert _source_snapshot(source_db) == before
-    with sqlite3.connect(source_db) as connection:
+    with closing(sqlite3.connect(source_db)) as connection, connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE name = 'user_memories'"
         ).fetchone() == (0,)
@@ -725,7 +726,7 @@ def test_staging_hardlink_swap_cannot_modify_source_before_sql(
         migration_module.run(_run_args(source_db, memory_db))
 
     assert _source_snapshot(source_db) == source_before
-    with sqlite3.connect(source_db) as connection:
+    with closing(sqlite3.connect(source_db)) as connection, connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE name = 'user_memories'"
         ).fetchone() == (0,)
@@ -740,7 +741,7 @@ def test_staging_replacement_before_first_path_snapshot_cannot_modify_victim(
     memory_db = tmp_path / "memory.db"
     victim_db = tmp_path / "victim.db"
     _create_source(source_db, [HISTORICAL_NOTE])
-    with sqlite3.connect(victim_db) as connection:
+    with closing(sqlite3.connect(victim_db)) as connection, connection:
         connection.execute("CREATE TABLE private_values (value TEXT)")
         connection.execute("INSERT INTO private_values VALUES ('must survive')")
     victim_before = _file_family_snapshot(victim_db)
@@ -769,7 +770,7 @@ def test_staging_replacement_before_first_path_snapshot_cannot_modify_victim(
 
     assert replaced
     assert _file_family_snapshot(victim_db) == victim_before
-    with sqlite3.connect(victim_db) as connection:
+    with closing(sqlite3.connect(victim_db)) as connection, connection:
         assert connection.execute("SELECT * FROM private_values").fetchall() == [
             ("must survive",)
         ]
@@ -787,7 +788,7 @@ def test_cleanup_preserves_unrelated_single_link_replacement(
     memory_db = tmp_path / "memory.db"
     victim_db = tmp_path / "victim.db"
     _create_source(source_db, [HISTORICAL_NOTE])
-    with sqlite3.connect(victim_db) as connection:
+    with closing(sqlite3.connect(victim_db)) as connection, connection:
         connection.execute("CREATE TABLE private_values (value TEXT)")
         connection.execute("INSERT INTO private_values VALUES ('must be recoverable')")
     victim_before = _file_family_snapshot(victim_db)
@@ -818,7 +819,7 @@ def test_cleanup_preserves_unrelated_single_link_replacement(
     preserved = list(tmp_path.glob(".memory.db.migrate-*.db"))
     assert len(preserved) == 1
     assert _file_family_snapshot(preserved[0]) == victim_before
-    with sqlite3.connect(preserved[0]) as connection:
+    with closing(sqlite3.connect(preserved[0])) as connection, connection:
         assert connection.execute("SELECT * FROM private_values").fetchall() == [
             ("must be recoverable",)
         ]
@@ -865,7 +866,7 @@ def test_clean_wal_source_hardlink_swap_fails_before_alias_sidecars(
     source_db = tmp_path / "source.db"
     memory_db = tmp_path / "memory.db"
     _create_source(source_db, [HISTORICAL_NOTE])
-    with sqlite3.connect(source_db) as connection:
+    with closing(sqlite3.connect(source_db)) as connection, connection:
         assert connection.execute("PRAGMA journal_mode = WAL").fetchone() == ("wal",)
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     Path(f"{source_db}-wal").unlink(missing_ok=True)
@@ -1015,7 +1016,7 @@ def test_destination_created_after_final_snapshot_is_not_replaced(
     with pytest.raises(migration_module.MigrationError, match="changed|conflict"):
         migration_module.run(_run_args(source_db, memory_db))
 
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection, connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM user_memories WHERE id = ?", (concurrent_id,)
         ).fetchone() == (1,)
@@ -1069,7 +1070,7 @@ def test_destination_updated_after_snapshot_fails_without_losing_external_change
     with pytest.raises(migration_module.MigrationError, match="changed"):
         migration_module.run(_run_args(source_db, memory_db))
 
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection, connection:
         stored_ids = {
             row[0]
             for row in connection.execute("SELECT id FROM user_memories ORDER BY id")
@@ -1099,7 +1100,7 @@ def test_final_check_wal_writer_is_serialized_without_losing_either_change(
             aliases=("existing",),
         ),
     ).memory.id
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection, connection:
         assert connection.execute("PRAGMA journal_mode = WAL").fetchone() == ("wal",)
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     Path(f"{memory_db}-wal").unlink(missing_ok=True)
@@ -1134,7 +1135,7 @@ def test_final_check_wal_writer_is_serialized_without_losing_either_change(
         if writer is not None:
             writer.close()
 
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection, connection:
         assert connection.execute(
             "SELECT canonical_key, content FROM user_memories ORDER BY canonical_key"
         ).fetchall() == [
@@ -1203,7 +1204,7 @@ def test_destination_replacement_after_transaction_binding_is_not_modified(
         migration_module.run(_run_args(source_db, memory_db))
 
     assert _source_snapshot(source_db) == source_before
-    with sqlite3.connect(original_db) as connection:
+    with closing(sqlite3.connect(original_db)) as connection, connection:
         assert connection.execute(
             "SELECT id FROM user_memories ORDER BY id"
         ).fetchall() == [(original_id,)]
@@ -1211,12 +1212,12 @@ def test_destination_replacement_after_transaction_binding_is_not_modified(
             "SELECT COUNT(*) FROM user_memories WHERE canonical_key = '213'"
         ).fetchone() == (0,)
     if replacement_kind == "other-database":
-        with sqlite3.connect(memory_db) as connection:
+        with closing(sqlite3.connect(memory_db)) as connection, connection:
             assert connection.execute(
                 "SELECT id FROM user_memories ORDER BY id"
             ).fetchall() == [(replacement_id,)]
     else:
-        with sqlite3.connect(source_db) as connection:
+        with closing(sqlite3.connect(source_db)) as connection, connection:
             assert connection.execute(
                 "SELECT COUNT(*) FROM sqlite_master WHERE name = 'user_memories'"
             ).fetchone() == (0,)
@@ -1237,7 +1238,7 @@ def test_existing_destination_source_change_after_commit_is_not_reported_success
         real_require_identity(destination_path, expected, source_path)
         identity_checks += 1
         if identity_checks == 5:
-            with sqlite3.connect(source_db) as connection:
+            with closing(sqlite3.connect(source_db)) as connection, connection:
                 connection.execute(
                     "INSERT INTO training_sessions (note) VALUES (?)",
                     ("source changed after destination commit",),
@@ -1250,11 +1251,11 @@ def test_existing_destination_source_change_after_commit_is_not_reported_success
     with pytest.raises(migration_module.MigrationError, match="source.*changed"):
         migration_module.run(_run_args(source_db, memory_db))
 
-    with sqlite3.connect(source_db) as connection:
+    with closing(sqlite3.connect(source_db)) as connection, connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM training_sessions"
         ).fetchone() == (2,)
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection, connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM user_memories WHERE canonical_key = '213'"
         ).fetchone() == (1,)
@@ -1269,7 +1270,7 @@ def test_missing_destination_source_change_at_link_is_not_reported_success(
     real_install = migration_module._install_new_destination
 
     def change_source_then_install(anchor, staging):
-        with sqlite3.connect(source_db) as connection:
+        with closing(sqlite3.connect(source_db)) as connection, connection:
             connection.execute(
                 "INSERT INTO training_sessions (note) VALUES (?)",
                 ("source changed at destination link",),
@@ -1283,7 +1284,7 @@ def test_missing_destination_source_change_at_link_is_not_reported_success(
     with pytest.raises(migration_module.MigrationError, match="source.*changed"):
         migration_module.run(_run_args(source_db, memory_db))
 
-    with sqlite3.connect(source_db) as connection:
+    with closing(sqlite3.connect(source_db)) as connection, connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM training_sessions"
         ).fetchone() == (2,)

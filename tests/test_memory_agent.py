@@ -1,3 +1,4 @@
+from contextlib import closing
 import sqlite3
 
 import pytest
@@ -63,7 +64,7 @@ async def test_ordinary_message_cannot_authorize_interpreter_remember(tmp_path):
         user_id="user-a", user_message="今天天气不错", pending=None
     )
 
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection, connection:
         count = connection.execute("SELECT COUNT(*) FROM user_memories").fetchone()[0]
     assert count == 0
     assert result.pending is None
@@ -158,7 +159,7 @@ async def test_none_interpreter_intent_fails_closed_without_mutation(tmp_path):
         user_id="user-a", user_message="记住我的名字", pending=None
     )
 
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection, connection:
         count = connection.execute("SELECT COUNT(*) FROM user_memories").fetchone()[0]
     assert count == 0
     assert result.pending is None
@@ -187,7 +188,7 @@ async def test_explicit_remember_commits_exact_chinese_payload(tmp_path):
         pending=None,
     )
 
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection, connection:
         row = connection.execute(
             "SELECT memory_type, canonical_key, content FROM user_memories"
         ).fetchone()
@@ -218,7 +219,7 @@ async def test_suffix_remember_commits_exact_chinese_payload(tmp_path):
         pending=None,
     )
 
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection, connection:
         content = connection.execute("SELECT content FROM user_memories").fetchone()[0]
     assert content == "我不吃香菜"
 
@@ -243,7 +244,7 @@ async def test_empty_explicit_remember_payload_never_stores_model_content(tmp_pa
 
     result = await agent.handle(user_id="user-a", user_message="记住", pending=None)
 
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection, connection:
         count = connection.execute("SELECT COUNT(*) FROM user_memories").fetchone()[0]
     assert count == 0
     assert result.response == "你希望我记住什么？"
@@ -253,7 +254,7 @@ async def test_empty_explicit_remember_payload_never_stores_model_content(tmp_pa
         user_id="user-a", user_message="  Ada  ", pending=result.pending
     )
 
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection, connection:
         rows = connection.execute("SELECT content FROM user_memories").fetchall()
     assert rows == [("  Ada  ",)]
     assert completed.pending is None
@@ -280,7 +281,7 @@ async def test_whitespace_only_remember_payload_requests_clarification(tmp_path)
 
     result = await agent.handle(user_id="user-a", user_message="记住   ", pending=None)
 
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection, connection:
         count = connection.execute("SELECT COUNT(*) FROM user_memories").fetchone()[0]
     assert count == 0
     assert result.response == "你希望我记住什么？"
@@ -290,7 +291,7 @@ async def test_whitespace_only_remember_payload_requests_clarification(tmp_path)
         user_id="user-a", user_message="  Ada  ", pending=result.pending
     )
 
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection, connection:
         rows = connection.execute("SELECT content FROM user_memories").fetchall()
     assert rows == [("  Ada  ",)]
     assert completed.pending is None
@@ -351,7 +352,7 @@ async def test_update_resolves_alias_and_replaces_same_database_row(tmp_path):
         ),
     )
     await agent.handle(user_id="user-a", user_message="记住原始模板内容", pending=None)
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection, connection:
         original_id = connection.execute("SELECT id FROM user_memories").fetchone()[0]
 
     result = await agent.handle(
@@ -360,7 +361,7 @@ async def test_update_resolves_alias_and_replaces_same_database_row(tmp_path):
         pending=None,
     )
 
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection, connection:
         rows = connection.execute(
             "SELECT id, version, content FROM user_memories"
         ).fetchall()
@@ -437,7 +438,7 @@ async def test_repeated_remember_is_idempotent_at_agent_boundary(tmp_path):
         user_id="user-a", user_message="记住同一个模板", pending=None
     )
 
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection, connection:
         rows = connection.execute(
             "SELECT id, version, content FROM user_memories"
         ).fetchall()
@@ -469,7 +470,7 @@ async def test_conflicting_remember_waits_for_update_confirmation(tmp_path):
         user_id="user-a", user_message="记住新模板内容", pending=None
     )
 
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection, connection:
         before_confirmation = connection.execute(
             "SELECT version, content FROM user_memories"
         ).fetchall()
@@ -482,7 +483,7 @@ async def test_conflicting_remember_waits_for_update_confirmation(tmp_path):
         user_id="user-a", user_message="确认更新", pending=conflict.pending
     )
 
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection, connection:
         after_confirmation = connection.execute(
             "SELECT version, content FROM user_memories"
         ).fetchall()
@@ -514,7 +515,7 @@ async def test_forget_physically_deletes_exact_memory_and_aliases(tmp_path):
         user_id="user-a", user_message="忘掉我乳糖不耐受", pending=None
     )
 
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection, connection:
         memory_count = connection.execute(
             "SELECT COUNT(*) FROM user_memories"
         ).fetchone()[0]
@@ -1425,7 +1426,7 @@ async def test_missing_target_requests_clarification_without_mutation(tmp_path):
 
     assert result.pending is not None
     assert result.pending.candidate_ids == ()
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection, connection:
         assert (
             connection.execute("SELECT COUNT(*) FROM user_memories").fetchone()[0] == 0
         )
@@ -1450,7 +1451,7 @@ async def test_repository_failure_never_returns_mutation_success(tmp_path, monke
     )
 
     assert all(word not in result.response for word in ("已记住", "已更新", "已忘掉"))
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection, connection:
         assert (
             connection.execute("SELECT COUNT(*) FROM user_memories").fetchone()[0] == 0
         )

@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from contextlib import closing
 import importlib
 import logging
 import sqlite3
@@ -182,7 +183,7 @@ def _assistant_replies(result) -> list[str]:
 
 
 def _memory_rows(memory_db) -> list[tuple]:
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection:
         return connection.execute(
             "SELECT id, version, content FROM user_memories ORDER BY id"
         ).fetchall()
@@ -410,7 +411,7 @@ async def test_unrelated_agents_fail_open_when_all_memory_reads_fail(
         assert "unavailable for this request" in prompt
         assert "(none stored)" not in prompt
     assert "simulated durable-memory read failure" not in str(result)
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection:
         assert (
             connection.execute("SELECT COUNT(*) FROM user_memories").fetchone()[0] == 0
         )
@@ -511,7 +512,7 @@ async def test_committed_mutation_reports_success_when_final_refresh_fails(
 
     result = await _invoke_for_user(app, "记住我乳糖不耐受")
 
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection:
         rows = connection.execute(
             "SELECT version, content FROM user_memories"
         ).fetchall()
@@ -742,7 +743,7 @@ async def test_composite_memory_and_specialist_graph_refreshes_once_after_mutati
 
     result = await _invoke_for_user(app, "记住训练模板213并分析今天的训练")
 
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection:
         rows = connection.execute(
             "SELECT version, content FROM user_memories"
         ).fetchall()
@@ -912,7 +913,7 @@ async def test_alias_update_routes_only_for_exact_current_owner_memory(
         config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
     )
 
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection:
         original_rows = connection.execute(
             """
             SELECT id, version, content
@@ -932,7 +933,7 @@ async def test_alias_update_routes_only_for_exact_current_owner_memory(
         config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
     )
 
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection:
         updated_rows = connection.execute(
             """
             SELECT id, version, content
@@ -975,7 +976,7 @@ async def test_alias_update_routes_only_for_exact_current_owner_memory(
         config={"configurable": {"thread_id": "thread-c", "user_id": "user-a"}},
     )
 
-    with sqlite3.connect(memory_db) as connection:
+    with closing(sqlite3.connect(memory_db)) as connection:
         memory_count = connection.execute(
             "SELECT COUNT(*) FROM user_memories WHERE owner_key = ?", (owner_a,)
         ).fetchone()[0]

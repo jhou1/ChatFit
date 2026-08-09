@@ -1,5 +1,6 @@
 from datetime import date
 import sqlite3
+from contextlib import closing
 from typing import Any
 
 from agents.models import TrainingInputRecorder, MealInfo
@@ -8,7 +9,7 @@ from agents.models import TrainingInputRecorder, MealInfo
 def init_db(db_path):
     """Initialize the database tables."""
 
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         cursor = conn.cursor()
 
         cursor.execute("PRAGMA foreign_keys = ON")
@@ -78,7 +79,7 @@ def add_training_session(input_data: TrainingInputRecorder, db_path: str) -> str
     Returns a success string or an error string (Tool Rejection) if practices are missing.
     """
 
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         cursor = conn.cursor()
         cursor.execute("PRAGMA foreign_keys = ON")
         cursor.execute("""
@@ -175,7 +176,7 @@ def add_training_session(input_data: TrainingInputRecorder, db_path: str) -> str
 
 def get_training_sessions_of_last_n_days(n: int, db_path):
     """Get a list of training sessions of the last n days"""
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -203,7 +204,7 @@ def add_meal_log(meal: MealInfo, db_path: str) -> int:
     """Add the MealInfo pydantic model
     return the ID of the newly inserted row.
     """
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -220,7 +221,7 @@ def add_meal_log(meal: MealInfo, db_path: str) -> int:
 
 def get_aggregated_training_data(n: int, db_path: str):
     """Aggregate training volume, sets, and RPE grouped by date and practice type."""
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(
@@ -250,7 +251,7 @@ def get_training_records_for_date(
     target_date: date, db_path: str
 ) -> list[dict[str, Any]]:
     """Return one recap row per training session on a calendar date."""
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
@@ -275,7 +276,7 @@ def get_aggregated_training_between(
     start_date: date, end_date: date, db_path: str
 ) -> list[dict[str, Any]]:
     """Aggregate training data in an inclusive calendar-date range."""
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
@@ -301,7 +302,7 @@ def get_aggregated_training_between(
 
 
 def get_meal_records_of_last_n_days(n: int, db_path: str):
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(
@@ -320,7 +321,7 @@ def get_meal_records_between(
     start_date: date, end_date: date, db_path: str
 ) -> list[dict[str, Any]]:
     """Return meals recorded in the inclusive calendar-date range."""
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """

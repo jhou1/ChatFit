@@ -1,3 +1,4 @@
+from contextlib import closing
 import hashlib
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
@@ -36,7 +37,7 @@ def _training_template(
 def test_initializes_only_user_memory_tables(tmp_path):
     db_path = tmp_path / "user-memory.db"
     UserMemoryStore(db_path)
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection, connection:
         tables = {
             row[0]
             for row in connection.execute(
@@ -49,7 +50,7 @@ def test_initializes_only_user_memory_tables(tmp_path):
 def test_schema_enforces_memory_and_alias_ownership_constraints(tmp_path):
     db_path = tmp_path / "user-memory.db"
     UserMemoryStore(db_path)
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection, connection:
         connection.execute("PRAGMA foreign_keys = ON")
         memory = (
             "memory-a",
@@ -165,7 +166,7 @@ def test_remember_is_idempotent_and_resolves_each_alias(tmp_path):
     first = store.remember(owner, _training_template(aliases=aliases))
     second = store.remember(owner, _training_template(aliases=aliases))
 
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection, connection:
         memory_row_count = connection.execute(
             "SELECT COUNT(*) FROM user_memories"
         ).fetchone()[0]
@@ -183,7 +184,7 @@ def test_connection_scoped_reconcile_is_exact_and_caller_transactional(tmp_path)
     initial = _training_template(content="old", aliases=("213",))
     exact = _training_template(content="new", aliases=("213", "2-1-3", "壶铃213"))
 
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection, connection:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("BEGIN IMMEDIATE")
@@ -195,7 +196,7 @@ def test_connection_scoped_reconcile_is_exact_and_caller_transactional(tmp_path)
 
     assert UserMemoryStore(db_path).list_memories(owner) == []
 
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection, connection:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("BEGIN IMMEDIATE")
@@ -206,7 +207,7 @@ def test_connection_scoped_reconcile_is_exact_and_caller_transactional(tmp_path)
         connection.commit()
 
     original = UserMemoryStore(db_path).list_memories(owner)[0]
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection, connection:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("BEGIN IMMEDIATE")
@@ -288,7 +289,7 @@ def test_update_keeps_id_increments_version_and_replaces_aliases(tmp_path):
         ),
     )
 
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection, connection:
         memory_row_count = connection.execute(
             "SELECT COUNT(*) FROM user_memories"
         ).fetchone()[0]
@@ -394,7 +395,7 @@ def test_update_preserves_user_facing_canonical_alias_spelling(tmp_path):
         ),
     )
 
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection, connection:
         canonical_display_alias = connection.execute(
             """
             SELECT display_alias
@@ -415,7 +416,7 @@ def test_forget_physically_deletes_memory_and_cascades_aliases(tmp_path):
 
     assert store.forget(owner, original.id, expected_version=original.version) is True
 
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection, connection:
         memory_row_count = connection.execute(
             "SELECT COUNT(*) FROM user_memories"
         ).fetchone()[0]
@@ -464,7 +465,7 @@ def test_concurrent_remember_creates_one_canonical_memory(tmp_path):
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = list(executor.map(lambda _: remember_after_barrier(), range(2)))
 
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection, connection:
         canonical_rows = connection.execute(
             """
             SELECT id

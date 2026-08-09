@@ -2,10 +2,10 @@
 
 ## Scope
 
-This follow-up fixes two runtime defects found at `dceb37b9` and updates the
-stale `IR_04` golden case. It does not change the deterministic command parser,
-owner-key derivation, store uniqueness constraints, or alias authorization
-boundary.
+This follow-up fixes runtime defects found at `dceb37b9`, updates the stale
+`IR_04` golden case, and closes SQLite resources exposed by strict Python 3.13
+warning checks. It does not change the deterministic command parser, owner-key
+derivation, store uniqueness constraints, or alias authorization boundary.
 
 ## Root causes
 
@@ -23,6 +23,11 @@ boundary.
    reducer kept one finalized checkpoint message, but API and CLI had already
    consumed the provisional `memory` update and ignored `refresh_memories`.
    Evaluation consumed both raw updates and therefore graded duplicate output.
+5. Several assertions and the existing business SQLite handler used
+   `with sqlite3.connect(...)`. A connection context manager commits or rolls
+   back but does not close the connection, so Python 3.13 later emitted
+   `ResourceWarning` and `PytestUnraisableExceptionWarning` during garbage
+   collection.
 
 ## TDD evidence
 
@@ -48,6 +53,14 @@ CLI, and evaluation consumers; all 5 selected cases failed for the expected
 provisional/missing/duplicate response behavior. The corresponding GREEN run
 passed all 5. Additional real-graph tests cover an initial unavailable load and
 a composite Memory + interrupted specialist request through resume.
+
+A fresh strict-warning review then reproduced 3 unclosed-database warnings in
+the 4-case composite graph matrix. Tracemalloc attributed each allocation to
+the test's direct SQLite assertion connection. The initial `-W error` gate
+ended with a three-member unraisable-warning exception group. After explicit
+connection closing, that gate passed 4 cases. Extending the same gate exposed
+the identical lifecycle error in the CLI's real `init_db` path and its existing
+test queries; the final branch-wide strict gate passed 266 cases.
 
 ## Implementation
 
@@ -79,6 +92,12 @@ a composite Memory + interrupted specialist request through resume.
   Agent and assert the exact owner/type/key/content row in the memory database;
   a real-SQLite regression rejects an unrelated row and accepts only the exact
   expected row.
+- Wrapped direct SQLite connections in `contextlib.closing`, nesting the
+  connection transaction context where writes require commit/rollback. This
+  covers the production business handler and all branch-related memory,
+  migration, API, evaluation, graph, and handler test connections. Deliberately
+  long-lived WAL/concurrency connections remain explicitly closed by their
+  callers.
 
 ## Verification
 
@@ -91,9 +110,16 @@ a composite Memory + interrupted specialist request through resume.
 - Streaming consumer GREEN: 5 passed.
 - Final focused API/CLI/evaluation/compiled-graph streaming set: 7 passed.
 - Final related memory/API/evaluation regression: 130 passed.
+- Original composite strict-warning RED: 4 functional passes followed by 3
+  unclosed-database warnings and a failing `-W error` teardown.
+- Original composite strict-warning GREEN: 4 passed.
+- Task 8 strict-warning selection: 21 passed.
+- Business handler + CLI strict-warning selection: 9 passed.
+- Branch-wide SQLite/memory/API/evaluation `-W error` gate: 266 passed in
+  78.33 seconds with no warnings.
 - `make quality`: exit 0; Ruff clean; Black 58 files unchanged; MyPy 58 source
   files clean; Bandit found zero issues and emitted no warnings.
-- `make verify`: 423 passed, 3 deselected in 83.63 seconds; no warnings.
+- `make verify`: 423 passed, 3 deselected in 82.45 seconds.
 - `git diff --check`: exit 0.
 
 ## Independent verification findings
@@ -122,6 +148,20 @@ The final independent re-review reported **READY** with no new findings:
 - `make quality`: exit 0, 0 warnings;
 - `make verify`: 423 passed, 3 deselected, 0 warnings;
 - `git diff --check`: exit 0.
+
+A later fresh final verifier used explicit `ResourceWarning`/`-W error` modes
+and found the connection-lifecycle defect above, which the default pytest
+warning policy had not displayed. After the closing fix, the same verifier's
+scoped re-review reported **READY** with no findings:
+
+- original matrix with `-W always::ResourceWarning`: 4 passed, zero warnings;
+- original matrix with `-W error`: 4 passed, zero warnings;
+- relevant branch-wide `-W error`: 266 passed, zero warnings;
+- `make quality`: clean, 58 files unchanged;
+- `make verify`: 423 passed, 3 deselected, zero warnings;
+- all 89 production/test synchronous `sqlite3.connect` sites audited, with no
+  warning suppression and every ordinary or deliberately long-lived connection
+  closed by its owner.
 
 ## Residual risk
 
