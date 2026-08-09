@@ -564,6 +564,70 @@ async def test_resumed_hitl_emits_resolved_revision_without_raw_reply(mock_inter
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply",
+    ["确认", "保存", "确认保存", " 确认 ", "保存。", "确认保存！"],
+)
+@patch("tools.safe_execution._execute_llm_query_safely")
+@patch("tools.safe_execution.create_chat_model")
+async def test_approval_resolver_deterministically_approves_pure_reply(
+    mock_create_chat_model, mock_execute, reply
+):
+    resolver = ApprovalResolver(Mock())
+
+    decision = await resolver.resolve(reply, [{"name": "log_meal", "args": {}}])
+
+    assert decision == ApprovalDecision(intent="approve", feedback=reply)
+    mock_execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply",
+    ["确认，RPE 改成 7", "保存，同时 RPE 7", "确认？", "保存..."],
+)
+@patch("tools.safe_execution._execute_llm_query_safely")
+@patch("tools.safe_execution.create_chat_model")
+async def test_approval_resolver_sends_non_pure_reply_to_classifier(
+    mock_create_chat_model, mock_execute, reply
+):
+    mock_execute.return_value = {"messages": AIMessage(content='{"intent":"revise"}')}
+    resolver = ApprovalResolver(Mock())
+
+    decision = await resolver.resolve(reply, [{"name": "log_meal", "args": {}}])
+
+    assert decision == ApprovalDecision(intent="revise", feedback=reply)
+    mock_execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("tools.safe_execution.interrupt")
+@patch("tools.safe_execution._execute_single_tool_safely")
+@patch("tools.safe_execution._execute_llm_query_safely")
+@patch("tools.safe_execution.create_chat_model")
+async def test_bare_confirmation_executes_pending_write_without_llm(
+    mock_create_chat_model, mock_llm_query, mock_tool_execute, mock_interrupt
+):
+    mock_llm_query.return_value = {"messages": AIMessage(content='{"intent":"revise"}')}
+    mock_interrupt.return_value = {"user_message": "确认"}
+    mock_tool_execute.return_value = ToolMessage(
+        content="Saved", tool_call_id="training-1"
+    )
+    node = SafeToolNode(tools=[], approval_resolver=ApprovalResolver(Mock()))
+    pending = {
+        "name": "log_training_session",
+        "args": {"note": "test"},
+        "id": "training-1",
+    }
+
+    result = await node({"messages": [AIMessage(content="", tool_calls=[pending])]})
+
+    mock_llm_query.assert_not_awaited()
+    mock_tool_execute.assert_awaited_once()
+    assert result["messages"][0].content == "Saved"
+
+
+@pytest.mark.asyncio
 @patch("tools.safe_execution._execute_llm_query_safely")
 @patch("tools.safe_execution.create_chat_model")
 async def test_approval_resolver_returns_revision_and_preserves_full_feedback(
@@ -589,9 +653,9 @@ async def test_approval_resolver_safely_rejects_malformed_json(
     mock_execute.return_value = {"messages": AIMessage(content="not JSON")}
     resolver = ApprovalResolver(Mock())
 
-    decision = await resolver.resolve("保存", [])
+    decision = await resolver.resolve("不保存", [])
 
-    assert decision == ApprovalDecision(intent="reject", feedback="保存")
+    assert decision == ApprovalDecision(intent="reject", feedback="不保存")
 
 
 @pytest.mark.asyncio

@@ -25,6 +25,15 @@ MAX_OUTPUT_TOKENS = 500
 TRUNCATE_WARNINGS = "\n[OUTPUT TRUNCATED - the tool returned more data than can be processed. Please ask a more specific question]"
 HITL_TIMEOUT_SECONDS = 300.0  # 5 minutes for human-in-the-loop timeout
 HITL_TOOL_CALLS = ["log_training_session", "log_meal"]
+PURE_APPROVAL_REPLIES = frozenset({"确认", "保存", "确认保存"})
+PURE_APPROVAL_TERMINATORS = frozenset({"。", ".", "！", "!"})
+
+
+def _is_pure_approval(user_message: str) -> bool:
+    normalized = user_message.strip()
+    if normalized[-1:] in PURE_APPROVAL_TERMINATORS:
+        normalized = normalized[:-1].rstrip()
+    return normalized in PURE_APPROVAL_REPLIES
 
 
 class ApprovalDecision(BaseModel):
@@ -49,6 +58,9 @@ class ApprovalResolver:
     async def resolve(
         self, user_message: str, pending_tool_calls: list[dict]
     ) -> ApprovalDecision:
+        if _is_pure_approval(user_message):
+            return ApprovalDecision(intent="approve", feedback=user_message)
+
         instruction = (
             "Classify a reply to a pending database-write approval. Return "
             "approve only when it purely approves the exact pending data. "
