@@ -83,14 +83,17 @@ for this single deployment-level fix.
 
 ## Tests
 
-Use TDD to add a Compose configuration regression test that parses
-`docker-compose.yml` and asserts both `api` and `bot` explicitly set
-`TZ=${TZ:-Asia/Shanghai}`. Verify `.env.example` and README documentation during
-the independent documentation-quality review.
+This configuration-only change uses the user-approved TDD exception rather than
+adding a source-text assertion. Capture the pre-change behavior with the real
+`podman-compose config` consumer and confirm neither service receives `TZ`.
+After the change, resolve Compose once without `TZ` and once with
+`TZ=Europe/Berlin`; both `api` and `bot` must receive `Asia/Shanghai` in the
+first result and `Europe/Berlin` in the second. Verify `.env.example` and README
+documentation during the independent documentation-quality review.
 
-Run the focused test, the full non-E2E suite, and `make quality`. An independent
-verification Agent must repeat the checks in `docs/quality.md` and report no
-errors, failures, or warnings.
+Run the full non-E2E suite and `make quality`. An independent verification Agent
+must repeat the Compose resolution checks and the checks in `docs/quality.md`,
+and report no errors, failures, or warnings.
 
 ## Documentation
 
@@ -113,5 +116,5 @@ semantics.
   without Python production-code changes.
 - Explicit user-provided dates remain unchanged.
 - README and `.env.example` document configuration and restart behavior.
-- Focused tests, the complete non-E2E suite, and all static quality checks pass
-  with zero errors, failures, or warnings.
+- Both real Compose resolution checks, the complete non-E2E suite, and all
+  static quality checks pass with zero errors, failures, or warnings.

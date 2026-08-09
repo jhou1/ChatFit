@@ -6,7 +6,7 @@
 
 **Architecture:** Compose passes the conventional `TZ` environment variable to both services, resolving it from `.env` or the invoking shell and defaulting to `Asia/Shanghai`. Existing Python `datetime.now()` calls remain unchanged because the container runtime applies `TZ` at process startup.
 
-**Tech Stack:** Docker Compose / Podman Compose YAML, POSIX `TZ`, Python 3.13, PyYAML, pytest.
+**Tech Stack:** Docker Compose / Podman Compose YAML, POSIX `TZ`, Python 3.13, pytest.
 
 ## Global Constraints
 
@@ -16,10 +16,12 @@
 - README must require an IANA timezone identifier and explain that containers must be recreated or restarted after a change.
 - Do not change Agent, API, database, or proactive-review scheduling code.
 - Explicit user-supplied record dates remain authoritative.
+- This configuration-only change uses the user-approved TDD exception: verify
+  behavior through the real Compose resolver instead of adding a YAML source
+  assertion test.
 
 ## File Structure
 
-- `tests/test_compose_config.py`: parse Compose configuration and protect the timezone contract for both services.
 - `docker-compose.yml`: inject the resolved `TZ` value into API and Bot.
 - `.env.example`: expose the supported timezone setting.
 - `README.md`: document timezone semantics and restart behavior.
@@ -30,7 +32,6 @@
 ### Task 1: Configure Container Local Timezone
 
 **Files:**
-- Create: `tests/test_compose_config.py`
 - Modify: `docker-compose.yml:17-20,29-34`
 - Modify: `.env.example:1-8`
 - Modify: `README.md:73-103,134-147`
@@ -40,45 +41,19 @@
 - Consumes: `TZ` from the Compose interpolation environment or project `.env` file.
 - Preserves: all Python Agent, API, database, and scheduled-review interfaces.
 
-- [ ] **Step 1: Write the failing Compose regression test**
-
-Create `tests/test_compose_config.py`:
-
-```python
-from pathlib import Path
-
-import pytest
-import yaml
-
-
-ROOT = Path(__file__).resolve().parents[1]
-COMPOSE_FILE = ROOT / "docker-compose.yml"
-
-
-@pytest.mark.parametrize("service_name", ["api", "bot"])
-def test_compose_services_receive_configurable_local_timezone(service_name: str):
-    compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
-
-    environment = compose["services"][service_name]["environment"]
-
-    assert "TZ=${TZ:-Asia/Shanghai}" in environment
-```
-
-This catches removal of the service-level timezone environment entry, a wrong
-default, or configuration of only one container.
-
-- [ ] **Step 2: Run the test and verify RED**
+- [ ] **Step 1: Capture the failing Compose behavior**
 
 Run:
 
 ```bash
-uv run pytest tests/test_compose_config.py -q
+TZ=Europe/Berlin podman-compose config
 ```
 
-Expected: `2 failed`; both service parameter cases fail because the current
-Compose environment lists do not contain `TZ=${TZ:-Asia/Shanghai}`.
+Expected RED evidence: the resolved `api.environment` and `bot.environment`
+contain no `TZ` entry even though the invoking environment supplies
+`Europe/Berlin`. Record the relevant output in the implementation report.
 
-- [ ] **Step 3: Add the minimal Compose configuration**
+- [ ] **Step 2: Add the minimal Compose configuration**
 
 In `docker-compose.yml`, add this entry to the existing `environment` list for
 both `api` and `bot`:
@@ -89,7 +64,7 @@ both `api` and `bot`:
 
 Do not alter any existing service commands, volumes, URLs, or settings.
 
-- [ ] **Step 4: Document the environment variable**
+- [ ] **Step 3: Document the environment variable**
 
 Near the required credentials in `.env.example`, add:
 
@@ -112,17 +87,7 @@ Immediately after the Docker and Podman startup examples, add this explanation:
 `Asia/Shanghai`、`Europe/Berlin`），然后重新创建或重启 API 与 Bot 容器使其生效。
 ```
 
-- [ ] **Step 5: Run the focused test and verify GREEN**
-
-Run:
-
-```bash
-uv run pytest tests/test_compose_config.py -q
-```
-
-Expected: `2 passed` with no warnings.
-
-- [ ] **Step 6: Verify the resolved Compose value**
+- [ ] **Step 4: Verify an explicit timezone override**
 
 Run:
 
@@ -130,11 +95,22 @@ Run:
 TZ=Europe/Berlin podman-compose config
 ```
 
-Inspect the resolved output and confirm both `api.environment.TZ` and
-`bot.environment.TZ` equal `Europe/Berlin`, while the configured commands,
-volumes, and URLs remain present.
+Expected GREEN evidence: both `api.environment.TZ` and `bot.environment.TZ`
+resolve to `Europe/Berlin`; all existing commands, volumes, URLs, and settings
+remain present.
 
-- [ ] **Step 7: Run the full non-E2E suite**
+- [ ] **Step 5: Verify the default timezone**
+
+Run:
+
+```bash
+env -u TZ podman-compose config
+```
+
+Expected: both `api.environment.TZ` and `bot.environment.TZ` resolve to
+`Asia/Shanghai`.
+
+- [ ] **Step 6: Run the full non-E2E suite**
 
 Run:
 
@@ -145,17 +121,17 @@ uv run pytest -q
 Expected: all tests pass with the configured E2E cases deselected and no
 warnings.
 
-- [ ] **Step 8: Review documentation freshness**
+- [ ] **Step 7: Review documentation freshness**
 
 Read `README.md` and `docs/index.html`. Confirm README explains `TZ`, its IANA
 format, default, affected records, and restart requirement. Confirm
 `docs/index.html` remains accurate because it does not expose deployment
 environment configuration or timezone-specific date promises.
 
-- [ ] **Step 9: Commit the implementation**
+- [ ] **Step 8: Commit the implementation**
 
 ```bash
-git add tests/test_compose_config.py docker-compose.yml .env.example README.md
+git add docker-compose.yml .env.example README.md
 git commit -m "fix: configure container local timezone"
 ```
 
@@ -186,10 +162,10 @@ command ends with `All static check passed.`
 
 Give a fresh verification Agent the worktree path. Require it to read
 `docs/quality.md`, run `uv run pytest -q`, run
-`uv run pytest tests/test_compose_config.py -q`, run `make quality`, resolve
-Compose once with `TZ=Europe/Berlin`, and inspect README/docs/index.html
-freshness. Any error, failure, warning, unresolved timezone, or stale
-documentation is a failed verification and must be reported.
+`make quality`, resolve Compose without `TZ` and once with
+`TZ=Europe/Berlin`, and inspect README/docs/index.html freshness. Any error,
+failure, warning, unresolved timezone, or stale documentation is a failed
+verification and must be reported.
 
 - [ ] **Step 3: Fix and repeat if verification is not pristine**
 
