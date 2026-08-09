@@ -1,7 +1,7 @@
 # Long-Term User Memory Design
 
-**Date:** 2026-08-03  
-**Status:** Approved for implementation planning  
+**Date:** 2026-08-03
+**Status:** Approved for implementation planning
 **Scope:** Explicit, durable, user-scoped memories for ChatFit
 
 ## Problem

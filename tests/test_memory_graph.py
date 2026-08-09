@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 import importlib
 import logging
+import sqlite3
 
 import aiosqlite
 import pytest
@@ -93,7 +94,12 @@ def _build_graph(monkeypatch, store, interpreter, *, checkpointer=None):
         del llm
         if "assigning user input" in str(messages[0].content):
             routed = (
-                "memory_agent" if "记住" in str(messages[-1].content) else "chatter"
+                "memory_agent"
+                if any(
+                    marker in str(messages[-1].content)
+                    for marker in ("记住", "更新成", "忘掉")
+                )
+                else "chatter"
             )
             return {"messages": AIMessage(content=routed)}
         return {"messages": AIMessage(content="普通回复")}
@@ -405,6 +411,117 @@ async def test_shared_command_grammar_routes_and_applies_modify_template(
     assert stored[0].id == original.id
     assert stored[0].version == 2
     assert stored[0].content == "新内容"
+
+
+@pytest.mark.asyncio
+async def test_alias_update_routes_only_for_exact_current_owner_memory(
+    tmp_path, monkeypatch
+):
+    """Breaks if an exact owned alias cannot authorize its explicit update route."""
+    memory_db = tmp_path / "user-memory.db"
+    store = UserMemoryStore(memory_db)
+    owner_a = owner_key_for("user-a")
+    owner_b = owner_key_for("user-b")
+    app = _build_graph(
+        monkeypatch,
+        store,
+        DeterministicInterpreter(
+            MemoryMutationDecision(
+                intent="remember",
+                memory_type=MemoryType.TRAINING_TEMPLATE,
+                canonical_key="213",
+                display_name="壶铃213",
+                content="模型不得覆盖的旧内容",
+                aliases=("2-1-3", "壶铃213"),
+            ),
+            MemoryMutationDecision(
+                intent="update",
+                memory_type=MemoryType.TRAINING_TEMPLATE,
+                target_query="模型选择的错误目标",
+                content="模型改写的新内容",
+            ),
+            MemoryMutationDecision(intent="forget", target_query="模型错误目标"),
+        ),
+    )
+
+    remembered = await app.ainvoke(
+        {"messages": [HumanMessage(content="记住训练模板 213：原始模板内容")]},
+        config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+    )
+
+    with sqlite3.connect(memory_db) as connection:
+        original_rows = connection.execute(
+            """
+            SELECT id, version, content
+            FROM user_memories
+            WHERE owner_key = ? AND memory_type = 'training_template'
+              AND canonical_key = '213'
+            """,
+            (owner_a,),
+        ).fetchall()
+    assert "已记住" in remembered["messages"][-1].content
+    assert len(original_rows) == 1
+    original_id = original_rows[0][0]
+    assert original_rows[0][1:] == (1, "训练模板 213：原始模板内容")
+
+    updated = await app.ainvoke(
+        {"messages": [HumanMessage(content="把壶铃213更新成新的模板内容")]},
+        config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+    )
+
+    with sqlite3.connect(memory_db) as connection:
+        updated_rows = connection.execute(
+            """
+            SELECT id, version, content
+            FROM user_memories
+            WHERE owner_key = ? AND memory_type = 'training_template'
+              AND canonical_key = '213'
+            """,
+            (owner_a,),
+        ).fetchall()
+    assert updated["assistant_names"] == ["memory_agent"]
+    assert "已更新" in updated["messages"][-1].content
+    assert updated_rows == [(original_id, 2, "新的模板内容")]
+
+    new_thread = await app.ainvoke(
+        {"messages": [HumanMessage(content="你好")]},
+        config={"configurable": {"thread_id": "thread-b", "user_id": "user-a"}},
+    )
+    assert "新的模板内容" in new_thread["memory_context"]
+
+    for user_id, target in (("user-b", "壶铃213"), ("user-a", "不存在的别名")):
+        rejected = await app.ainvoke(
+            {"messages": [HumanMessage(content=f"把{target}更新成不应写入")]},
+            config={
+                "configurable": {
+                    "thread_id": f"thread-{user_id}-rejected",
+                    "user_id": user_id,
+                }
+            },
+        )
+        assert rejected["assistant_names"] == ["chatter"]
+
+    assert store.list_memories(owner_b) == []
+    assert [
+        (memory.id, memory.version, memory.content)
+        for memory in store.list_memories(owner_a)
+    ] == [(original_id, 2, "新的模板内容")]
+
+    forgotten = await app.ainvoke(
+        {"messages": [HumanMessage(content="忘掉壶铃213")]},
+        config={"configurable": {"thread_id": "thread-c", "user_id": "user-a"}},
+    )
+
+    with sqlite3.connect(memory_db) as connection:
+        memory_count = connection.execute(
+            "SELECT COUNT(*) FROM user_memories WHERE owner_key = ?", (owner_a,)
+        ).fetchone()[0]
+        alias_count = connection.execute(
+            "SELECT COUNT(*) FROM user_memory_aliases WHERE owner_key = ?", (owner_a,)
+        ).fetchone()[0]
+    assert forgotten["assistant_names"] == ["memory_agent"]
+    assert "已忘掉" in forgotten["messages"][-1].content
+    assert (memory_count, alias_count) == (0, 0)
 
 
 @pytest.mark.asyncio

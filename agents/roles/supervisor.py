@@ -82,6 +82,7 @@ async def route_assistant_on_relevance(
     messages: list,
     *,
     pending_memory_action=None,
+    resolved_memory_target: bool = False,
     memory_context: str | None = None,
     summary: str | None = None,
 ) -> list[str]:
@@ -109,13 +110,10 @@ async def route_assistant_on_relevance(
     response = await _execute_llm_query_safely(llm, routing_messages)
     content_str = extract_text(response["messages"])
 
-    routed = []
+    selected = []
     if "LLM request timeout exceeded" not in content_str:
-        routed = [
-            agent.strip()
-            for agent in content_str.split(",")
-            if agent.strip() in _ROUTABLE_AGENTS
-        ]
+        selected = [agent.strip() for agent in content_str.split(",")]
+    routed = [agent for agent in selected if agent in _ROUTABLE_AGENTS]
 
     latest_user_message = next(
         (
@@ -126,7 +124,14 @@ async def route_assistant_on_relevance(
         "",
     )
     command = parse_memory_command(latest_user_message)
-    if pending_memory_action is not None or should_auto_route_memory(command):
+    router_authorized_memory = (
+        "memory_agent" in selected and command is not None and resolved_memory_target
+    )
+    if (
+        pending_memory_action is not None
+        or should_auto_route_memory(command)
+        or router_authorized_memory
+    ):
         routed.insert(0, "memory_agent")
 
     routed = list(dict.fromkeys(routed))
@@ -165,6 +170,31 @@ def make_agent_graph(
         user_id = configured_user_id(config)
         memories = memory_store.list_memories(owner_key_for(user_id))
         return format_durable_memories(memories)
+
+    def resolves_current_memory_target(
+        state: AgentState, config: RunnableConfig
+    ) -> bool:
+        user_message = next(
+            (
+                extract_text(message)
+                for message in reversed(state["messages"])
+                if isinstance(message, HumanMessage)
+            ),
+            "",
+        )
+        command = parse_memory_command(user_message)
+        if command is None or command.operation not in ("update", "forget"):
+            return False
+        owner_key = owner_key_for(configured_user_id(config))
+        try:
+            matching_ids = {
+                memory.id
+                for query in command.target_queries
+                for memory in memory_store.resolve(owner_key, query)
+            }
+        except Exception:
+            return False
+        return len(matching_ids) == 1
 
     async def invoke_specialist(
         specialist,
@@ -305,7 +335,7 @@ def make_agent_graph(
             return {"summary": new_summary, "messages": delete_cmd}
 
     # routing node
-    async def assistant_selector_node(state: AgentState):
+    async def assistant_selector_node(state: AgentState, config: RunnableConfig):
         with observe_span(
             "assistant_selector",
             {"context.messages": len(state["messages"])},
@@ -314,6 +344,7 @@ def make_agent_graph(
                 llm_config,
                 state["messages"],
                 pending_memory_action=state.get("pending_memory_action"),
+                resolved_memory_target=resolves_current_memory_target(state, config),
                 memory_context=state.get("memory_context"),
                 summary=state.get("summary"),
             )
