@@ -219,9 +219,28 @@ def create_dataset(
                     {
                         "user_input": "记住我以后不再吃海鲜了。",
                         "expected_trajectory": [
-                            "Router -> Context Governance (Supervisor)"
+                            "assistant_selector -> memory_agent",
+                            "memory",
                         ],
-                        "expected_result": "触发长效记忆/偏好更新机制，将不吃海鲜存入用户画像。",
+                        "expected_trajectory_eval": [
+                            {
+                                "eval_type": "routing",
+                                "expected_agent": "memory_agent",
+                            },
+                            {
+                                "eval_type": "db_state",
+                                "database": "memory",
+                                "query": (
+                                    "SELECT COUNT(*) FROM user_memories "
+                                    "WHERE owner_key='4af4b0ee33dae83971949801ad8d179075ab05493f5c0579fcc45d3eebb3048d' "
+                                    "AND memory_type='dietary_preference' "
+                                    "AND canonical_key='不吃海鲜' "
+                                    "AND content='我以后不再吃海鲜了。'"
+                                ),
+                                "expected_value": 1,
+                            },
+                        ],
+                        "expected_result": "将不吃海鲜保存为显式长期饮食偏好。",
                     }
                 ],
             },

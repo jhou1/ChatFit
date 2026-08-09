@@ -18,7 +18,7 @@ from agents.memory.agent import LLMMemoryInterpreter
 from agents.memory.store import UserMemoryStore
 from agents.rag import get_or_create_vector_store
 from agents.sqlite_handler import init_db
-from agents.utils import extract_text
+from agents.utils import USER_RESPONSE_NODES, extract_text
 
 from evaluation.graders import Trajectory, grade_turn
 from evaluation.models import ExpectedTrajectoryAssertion, load_evaluation_cases
@@ -127,7 +127,11 @@ async def evaluate_case(case, llm_config, vector_store, sem, enable_llm_judge):
                             if hasattr(msg, "tool_calls"):
                                 for tc in msg.tool_calls:
                                     tool_calls_made.append(tc)
-                            if msg.type == "ai" and extract_text(msg).strip():
+                            if (
+                                node_name in USER_RESPONSE_NODES
+                                and msg.type == "ai"
+                                and extract_text(msg).strip()
+                            ):
                                 turn_response_text += extract_text(msg) + "\n"
 
                 state = await app.aget_state(config)
@@ -172,7 +176,11 @@ async def evaluate_case(case, llm_config, vector_store, sem, enable_llm_judge):
                                 if hasattr(msg, "tool_calls"):
                                     for tc in msg.tool_calls:
                                         tool_calls_made.append(tc)
-                                if msg.type == "ai" and extract_text(msg).strip():
+                                if (
+                                    node_name in USER_RESPONSE_NODES
+                                    and msg.type == "ai"
+                                    and extract_text(msg).strip()
+                                ):
                                     turn_response_text += extract_text(msg) + "\n"
                     state = await app.aget_state(config)
                     iterations += 1

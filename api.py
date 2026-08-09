@@ -30,7 +30,7 @@ from agents.sqlite_handler import init_db
 from agents.roles.supervisor import make_agent_graph
 from agents.rag import get_or_create_vector_store
 from agents.roles.insights import generate_weekly_insights
-from agents.utils import extract_text
+from agents.utils import USER_RESPONSE_NODES, extract_text
 from agents.observability import (
     content_attributes,
     emit_event,
@@ -412,14 +412,7 @@ async def chat_endpoint(req: ChatRequest, request: Request, response: Response):
                     )
                     return ChatResponse(response=reply, pending_tools=None)
                 for node_name, node_output in event.items():
-                    if node_name in [
-                        "training",
-                        "meal",
-                        "insights",
-                        "assistant_selector",
-                        "chatter",
-                        "memory",
-                    ]:
+                    if node_name in USER_RESPONSE_NODES:
                         new_messages = node_output.get("messages", [])
                         if new_messages:
                             last_message = new_messages[-1]

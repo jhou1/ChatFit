@@ -21,6 +21,7 @@ from agents.memory.store import UserMemoryStore
 from agents.sqlite_handler import init_db
 from agents.roles.supervisor import make_agent_graph
 from agents.rag import get_or_create_vector_store
+from agents.utils import USER_RESPONSE_NODES, extract_text
 
 console = Console()
 
@@ -90,29 +91,20 @@ async def main():
                 initial_state, config=config, stream_mode="updates"
             ):
                 for node_name, node_output in event.items():
-                    if node_name in [
-                        "training",
-                        "meal",
-                        "assistant_selector",
-                        "chatter",
-                        "memory",
-                    ]:
+                    if node_name in USER_RESPONSE_NODES:
                         new_messages = node_output.get("messages", [])
                         if new_messages:
                             last_message = new_messages[-1]
 
-                            # Handle Gemini's list-based content (extract text parts)
-                            if isinstance(last_message.content, list):
-                                text_content = "".join(
-                                    part.get("text", "")
-                                    for part in last_message.content
-                                    if isinstance(part, dict) and "text" in part
-                                )
-                            else:
-                                text_content = str(last_message.content)
+                            text_content = extract_text(last_message)
 
                             if text_content.strip():
-                                console.print(f"[bold green]Agent ({node_name}):[/]")
+                                display_name = (
+                                    "memory"
+                                    if node_name == "refresh_memories"
+                                    else node_name
+                                )
+                                console.print(f"[bold green]Agent ({display_name}):[/]")
                                 console.print(Markdown(text_content))
                                 console.print()
 

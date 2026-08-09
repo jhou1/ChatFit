@@ -37,6 +37,14 @@ def format_durable_memories(memories: Sequence[UserMemory]) -> str:
     return "\n".join(lines)
 
 
+def format_unavailable_memories() -> str:
+    """Render a non-misleading marker when durable memory cannot be read."""
+    return (
+        f"{DURABLE_MEMORY_HEADER}\n"
+        "(unavailable for this request; do not infer that no memories exist)"
+    )
+
+
 def append_agent_context(
     prompt: str,
     *,

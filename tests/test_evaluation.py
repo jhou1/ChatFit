@@ -194,6 +194,7 @@ def test_generated_memory_cases_use_memory_agent_and_memory_database(tmp_path):
     cases = {case.case_id: case for case in load_evaluation_cases(generated_path)}
 
     expected_mutation_turns = {
+        "IR_04": [(0, 1)],
         "ME_02": [(0, 1)],
         "ME_03": [(0, 1)],
         "ME_06": [(0, 1), (1, 0)],
@@ -211,12 +212,22 @@ def test_generated_memory_cases_use_memory_agent_and_memory_database(tmp_path):
             assert db_assertion.database == "memory"
             assert db_assertion.expected_value == expected_count
 
+    ir_turn = cases["IR_04"].turns[0]
+    assert all("Context Governance" not in step for step in ir_turn.expected_trajectory)
+    assert "用户画像" not in ir_turn.expected_result
+
 
 def test_generated_memory_queries_reject_unrelated_rows(tmp_path):
     generated_path = tmp_path / "generated.jsonl"
     create_dataset(generated_path)
     cases = {case.case_id: case for case in load_evaluation_cases(generated_path)}
     expected_rows = {
+        "IR_04": {
+            "owner_key": "4af4b0ee33dae83971949801ad8d179075ab05493f5c0579fcc45d3eebb3048d",
+            "memory_type": "dietary_preference",
+            "canonical_key": "不吃海鲜",
+            "content": "我以后不再吃海鲜了。",
+        },
         "ME_02": {
             "owner_key": "20c3d1ca7e5381f4a9449436800a7bf48834f87faf18fe91dfa759850f4efc45",
             "memory_type": "training_preference",

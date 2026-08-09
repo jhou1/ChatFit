@@ -2,10 +2,12 @@ from collections.abc import Iterator
 import importlib
 import logging
 import sqlite3
+from typing import Any
 
 import aiosqlite
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command, interrupt
 
 from agents.checkpointing import ObservedAsyncSqliteSaver
@@ -56,6 +58,28 @@ class _RecordingSubgraph:
         return {"messages": [AIMessage(content=self.response)]}
 
 
+class _UnexpectedInterpreter:
+    async def interpret(self, *, user_message, memories, pending):
+        del user_message, memories, pending
+        raise AssertionError(
+            "memory interpretation must not run after the request memory load fails"
+        )
+
+
+class _ControlledListFailureStore(UserMemoryStore):
+    def __init__(self, db_path) -> None:
+        super().__init__(db_path)
+        self.list_call_count = 0
+        self.fail_list_calls: set[int] = set()
+        self.always_fail_list = False
+
+    def list_memories(self, owner_key):
+        self.list_call_count += 1
+        if self.always_fail_list or self.list_call_count in self.fail_list_calls:
+            raise OSError("simulated durable-memory read failure")
+        return super().list_memories(owner_key)
+
+
 def _llm_config() -> LLMConfig:
     return LLMConfig(provider="google", model_name="unused", kwargs={})
 
@@ -71,41 +95,46 @@ def _remember_lactose_decision() -> MemoryMutationDecision:
     )
 
 
-def _build_graph(monkeypatch, store, interpreter, *, checkpointer=None):
-    unused = _UnusedSubgraph()
+def _build_routed_graph(
+    monkeypatch,
+    store,
+    interpreter,
+    *,
+    route,
+    training=None,
+    meal=None,
+    insights=None,
+    checkpointer=None,
+    answer_prompts=None,
+):
     monkeypatch.setattr(
         "agents.roles.supervisor.make_training_agent_graph",
-        lambda *args, **kwargs: unused,
+        lambda *args, **kwargs: training or _UnusedSubgraph(),
     )
     monkeypatch.setattr(
         "agents.roles.supervisor.make_meal_subagent_graph",
-        lambda *args, **kwargs: unused,
+        lambda *args, **kwargs: meal or _UnusedSubgraph(),
     )
     monkeypatch.setattr(
         "agents.roles.supervisor.make_insights_agent_graph",
-        lambda *args, **kwargs: unused,
+        lambda *args, **kwargs: insights or _UnusedSubgraph(),
     )
     monkeypatch.setattr(
         "agents.roles.supervisor.create_chat_model",
         lambda config: object(),
     )
 
-    async def chatter_response(llm, messages):
+    async def routed_response(llm, messages):
         del llm
         if "assigning user input" in str(messages[0].content):
-            routed = (
-                "memory_agent"
-                if any(
-                    marker in str(messages[-1].content)
-                    for marker in ("记住", "更新成", "忘掉")
-                )
-                else "chatter"
-            )
-            return {"messages": AIMessage(content=routed)}
+            selected_route = route(messages) if callable(route) else route
+            return {"messages": AIMessage(content=selected_route)}
+        if answer_prompts is not None:
+            answer_prompts.append(str(messages[0].content))
         return {"messages": AIMessage(content="普通回复")}
 
     monkeypatch.setattr(
-        "agents.roles.supervisor._execute_llm_query_safely", chatter_response
+        "agents.roles.supervisor._execute_llm_query_safely", routed_response
     )
     return make_agent_graph(
         _llm_config(),
@@ -115,6 +144,65 @@ def _build_graph(monkeypatch, store, interpreter, *, checkpointer=None):
         memory_store=store,
         memory_interpreter=interpreter,
     )
+
+
+def _build_graph(monkeypatch, store, interpreter, *, checkpointer=None):
+    def choose_route(messages):
+        return (
+            "memory_agent"
+            if any(
+                marker in str(messages[-1].content)
+                for marker in ("记住", "更新成", "忘掉")
+            )
+            else "chatter"
+        )
+
+    return _build_routed_graph(
+        monkeypatch,
+        store,
+        interpreter,
+        route=choose_route,
+        checkpointer=checkpointer,
+    )
+
+
+async def _invoke_for_user(app, message: str, *, thread_id: str = "thread-a"):
+    return await app.ainvoke(
+        {"messages": [HumanMessage(content=message)]},
+        config={"configurable": {"thread_id": thread_id, "user_id": "user-a"}},
+    )
+
+
+def _assistant_replies(result) -> list[str]:
+    return [
+        str(message.content)
+        for message in result["messages"]
+        if isinstance(message, AIMessage)
+    ]
+
+
+def _memory_rows(memory_db) -> list[tuple]:
+    with sqlite3.connect(memory_db) as connection:
+        return connection.execute(
+            "SELECT id, version, content FROM user_memories ORDER BY id"
+        ).fetchall()
+
+
+async def _stream_memory_responses(
+    app: Any, action: Any, config: dict[str, dict[str, str]]
+) -> list[tuple[str, str]]:
+    responses = []
+    async for event in app.astream(action, config=config, stream_mode="updates"):
+        for node_name, node_output in event.items():
+            if not isinstance(node_output, dict):
+                continue
+            for message in node_output.get("messages", []):
+                if not isinstance(message, AIMessage):
+                    continue
+                content = str(message.content)
+                if "已记住" in content or "长期记忆暂时不可用" in content:
+                    responses.append((node_name, content))
+    return responses
 
 
 @pytest.mark.asyncio
@@ -230,6 +318,296 @@ async def test_memory_load_falls_back_to_thread_id_for_legacy_callers(
     assert "Ada" in result["memory_context"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "selected_agent",
+        "module_name",
+        "factory_name",
+        "factory_extra_args",
+        "factory_argument",
+        "expected_reply",
+    ),
+    (
+        ("chatter", None, None, (), None, "普通回复"),
+        (
+            "training_agent",
+            "agents.roles.training",
+            "make_training_agent_graph",
+            (":memory:",),
+            "training",
+            "角色回复",
+        ),
+        (
+            "meal_agent",
+            "agents.roles.meal",
+            "make_meal_subagent_graph",
+            (":memory:", None),
+            "meal",
+            "角色回复",
+        ),
+        (
+            "insights_agent",
+            "agents.roles.insights",
+            "make_insights_agent_graph",
+            (":memory:",),
+            "insights",
+            "角色回复",
+        ),
+    ),
+)
+async def test_unrelated_agents_fail_open_when_all_memory_reads_fail(
+    selected_agent,
+    module_name,
+    factory_name,
+    factory_extra_args,
+    factory_argument,
+    expected_reply,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Breaks if an unavailable optional memory store aborts unrelated chat."""
+    memory_db = tmp_path / "user-memory.db"
+    store = _ControlledListFailureStore(memory_db)
+    store.always_fail_list = True
+    captured_answer_prompts: list[str] = []
+    specialist_arguments = {}
+    if module_name is not None:
+        module = importlib.import_module(module_name)
+        monkeypatch.setattr(
+            module, "create_chat_model", lambda config: _FakeToolModel()
+        )
+        if hasattr(module, "ApprovalResolver"):
+            monkeypatch.setattr(module, "ApprovalResolver", lambda config: object())
+
+        async def capture_role_prompt(llm, messages):
+            del llm
+            captured_answer_prompts.append(str(messages[0].content))
+            return {"messages": AIMessage(content=expected_reply)}
+
+        monkeypatch.setattr(module, "_execute_llm_query_safely", capture_role_prompt)
+        factory = getattr(module, factory_name)
+        specialist_arguments[factory_argument] = factory(
+            _llm_config(), *factory_extra_args
+        )
+    app = _build_routed_graph(
+        monkeypatch,
+        store,
+        _UnexpectedInterpreter(),
+        route=selected_agent,
+        answer_prompts=captured_answer_prompts,
+        **specialist_arguments,
+    )
+
+    result = await _invoke_for_user(app, "普通的训练饮食聊天")
+
+    assert expected_reply in _assistant_replies(result)
+    assert result["memory_available"] is False
+    assert "unavailable for this request" in result["memory_context"]
+    assert "(none stored)" not in result["memory_context"]
+    assert captured_answer_prompts
+    for prompt in captured_answer_prompts:
+        assert "unavailable for this request" in prompt
+        assert "(none stored)" not in prompt
+    assert "simulated durable-memory read failure" not in str(result)
+    with sqlite3.connect(memory_db) as connection:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM user_memories").fetchone()[0] == 0
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    (
+        "记住我乳糖不耐受",
+        "把 2-1-3 模板更新成新的模板内容",
+        "忘掉 2-1-3",
+    ),
+)
+async def test_explicit_mutations_fail_closed_when_request_memory_load_fails(
+    message, tmp_path, monkeypatch
+):
+    """Breaks if a mutation retries past a failed required request snapshot."""
+    memory_db = tmp_path / "user-memory.db"
+    store = _ControlledListFailureStore(memory_db)
+    if not message.startswith("记住"):
+        store.remember(
+            owner_key_for("user-a"),
+            NewUserMemory(
+                memory_type=MemoryType.TRAINING_TEMPLATE,
+                canonical_key="213",
+                display_name="2-1-3",
+                content="原始模板内容",
+                aliases=("2-1-3",),
+            ),
+        )
+    before = _memory_rows(memory_db)
+    store.always_fail_list = True
+    app = _build_routed_graph(
+        monkeypatch,
+        store,
+        _UnexpectedInterpreter(),
+        route="memory_agent",
+    )
+
+    result = await _invoke_for_user(app, message)
+
+    after = _memory_rows(memory_db)
+    response = str(result["messages"][-1].content)
+    assert result["assistant_names"] == ["memory_agent"]
+    assert before == after
+    assert "长期记忆暂时不可用" in response
+    assert "simulated durable-memory read failure" not in response
+    assert all(word not in response for word in ("已记住", "已更新", "已忘掉"))
+
+
+@pytest.mark.asyncio
+async def test_specialist_uses_request_snapshot_when_its_fresh_read_fails(
+    tmp_path, monkeypatch
+):
+    """Breaks if a specialist refresh failure discards a valid loaded snapshot."""
+    store = _ControlledListFailureStore(tmp_path / "user-memory.db")
+    store.remember(
+        owner_key_for("user-a"),
+        NewUserMemory(
+            memory_type=MemoryType.TRAINING_PREFERENCE,
+            canonical_key="深蹲偏好",
+            display_name="深蹲偏好",
+            content="深蹲时使用举重鞋",
+        ),
+    )
+    store.fail_list_calls = {2}
+    specialist = _RecordingSubgraph("insights reply")
+    app = _build_routed_graph(
+        monkeypatch,
+        store,
+        DeterministicInterpreter(),
+        route="insights_agent",
+        insights=specialist,
+    )
+
+    result = await _invoke_for_user(app, "分析今天的训练")
+
+    assert "深蹲时使用举重鞋" in specialist.seen_states[0]["memory_context"]
+    assert "深蹲时使用举重鞋" in result["memory_context"]
+    assert result["memory_available"] is True
+
+
+@pytest.mark.asyncio
+async def test_committed_mutation_reports_success_when_final_refresh_fails(
+    tmp_path, monkeypatch
+):
+    """Breaks if a post-commit read error crashes or misreports the committed write."""
+    memory_db = tmp_path / "user-memory.db"
+    store = _ControlledListFailureStore(memory_db)
+    store.fail_list_calls = {3}
+    app = _build_routed_graph(
+        monkeypatch,
+        store,
+        DeterministicInterpreter(_remember_lactose_decision()),
+        route="memory_agent",
+    )
+
+    result = await _invoke_for_user(app, "记住我乳糖不耐受")
+
+    with sqlite3.connect(memory_db) as connection:
+        rows = connection.execute(
+            "SELECT version, content FROM user_memories"
+        ).fetchall()
+    response = str(result["messages"][-1].content)
+    success_replies = [
+        reply for reply in _assistant_replies(result) if "已记住" in reply
+    ]
+    assert rows == [(1, "我乳糖不耐受")]
+    assert success_replies == [response]
+    assert "已记住" in response
+    assert "暂时无法刷新" in response
+    assert "simulated durable-memory read failure" not in response
+    assert result["memory_available"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("final_refresh_fails", (False, True))
+async def test_memory_response_streams_once_from_final_refresh_and_history_matches(
+    final_refresh_fails, tmp_path, monkeypatch
+):
+    """Breaks if streaming exposes a provisional Memory reply before final refresh."""
+    memory_db = tmp_path / "user-memory.db"
+    store = _ControlledListFailureStore(memory_db)
+    if final_refresh_fails:
+        store.fail_list_calls = {3}
+    app = _build_routed_graph(
+        monkeypatch,
+        store,
+        DeterministicInterpreter(_remember_lactose_decision()),
+        route="memory_agent",
+        checkpointer=MemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "stream-thread", "user_id": "user-a"}}
+    streamed_responses = await _stream_memory_responses(
+        app,
+        {"messages": [HumanMessage(content="记住我乳糖不耐受")]},
+        config,
+    )
+
+    snapshot = await app.aget_state(config)
+    history_responses = [
+        str(message.content)
+        for message in snapshot.values["messages"]
+        if isinstance(message, AIMessage) and "已记住" in str(message.content)
+    ]
+
+    assert [node for node, _ in streamed_responses] == ["refresh_memories"]
+    assert history_responses == [streamed_responses[0][1]]
+    assert ("暂时无法刷新" in streamed_responses[0][1]) is final_refresh_fails
+    assert [(version, content) for _, version, content in _memory_rows(memory_db)] == [
+        (1, "我乳糖不耐受")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unavailable_mutation_response_streams_once_from_final_refresh(
+    tmp_path, monkeypatch
+):
+    """Breaks if fail-closed Memory output bypasses the final response node."""
+    memory_db = tmp_path / "user-memory.db"
+    store = _ControlledListFailureStore(memory_db)
+    store.always_fail_list = True
+    app = _build_routed_graph(
+        monkeypatch,
+        store,
+        _UnexpectedInterpreter(),
+        route="memory_agent",
+        checkpointer=MemorySaver(),
+    )
+    config = {
+        "configurable": {
+            "thread_id": "unavailable-stream-thread",
+            "user_id": "user-a",
+        }
+    }
+
+    streamed_responses = await _stream_memory_responses(
+        app,
+        {"messages": [HumanMessage(content="记住我乳糖不耐受")]},
+        config,
+    )
+    snapshot = await app.aget_state(config)
+    history_responses = [
+        str(message.content)
+        for message in snapshot.values["messages"]
+        if isinstance(message, AIMessage)
+        and "长期记忆暂时不可用" in str(message.content)
+    ]
+
+    assert streamed_responses == [
+        ("refresh_memories", "长期记忆暂时不可用，请稍后重试。")
+    ]
+    assert history_responses == [streamed_responses[0][1]]
+    assert _memory_rows(memory_db) == []
+
+
 async def _route_with_llm_decision(monkeypatch, message: str, decision: str):
     monkeypatch.setattr(
         "agents.roles.supervisor.create_chat_model",
@@ -323,6 +701,91 @@ async def test_composite_memory_and_insights_routes_are_both_retained(monkeypatc
     )
 
     assert routes == ["memory_agent", "insights_agent"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("selected_agent", "factory_argument"),
+    (
+        ("training_agent", "training"),
+        ("meal_agent", "meal"),
+        ("insights_agent", "insights"),
+    ),
+)
+async def test_composite_memory_and_specialist_graph_refreshes_once_after_mutation(
+    selected_agent,
+    factory_argument,
+    tmp_path,
+    monkeypatch,
+):
+    """Breaks if parallel memory/specialist branches both write memory context."""
+    memory_db = tmp_path / "user-memory.db"
+    store = UserMemoryStore(memory_db)
+    specialist = _RecordingSubgraph(f"{selected_agent} reply")
+    specialist_arguments = {factory_argument: specialist}
+    app = _build_routed_graph(
+        monkeypatch,
+        store,
+        DeterministicInterpreter(
+            MemoryMutationDecision(
+                intent="remember",
+                memory_type=MemoryType.TRAINING_TEMPLATE,
+                canonical_key="213",
+                display_name="训练模板213",
+                content="模型不得覆盖的内容",
+                aliases=("2-1-3", "壶铃213"),
+            )
+        ),
+        route=selected_agent,
+        **specialist_arguments,
+    )
+
+    result = await _invoke_for_user(app, "记住训练模板213并分析今天的训练")
+
+    with sqlite3.connect(memory_db) as connection:
+        rows = connection.execute(
+            "SELECT version, content FROM user_memories"
+        ).fetchall()
+    assistant_replies = set(_assistant_replies(result))
+    assert result["assistant_names"] == ["memory_agent", selected_agent]
+    assert rows == [(1, "训练模板213并分析今天的训练")]
+    assert any("已记住" in reply for reply in assistant_replies)
+    assert f"{selected_agent} reply" in assistant_replies
+    assert "训练模板213并分析今天的训练" in result["memory_context"]
+
+
+@pytest.mark.asyncio
+async def test_training_and_meal_fanout_has_one_final_memory_context_writer(
+    tmp_path, monkeypatch
+):
+    """Breaks if two ordinary specialist branches both publish one state key."""
+    store = UserMemoryStore(tmp_path / "user-memory.db")
+    store.remember(
+        owner_key_for("user-a"),
+        NewUserMemory(
+            memory_type=MemoryType.DIETARY_PREFERENCE,
+            canonical_key="不吃香菜",
+            display_name="不吃香菜",
+            content="我不吃香菜",
+        ),
+    )
+    training = _RecordingSubgraph("training reply")
+    meal = _RecordingSubgraph("meal reply")
+    app = _build_routed_graph(
+        monkeypatch,
+        store,
+        DeterministicInterpreter(),
+        route="training_agent, meal_agent",
+        training=training,
+        meal=meal,
+    )
+
+    result = await _invoke_for_user(app, "今天练了深蹲，也吃了鸡胸肉")
+
+    assistant_replies = set(_assistant_replies(result))
+    assert result["assistant_names"] == ["training_agent", "meal_agent"]
+    assert assistant_replies == {"training reply", "meal reply"}
+    assert "我不吃香菜" in result["memory_context"]
 
 
 @pytest.mark.asyncio
@@ -826,6 +1289,127 @@ async def test_resume_refreshes_memory_before_interrupted_specialist_restarts(
     assert "深蹲时使用举重鞋" not in specialist.seen_memory_contexts[0]
     assert "深蹲时使用举重鞋" in specialist.seen_memory_contexts[-1]
     assert "深蹲时使用举重鞋" in resumed["memory_context"]
+
+
+@pytest.mark.asyncio
+async def test_composite_interrupt_defers_memory_reply_until_resume_final_refresh(
+    tmp_path, monkeypatch
+):
+    """Breaks if a committed Memory reply leaks before a parallel interrupt resolves."""
+    memory_store = UserMemoryStore(tmp_path / "user-memory.db")
+    specialist = _InterruptingSpecialist()
+    app = _build_routed_graph(
+        monkeypatch,
+        memory_store,
+        DeterministicInterpreter(_remember_lactose_decision()),
+        route="training_agent",
+        training=specialist,
+        checkpointer=MemorySaver(),
+    )
+    config = {
+        "configurable": {
+            "thread_id": "memory-interrupt-thread",
+            "user_id": "user-a",
+        }
+    }
+    streamed_memory_responses = await _stream_memory_responses(
+        app,
+        {"messages": [HumanMessage(content="记住我乳糖不耐受并记录今天训练")]},
+        config,
+    )
+
+    interrupted = await app.aget_state(config)
+    pending_interrupt = interrupted.tasks[0].interrupts[0]
+    assert streamed_memory_responses == []
+    assert not any(
+        isinstance(message, AIMessage) and "已记住" in str(message.content)
+        for message in interrupted.values["messages"]
+    )
+
+    streamed_memory_responses.extend(
+        await _stream_memory_responses(
+            app,
+            Command(resume={pending_interrupt.id: {"approved": True}}),
+            config,
+        )
+    )
+
+    completed = await app.aget_state(config)
+    history_memory_responses = [
+        str(message.content)
+        for message in completed.values["messages"]
+        if isinstance(message, AIMessage) and "已记住" in str(message.content)
+    ]
+    assert [node for node, _ in streamed_memory_responses] == ["refresh_memories"]
+    assert history_memory_responses == [streamed_memory_responses[0][1]]
+    assert "specialist resumed" in _assistant_replies(completed.values)
+
+
+@pytest.mark.asyncio
+async def test_two_interrupted_specialists_resume_then_share_one_final_refresh(
+    tmp_path, monkeypatch
+):
+    """Breaks if resumed fan-out publishes one memory snapshot per specialist."""
+    memory_store = UserMemoryStore(tmp_path / "user-memory.db")
+    training = _InterruptingSpecialist()
+    meal = _InterruptingSpecialist()
+    checkpoint_path = tmp_path / "checkpointer.db"
+    config = {
+        "configurable": {
+            "thread_id": "multi-resume-thread",
+            "checkpoint_ns": "",
+            "user_id": "user-a",
+        }
+    }
+
+    async with aiosqlite.connect(checkpoint_path) as connection:
+        saver = ObservedAsyncSqliteSaver(connection)
+        await saver.setup()
+        app = _build_routed_graph(
+            monkeypatch,
+            memory_store,
+            DeterministicInterpreter(),
+            route="training_agent, meal_agent",
+            training=training,
+            meal=meal,
+            checkpointer=saver,
+        )
+        await app.ainvoke(
+            {"messages": [HumanMessage(content="训练和饮食都需要确认")]},
+            config=config,
+        )
+        snapshot = await app.aget_state(config)
+        pending_interrupts = [
+            pending_interrupt
+            for task in snapshot.tasks
+            for pending_interrupt in task.interrupts
+        ]
+        assert len(pending_interrupts) == 2
+
+        memory_store.remember(
+            owner_key_for("user-a"),
+            NewUserMemory(
+                memory_type=MemoryType.TRAINING_PREFERENCE,
+                canonical_key="恢复偏好",
+                display_name="恢复偏好",
+                content="恢复后读取这条新记忆",
+            ),
+        )
+        resumed = await app.ainvoke(
+            Command(
+                resume={
+                    pending_interrupt.id: {"approved": True}
+                    for pending_interrupt in pending_interrupts
+                }
+            ),
+            config=config,
+        )
+
+    for specialist in (training, meal):
+        assert "恢复后读取这条新记忆" not in specialist.seen_memory_contexts[0]
+        assert "恢复后读取这条新记忆" in specialist.seen_memory_contexts[-1]
+    assert _assistant_replies(resumed).count("specialist resumed") == 2
+    assert "恢复后读取这条新记忆" in resumed["memory_context"]
 
 
 @pytest.mark.asyncio

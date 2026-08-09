@@ -109,6 +109,7 @@ class MemoryAgentResult(BaseModel):
 
     response: str
     pending: PendingMemoryAction | None = None
+    mutation_committed: bool = False
 
 
 class MemoryConflictError(Exception):

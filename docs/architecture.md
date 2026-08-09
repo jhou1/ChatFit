@@ -19,9 +19,19 @@ flowchart TD
         Selector --> Insights[Insights Agent]
         Selector --> Chatter[Chatter Agent]
         Selector --> Memory[Memory Agent]
+        Training --> Refresh[refresh_memories]
+        Meal --> Refresh
+        Insights --> Refresh
+        Chatter --> Refresh
+        Memory --> Refresh
+        Refresh --> Done([response])
     end
 
-    MemoryDB[("user-memory.db<br/>durable explicit memory")] -->|"fresh read every request<br/>and specialist invocation"| Load
+    MemoryDB[("user-memory.db<br/>durable explicit memory")] -->|"fresh request read"| Load
+    MemoryDB -.->|"fresh prompt read"| Training
+    MemoryDB -.->|"fresh prompt read"| Meal
+    MemoryDB -.->|"fresh prompt read"| Insights
+    MemoryDB -->|"single post-fan-out refresh"| Refresh
     Memory -->|"remember / update / forget"| MemoryDB
     Training --> BusinessDB[("~/.iron/iron.db<br/>business records")]
     Meal --> BusinessDB
@@ -65,6 +75,13 @@ and memory database files.
 The short-term summary is not a durable-memory writer. `context_governance`
 only compresses old messages once a thread grows long. Conversely, the Memory
 Agent does not write training or meal records and does not replace checkpoints.
+Specialists fresh-read durable memory for their own prompts without publishing
+competing state snapshots. After every selected branch completes,
+`refresh_memories` performs the single final `memory_context` write, including
+after interrupt/resume and after a Memory Agent mutation. The Memory Agent also
+defers its user-facing result to this node, so API, CLI, and evaluation streams
+observe exactly one finalized memory response. If a committed mutation cannot
+be reloaded, that one response includes both the success and refresh warning.
 
 ## Durable-memory contract
 

@@ -263,7 +263,10 @@ class MemoryAgent:
             return MemoryAgentResult(
                 response=f"已记住，无需重复记录「{result.memory.display_name}」。"
             )
-        return MemoryAgentResult(response=f"已记住「{result.memory.display_name}」。")
+        return MemoryAgentResult(
+            response=f"已记住「{result.memory.display_name}」。",
+            mutation_committed=True,
+        )
 
     def _clarify_remember_conflict(
         self,
@@ -440,7 +443,10 @@ class MemoryAgent:
                 return self._stale_memory_result()
             except Exception:
                 return self._repository_failure()
-            return MemoryAgentResult(response=f"已更新「{updated.display_name}」。")
+            return MemoryAgentResult(
+                response=f"已更新「{updated.display_name}」。",
+                mutation_committed=True,
+            )
 
         try:
             forgotten = self._store.forget(
@@ -454,7 +460,10 @@ class MemoryAgent:
             return self._repository_failure()
         if not forgotten:
             return self._repository_failure()
-        return MemoryAgentResult(response=f"已忘掉「{target.display_name}」。")
+        return MemoryAgentResult(
+            response=f"已忘掉「{target.display_name}」。",
+            mutation_committed=True,
+        )
 
     def _resolve_exact_queries(
         self,

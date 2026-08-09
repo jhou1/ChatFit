@@ -14,7 +14,11 @@ from agents.models import AgentState
 from agents.llm_factory import create_chat_model, LLMConfig
 from agents.memory.agent import LLMMemoryInterpreter, MemoryAgent, MemoryInterpreter
 from agents.memory.commands import parse_memory_command, should_auto_route_memory
-from agents.memory.context import append_agent_context, format_durable_memories
+from agents.memory.context import (
+    append_agent_context,
+    format_durable_memories,
+    format_unavailable_memories,
+)
 from agents.memory.models import PendingMemoryAction
 from agents.memory.store import UserMemoryStore, owner_key_for
 from agents.roles.meal import make_meal_subagent_graph
@@ -74,6 +78,10 @@ Here is the new conversation history to compress:
 
 _ROUTABLE_AGENTS = frozenset(
     ("training_agent", "meal_agent", "insights_agent", "chatter")
+)
+_MEMORY_UNAVAILABLE_RESPONSE = "长期记忆暂时不可用，请稍后重试。"
+_MEMORY_REFRESH_FAILED_RESPONSE = (
+    "长期记忆操作已完成，但长期记忆上下文暂时无法刷新，请稍后再试。"
 )
 
 
@@ -166,10 +174,16 @@ def make_agent_graph(
             raise ValueError("configurable.user_id or thread_id is required")
         return user_id
 
-    def fresh_memory_context(config: RunnableConfig) -> str:
-        user_id = configured_user_id(config)
+    def fresh_memory_context(user_id: str) -> str:
         memories = memory_store.list_memories(owner_key_for(user_id))
         return format_durable_memories(memories)
+
+    def try_fresh_memory_context(user_id: str, *, stage: str) -> str | None:
+        try:
+            return fresh_memory_context(user_id)
+        except Exception:
+            emit_event("memory.load_failed", {"memory.load.stage": stage})
+            return None
 
     def resolves_current_memory_target(
         state: AgentState, config: RunnableConfig
@@ -201,10 +215,18 @@ def make_agent_graph(
         state: AgentState,
         config: RunnableConfig,
     ) -> dict[str, object]:
-        memory_context = fresh_memory_context(config)
+        user_id = configured_user_id(config)
+        memory_context = state.get("memory_context") or (
+            format_unavailable_memories()
+            if state.get("memory_available") is False
+            else format_durable_memories(())
+        )
+        refreshed_context = try_fresh_memory_context(user_id, stage="specialist")
+        if refreshed_context is not None:
+            memory_context = refreshed_context
         refreshed_state = {**state, "memory_context": memory_context}
         result = await specialist.ainvoke(refreshed_state)
-        return {"messages": result["messages"], "memory_context": memory_context}
+        return {"messages": result["messages"]}
 
     async def training_wrapper(state: AgentState, config: RunnableConfig):
         with observe_span("agent.training"):
@@ -233,13 +255,32 @@ def make_agent_graph(
 
     async def load_memories_node(
         state: AgentState, config: RunnableConfig
-    ) -> dict[str, str]:
+    ) -> dict[str, object]:
         del state
-        return {"memory_context": fresh_memory_context(config)}
+        user_id = configured_user_id(config)
+        memory_context = try_fresh_memory_context(user_id, stage="request")
+        if memory_context is None:
+            return {
+                "memory_context": format_unavailable_memories(),
+                "memory_available": False,
+                "memory_mutation_committed": False,
+                "memory_mutation_response": None,
+            }
+        return {
+            "memory_context": memory_context,
+            "memory_available": True,
+            "memory_mutation_committed": False,
+            "memory_mutation_response": None,
+        }
 
     async def memory_agent_node(
         state: AgentState, config: RunnableConfig
     ) -> dict[str, object]:
+        if state.get("memory_available") is False:
+            return {
+                "memory_mutation_committed": False,
+                "memory_mutation_response": _MEMORY_UNAVAILABLE_RESPONSE,
+            }
         user_message = next(
             (
                 extract_text(message)
@@ -260,16 +301,40 @@ def make_agent_graph(
             user_message=user_message,
             pending=pending,
         )
-        refreshed = memory_store.list_memories(owner_key_for(user_id))
         return {
-            "messages": [AIMessage(content=result.response)],
             "pending_memory_action": (
                 result.pending.model_dump(mode="json")
                 if result.pending is not None
                 else None
             ),
-            "memory_context": format_durable_memories(refreshed),
+            "memory_mutation_committed": result.mutation_committed,
+            "memory_mutation_response": result.response,
         }
+
+    async def refresh_memories_node(
+        state: AgentState, config: RunnableConfig
+    ) -> dict[str, object]:
+        user_id = configured_user_id(config)
+        memory_context = try_fresh_memory_context(user_id, stage="final_refresh")
+        response = state.get("memory_mutation_response")
+        if memory_context is None:
+            update: dict[str, object] = {
+                "memory_context": state.get("memory_context")
+                or format_unavailable_memories(),
+                "memory_available": False,
+            }
+            if response is not None:
+                if state.get("memory_mutation_committed"):
+                    response = f"{response} {_MEMORY_REFRESH_FAILED_RESPONSE}"
+                update["messages"] = [AIMessage(content=response)]
+            return update
+        update = {
+            "memory_context": memory_context,
+            "memory_available": True,
+        }
+        if response is not None:
+            update["messages"] = [AIMessage(content=response)]
+        return update
 
     async def context_governance_node(state: AgentState):
         """cut off the messages when its length exceeds max length
@@ -372,6 +437,7 @@ def make_agent_graph(
     builder.add_node("chatter", chatter_node)
     builder.add_node("assistant_selector", assistant_selector_node)
     builder.add_node("memory", memory_agent_node)
+    builder.add_node("refresh_memories", refresh_memories_node)
 
     builder.add_edge(START, "load_memories")
     builder.add_edge("load_memories", "context_governance")
@@ -387,5 +453,7 @@ def make_agent_graph(
             "chatter": "chatter",
         },
     )
+    for terminal_agent in ("training", "meal", "insights", "memory", "chatter"):
+        builder.add_edge(terminal_agent, "refresh_memories")
 
     return builder.compile(checkpointer=checkpointer)

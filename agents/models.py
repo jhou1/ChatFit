@@ -98,4 +98,7 @@ class AgentState(TypedDict):
     assistant_names: list[str]
     summary: NotRequired[str]
     memory_context: NotRequired[str]
+    memory_available: NotRequired[bool]
+    memory_mutation_committed: NotRequired[bool]
+    memory_mutation_response: NotRequired[str | None]
     pending_memory_action: NotRequired[dict[str, object] | None]

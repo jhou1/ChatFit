@@ -71,6 +71,25 @@ class FakeAgent:
         yield {"chatter": {"messages": [AIMessage(content="backend is ready")]}}
 
 
+class FakeMemoryRefreshAgent(FakeAgent):
+    async def astream(self, action, *, config, stream_mode):
+        self.config = config
+        self.configs.append(config)
+        yield {"memory": {"messages": [AIMessage(content="已记住你的训练偏好。")]}}
+        yield {
+            "refresh_memories": {
+                "messages": [
+                    AIMessage(
+                        content=(
+                            "已记住你的训练偏好。 "
+                            "长期记忆操作已完成，但长期记忆上下文暂时无法刷新，请稍后再试。"
+                        )
+                    )
+                ]
+            }
+        }
+
+
 class FakeInterruptAgent(FakeAgent):
     async def astream(self, action, *, config, stream_mode):
         self.config = config
@@ -513,6 +532,32 @@ async def test_chat_remains_available_when_langfuse_callback_initialization_fail
     assert response.status_code == 200
     assert response.json()["response"] == "backend is ready"
     assert agent.config["callbacks"] == []
+
+
+@pytest.mark.asyncio
+async def test_chat_returns_only_final_memory_refresh_response(
+    monkeypatch, api_auth_headers
+):
+    """Breaks if the API streams a provisional Memory reply or misses its warning."""
+    monkeypatch.setattr(api_module, "CallbackHandler", lambda **kwargs: object())
+    agent = FakeMemoryRefreshAgent()
+    api_module.app.state.agent = agent
+    api_module.user_sessions.clear()
+
+    transport = httpx.ASGITransport(app=api_module.app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        headers=api_auth_headers,
+    ) as client:
+        response = await client.post(
+            "/chat", json={"user_id": "test-user", "message": "记住训练偏好"}
+        )
+
+    assert response.status_code == 200
+    response_text = response.json()["response"]
+    assert response_text.count("已记住你的训练偏好。") == 1
+    assert "长期记忆上下文暂时无法刷新" in response_text
 
 
 @pytest.mark.asyncio
@@ -1095,6 +1140,11 @@ async def test_main_uses_configured_memory_store_and_local_cli_owner(
         async def astream(self, state, *, config, stream_mode):
             captured["config"] = config
             yield {"memory": {"messages": [AIMessage(content="已记住你的训练偏好。")]}}
+            yield {
+                "refresh_memories": {
+                    "messages": [AIMessage(content="已记住你的最终训练偏好。")]
+                }
+            }
 
     def graph_factory(*args, **kwargs):
         captured["graph_kwargs"] = kwargs
@@ -1110,7 +1160,9 @@ async def test_main_uses_configured_memory_store_and_local_cli_owner(
     assert captured["config"]["configurable"]["user_id"] == "local-cli"
     assert captured["config"]["configurable"]["thread_id"]
     assert memory_path != tmp_path / "chatfit.db"
-    assert "已记住你的训练偏好。" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "已记住你的最终训练偏好。" in output
+    assert "已记住你的训练偏好。" not in output
 
 
 @pytest.mark.asyncio
@@ -1191,6 +1243,64 @@ async def test_evaluation_memory_is_shared_within_case_and_isolated_between_case
     assert all(
         record["memory_path"] != record["business_path"] for record in recordings
     )
+
+
+@pytest.mark.asyncio
+async def test_evaluation_grades_only_final_memory_refresh_response(monkeypatch):
+    """Breaks if evaluation grades both provisional and finalized Memory replies."""
+    captured_trajectories = []
+    monkeypatch.setattr(
+        "agents.memory.agent.create_chat_model", lambda config: _StructuredMemoryModel()
+    )
+
+    class FinalizedMemoryEvaluationGraph:
+        async def astream(self, state, *, config, stream_mode):
+            del state, config, stream_mode
+            yield {"memory": {"messages": [AIMessage(content="已记住你的训练偏好。")]}}
+            yield {
+                "refresh_memories": {
+                    "messages": [
+                        AIMessage(
+                            content=(
+                                "已记住你的训练偏好。 "
+                                "长期记忆操作已完成，但长期记忆上下文暂时无法刷新，请稍后再试。"
+                            )
+                        )
+                    ]
+                }
+            }
+
+        async def aget_state(self, config):
+            del config
+            return SimpleNamespace(next=(), tasks=[])
+
+    def graph_factory(*args, **kwargs):
+        del args, kwargs
+        return FinalizedMemoryEvaluationGraph()
+
+    def capture_grade(turn, trajectory):
+        del turn
+        captured_trajectories.append(trajectory)
+        return SimpleNamespace(passed=True, failures=[])
+
+    monkeypatch.setattr(evaluation_runner, "make_agent_graph", graph_factory)
+    monkeypatch.setattr(evaluation_runner, "grade_turn", capture_grade)
+    case = EvaluationCase.model_validate(
+        {"case_id": "memory-stream", "turns": [{"user_input": "记住训练偏好"}]}
+    )
+
+    result = await evaluation_runner.evaluate_case(
+        case,
+        object(),
+        object(),
+        asyncio.Semaphore(1),
+        False,
+    )
+
+    response_text = captured_trajectories[0].response
+    assert result.passed is True
+    assert response_text.count("已记住你的训练偏好。") == 1
+    assert "长期记忆上下文暂时无法刷新" in response_text
 
 
 def test_langfuse_content_is_redacted_by_default_and_requires_explicit_opt_in(
