@@ -25,7 +25,9 @@ defaults to `Asia/Shanghai`.
 
 Add `TZ=Asia/Shanghai` to `.env.example`. Users in another timezone replace it
 with a valid IANA timezone name such as `Europe/Berlin` or `America/New_York`
-before creating or restarting the containers.
+before creating the containers. If they change it after deployment, they must
+recreate the API and Bot containers; a plain restart does not apply environment
+variable changes.
 
 No Python timezone abstraction is added. The existing `datetime.now()` calls
 already honor `TZ` when the process starts; this was reproduced inside the
@@ -79,7 +81,7 @@ for this single deployment-level fix.
 - Documentation requires an IANA timezone identifier. Invalid values are an
   operator configuration error; this minimal fix does not add runtime parsing.
 - Changes to `.env` take effect only after the API and Bot containers are
-  recreated or restarted.
+  recreated.
 
 ## Tests
 
@@ -102,7 +104,8 @@ Update README's environment table and startup instructions to explain:
 - `TZ` controls the containers' local calendar date;
 - the default is `Asia/Shanghai`;
 - values must be IANA timezone identifiers;
-- containers must be restarted after changing it.
+- containers must be recreated after changing it because a plain restart does
+  not apply environment variable changes.
 
 Review `docs/index.html` for consistency. No landing-page change is expected
 because it does not document deployment environment variables or calendar-date
@@ -115,6 +118,7 @@ semantics.
 - Existing training and meal recording code uses the configured local date
   without Python production-code changes.
 - Explicit user-provided dates remain unchanged.
-- README and `.env.example` document configuration and restart behavior.
+- README and `.env.example` document configuration and container-recreation
+  behavior.
 - Both real Compose resolution checks, the complete non-E2E suite, and all
   static quality checks pass with zero errors, failures, or warnings.

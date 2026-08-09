@@ -13,7 +13,7 @@
 - Use only the standard `TZ` environment variable; do not add host-detection scripts, bind mounts, or Python timezone modules.
 - Both `api` and `bot` must receive `TZ=${TZ:-Asia/Shanghai}`.
 - `.env.example` must document `TZ=Asia/Shanghai` as the default example.
-- README must require an IANA timezone identifier and explain that containers must be recreated or restarted after a change.
+- README must require an IANA timezone identifier and explain that containers must be recreated after a change.
 - Do not change Agent, API, database, or proactive-review scheduling code.
 - Explicit user-supplied record dates remain authoritative.
 - This configuration-only change uses the user-approved TDD exception: verify
@@ -24,7 +24,7 @@
 
 - `docker-compose.yml`: inject the resolved `TZ` value into API and Bot.
 - `.env.example`: expose the supported timezone setting.
-- `README.md`: document timezone semantics and restart behavior.
+- `README.md`: document timezone semantics and container-recreation behavior.
 - `docs/index.html`: inspect for freshness; no change is expected because it has no deployment configuration section.
 
 ---
@@ -70,7 +70,7 @@ Near the required credentials in `.env.example`, add:
 
 ```dotenv
 # Container local timezone used for default training and meal dates.
-# Use an IANA timezone name and restart containers after changing it.
+# Use an IANA timezone name and recreate containers after changing it.
 TZ=Asia/Shanghai
 ```
 
@@ -82,10 +82,23 @@ In README's optional environment table, add:
 
 Immediately after the Docker and Podman startup examples, add this explanation:
 
-```markdown
+````markdown
 容器通过 `.env` 中的 `TZ` 计算本地日期。修改时请使用 IANA 时区名称（例如
-`Asia/Shanghai`、`Europe/Berlin`），然后重新创建或重启 API 与 Bot 容器使其生效。
+`Asia/Shanghai`、`Europe/Berlin`），然后必须重新创建 API 与 Bot 容器；普通的
+`restart` 不会应用环境变量变更。
+
+使用 Docker Compose 重新创建：
+
+```bash
+docker compose up -d --force-recreate api bot
 ```
+
+使用 Podman Compose 重新创建：
+
+```bash
+podman-compose up -d --force-recreate api bot
+```
+````
 
 - [ ] **Step 4: Verify an explicit timezone override**
 
@@ -124,7 +137,7 @@ warnings.
 - [ ] **Step 7: Review documentation freshness**
 
 Read `README.md` and `docs/index.html`. Confirm README explains `TZ`, its IANA
-format, default, affected records, and restart requirement. Confirm
+format, default, affected records, and container-recreation requirement. Confirm
 `docs/index.html` remains accurate because it does not expose deployment
 environment configuration or timezone-specific date promises.
 

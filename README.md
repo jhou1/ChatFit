@@ -145,7 +145,20 @@ podman-compose up -d --build
 ```
 
 容器通过 `.env` 中的 `TZ` 计算本地日期。修改时请使用 IANA 时区名称（例如
-`Asia/Shanghai`、`Europe/Berlin`），然后重新创建或重启 API 与 Bot 容器使其生效。
+`Asia/Shanghai`、`Europe/Berlin`），然后必须重新创建 API 与 Bot 容器；普通的
+`restart` 不会应用环境变量变更。
+
+使用 Docker Compose 重新创建：
+
+```bash
+docker compose up -d --force-recreate api bot
+```
+
+使用 Podman Compose 重新创建：
+
+```bash
+podman-compose up -d --force-recreate api bot
+```
 
 API 默认监听 `http://localhost:8000`，交互式接口文档位于
 `http://localhost:8000/docs`。
