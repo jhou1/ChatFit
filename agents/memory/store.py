@@ -174,7 +174,7 @@ class UserMemoryStore:
         connection.row_factory = sqlite3.Row
         _initialize_schema(connection)
         try:
-            cls.require_reconcile_content_match(connection, owner_key, memory)
+            cls.require_reconcile_compatible(connection, owner_key, memory)
             existing = cls._find_canonical(connection, owner_key, memory)
             desired_aliases = cls._alias_values(memory.canonical_key, memory.aliases)
             desired_display_aliases = {alias for _, alias in desired_aliases}
@@ -256,13 +256,13 @@ class UserMemoryStore:
             ) from None
 
     @classmethod
-    def require_reconcile_content_match(
+    def require_reconcile_compatible(
         cls,
         connection: sqlite3.Connection,
         owner_key: str,
         memory: NewUserMemory,
     ) -> None:
-        """Reject an existing canonical row whose content is not migration-exact."""
+        """Reject content or alias conflicts before migration reconciliation."""
         connection.row_factory = sqlite3.Row
         table_exists = connection.execute("""
             SELECT 1
@@ -276,6 +276,29 @@ class UserMemoryStore:
             raise MemoryConflictError(
                 "A memory with this canonical key already has different content"
             )
+
+        aliases_table_exists = connection.execute("""
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'user_memory_aliases'
+            """).fetchone()
+        if aliases_table_exists is None:
+            return
+        for normalized_alias, _ in cls._alias_values(
+            memory.canonical_key, memory.aliases
+        ):
+            alias_owner = connection.execute(
+                """
+                SELECT memory_id
+                FROM user_memory_aliases
+                WHERE owner_key = ? AND normalized_alias = ?
+                """,
+                (owner_key, normalized_alias),
+            ).fetchone()
+            if alias_owner is not None and (
+                existing is None or alias_owner["memory_id"] != existing.id
+            ):
+                raise MemoryConflictError("A migration alias belongs to another memory")
 
     def _find_by_id(
         self, connection: sqlite3.Connection, owner_key: str, memory_id: str

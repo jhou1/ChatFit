@@ -380,10 +380,25 @@ def test_apply_rejects_symlink_in_any_destination_parent_component(
     assert not redirected_db.exists()
 
 
-def test_dry_run_only_stats_wal_destination_without_creating_shm(tmp_path):
+def test_dry_run_rejects_active_wal_conflict_without_changing_sidecars(tmp_path):
     source_db = tmp_path / "source.db"
     memory_db = tmp_path / "memory.db"
     _create_source(source_db, [HISTORICAL_NOTE])
+    original = (
+        UserMemoryStore(memory_db)
+        .remember(
+            owner_key_for("user-a"),
+            NewUserMemory(
+                memory_type=MemoryType.TRAINING_TEMPLATE,
+                canonical_key="213",
+                display_name="旧版 213",
+                content="必须保留的 WAL 冲突内容",
+                aliases=("213", "2-1-3", "壶铃213"),
+            ),
+        )
+        .memory
+    )
+    rows_before = _memory_rows(memory_db)
     connection = _create_active_wal_database(
         memory_db,
         (
@@ -400,9 +415,13 @@ def test_dry_run_only_stats_wal_destination_without_creating_shm(tmp_path):
     finally:
         connection.close()
 
-    assert result.returncode == 0, result.stderr
-    assert "private destination value" not in result.stdout
+    assert result.returncode != 0
+    assert "wal" in result.stderr.lower()
+    assert "private destination value" not in result.stdout + result.stderr
+    assert "必须保留的 WAL 冲突内容" not in result.stdout + result.stderr
     assert after == before
+    assert _memory_rows(memory_db) == rows_before
+    assert rows_before[0][0][0] == original.id
 
 
 def test_apply_rejects_active_destination_wal_without_changing_sidecars(tmp_path):
@@ -565,7 +584,10 @@ def test_conflicting_source_definitions_fail_before_destination_is_created(tmp_p
     assert _source_snapshot(source_db) == before
 
 
-def test_destination_alias_conflict_fails_without_mutating_existing_memory(tmp_path):
+@pytest.mark.parametrize("apply", (False, True), ids=("dry-run", "apply"))
+def test_destination_alias_conflict_fails_without_mutating_existing_memory(
+    tmp_path, apply
+):
     source_db = tmp_path / "source.db"
     memory_db = tmp_path / "memory.db"
     _create_source(source_db, [HISTORICAL_NOTE])
@@ -581,13 +603,15 @@ def test_destination_alias_conflict_fails_without_mutating_existing_memory(tmp_p
         ),
     ).memory
     before = _memory_rows(memory_db)
+    files_before = _file_family_snapshot(memory_db)
 
-    result = _run_migration(source_db, memory_db, apply=True)
+    result = _run_migration(source_db, memory_db, apply=apply)
 
     assert result.returncode != 0
     assert "conflict" in result.stderr.lower()
     assert "Traceback" not in result.stderr
     assert _memory_rows(memory_db) == before
+    assert _file_family_snapshot(memory_db) == files_before
     assert before[0][0][0] == existing.id
 
 

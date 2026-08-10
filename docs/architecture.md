@@ -127,7 +127,10 @@ The source and destination must remain distinct and unchanged during the run.
 Repeated application reconciles the same `(owner, training_template, 213)` row
 idempotently rather than inserting duplicates. Reconciliation may repair display
 metadata and aliases only when the stored content is already identical. A
-different stored value is a non-mutating conflict in both dry-run and apply.
+different stored value or an alias owned by another row is a non-mutating
+conflict in both dry-run and apply. Dry-run also fails closed when destination
+SQLite sidecars prevent a complete immutable compatibility snapshot; checkpoint
+and close destination writers before retrying.
 
 ## Cross-cutting systems
 

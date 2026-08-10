@@ -383,7 +383,9 @@ uv run python scripts/migrate_explicit_memories.py \
 完整匹配已批准 2-1-3 定义（抓举、挺举、长循环、三分钟左右/双手安排、波比跳和
 thruster）的记录；其他候选只报告、不导入。重复执行会按唯一键对同一行做幂等
 reconcile，不会创建重复记忆。只有目标内容完全相同时才会修复显示名称和别名；若
-同一目标已有不同内容，dry-run 与 apply 都会以非零状态报告冲突且保留原数据。
+同一目标已有不同内容或待迁移别名已属于另一条记忆，dry-run 与 apply 都会以非零
+状态报告冲突且保留原数据。目标存在 WAL、SHM 或 journal sidecar 时，dry-run 也会
+fail closed；请先 checkpoint 并关闭写入者，再执行兼容性检查或 apply。
 
 ## 项目结构
 

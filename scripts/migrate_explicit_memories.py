@@ -727,7 +727,10 @@ def _require_dry_run_destination_compatible(
     if expected_main is None:
         return
     if any(state is not None for state in destination_before[1:]):
-        return
+        _require_checkpointed(destination_before, role="destination", reject_shm=True)
+        raise MigrationError(
+            "destination database has SQLite sidecars; checkpoint and close it first"
+        )
 
     _require_unchanged(source_path, source_before, role="source")
     _require_destination_unchanged(anchor, destination_before)
@@ -738,7 +741,7 @@ def _require_dry_run_destination_compatible(
             sqlite3.connect(_read_only_uri(sqlite_path), uri=True)
         ) as connection:
             connection.execute("PRAGMA query_only = ON")
-            UserMemoryStore.require_reconcile_content_match(
+            UserMemoryStore.require_reconcile_compatible(
                 connection,
                 owner_key_for(user_id),
                 _memory_value(definition),
