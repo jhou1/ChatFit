@@ -1,83 +1,157 @@
 # ChatFit Architecture
 
-The system follows a multi-agent orchestration pattern using LangGraph, persists
-business data and conversation checkpoints locally, and optionally exports Agent
-trajectories to Langfuse.
+ChatFit uses FastAPI and a LangGraph multi-agent graph. Training/meal business
+records, conversation checkpoints, and durable user memory have separate
+persistence roles and must resolve to distinct SQLite files.
 
 ```mermaid
-graph TD
-    %% Entry Points
-    User((User)) -->|Sends Message| TelegramBot[Telegram Bot]
-    TelegramBot -->|JobQueue: 每天 21:00 Asia/Shanghai| ProactiveAPI[FastAPI /proactive-review]
-    ProactiveAPI -->|Daily missing-category query| SQLite
-    ProactiveAPI -->|Saturday Sun-Sat summary| InsightsAgent
-    ProactiveAPI -->|Returns one review payload| TelegramBot
-    TelegramBot -->|Sends to configured single chat| User
+flowchart TD
+    User((Telegram user)) --> Bot[Telegram Bot]
+    Bot -->|"Bearer CHATFIT_API_TOKEN<br/>/chat or /clear"| API[FastAPI]
+    API -->|"thread_id + stable user_id"| Graph
 
-    %% Bot & API Layer
-    TelegramBot -->|Forwards Update| API[FastAPI App]
-    API -->|Triggers| Supervisor[Supervisor Agent]
-
-    %% Agent Layer (LangGraph)
-    subgraph LangGraph Orchestration
-        Supervisor -->|Delegates| TrainingAgent[Training Agent]
-        Supervisor -->|Delegates| MealAgent[Meal Agent]
-        Supervisor -->|Delegates| InsightsAgent[Insights Agent]
-
-        TrainingAgent -->|Returns Result| Supervisor
-        MealAgent -->|Returns Result| Supervisor
-        InsightsAgent -->|Returns Result| Supervisor
+    subgraph Graph[LangGraph request]
+        Start([request or resume]) --> Load[load_memories]
+        Load --> Summary[context_governance]
+        Summary --> Selector[assistant_selector]
+        Selector --> Training[Training Agent]
+        Selector --> Meal[Meal Agent]
+        Selector --> Insights[Insights Agent]
+        Selector --> Chatter[Chatter Agent]
+        Selector --> Memory[Memory Agent]
+        Training --> Refresh[refresh_memories]
+        Meal --> Refresh
+        Insights --> Refresh
+        Chatter --> Refresh
+        Memory --> Refresh
+        Refresh --> Done([response])
     end
 
-    %% Data & Tools Layer
-    TrainingAgent -.->|SQL Reads/Writes| SQLite[(SQLite DB)]
-    MealAgent -.->|SQL Reads/Writes| SQLite
-    InsightsAgent -.->|Queries Data| SQLite
-    InsightsAgent -.->|RAG| VectorStore[(Vector Store / RAG)]
+    MemoryDB[("user-memory.db<br/>durable explicit memory")] -->|"fresh request read"| Load
+    MemoryDB -.->|"fresh prompt read"| Training
+    MemoryDB -.->|"fresh prompt read"| Meal
+    MemoryDB -.->|"fresh prompt read"| Insights
+    MemoryDB -->|"single post-fan-out refresh"| Refresh
+    Memory -->|"remember / update / forget"| MemoryDB
+    Training --> BusinessDB[("~/.iron/iron.db<br/>business records")]
+    Meal --> BusinessDB
+    Insights --> BusinessDB
+    Meal --> Vector[("Chroma<br/>recipe index")]
+    Graph <--> Checkpoint[("checkpointer.db<br/>thread state + summary")]
 
-    %% Cross-cutting quality systems
-    subgraph Quality Systems
-        API -.->|Callback Traces| Langfuse[Langfuse]
-        Supervisor -.->|Graph Events| CodeGrader[Pytest Code Grader]
-        CodeGrader -.->|Asserts Final State| TestDB[(Test SQLite)]
-        LLMJudge[LLM Judge] -.->|Writes Scores| Langfuse
-    end
+    Bot -->|"daily 21:00 Asia/Shanghai"| Proactive["/proactive-review"]
+    Proactive --> BusinessDB
+    Proactive --> Insights
+
+    API -.->|"optional masked traces"| Langfuse[Langfuse]
+    Eval[Evaluation Runner] -.->|"one business DB + one memory DB per case"| Graph
 ```
 
-## Cross-cutting designs
+## Request, identity, and authentication
 
-- [Agent Evaluation](evaluation.md) defines datasets, graders, quality metrics,
-  release gates, and the production feedback loop.
-- [Agent Observability](observability.md) defines trace identity, span hierarchy,
-  execution-path instrumentation, metrics, alerts, and privacy controls.
-- [Quality and Verification](quality.md) defines the local static-analysis and
-  test gates.
+The API requires `CHATFIT_API_TOKEN` at startup. The Bot reads the same value
+and sends `Authorization: Bearer <token>` to `/chat` and `/clear`. Missing or
+malformed credentials return `401`; a well-formed but incorrect credential
+returns `403`. Authentication happens before a caller-supplied `user_id` may
+select a thread or durable-memory owner.
 
-Evaluation and observability share the same correlation model. A test or
-production request is represented by one `trace_id`; related turns share a
-`session_id/thread_id`; evaluation traffic also carries a `run_id` and
-`case_id`. Observability records what happened, while Evaluation decides whether
-that behavior was acceptable.
+The API maps each user to a current random `thread_id` for checkpoint state and
+passes the original bounded `user_id` separately to the graph. Durable memory
+derives a stable, domain-separated hashed owner key from that user ID. Therefore
+rotating a thread with `/clear` does not rotate memory ownership. The local CLI
+uses the fixed owner `local-cli`. Evaluation uses `case_id` for both thread and
+user identity inside a case, while every case gets its own temporary business
+and memory database files.
 
-## 可选主动回顾
+## Four state layers
 
-主动 Telegram 回顾默认关闭。单用户部署可在 `.env` 中设置
-`PROACTIVE_REVIEWS_ENABLED=true`，并提供一个整数 `TELEGRAM_CHAT_ID`；只有启用时
-才要求该 chat ID。Bot 容器通过 `API_PROACTIVE_REVIEW_URL` 调用 API 容器内的
-`http://api:8000/proactive-review`。
+| Layer | Stored in | Purpose | Lifetime and clear behavior |
+| --- | --- | --- | --- |
+| Short-term summary | LangGraph state inside the checkpoint | A compressed, fallible synopsis of older messages in one thread | Replaced as the conversation evolves; a new `/clear` thread does not load the old summary |
+| Conversation checkpoint | `CHECKPOINTER_DB_PATH` (`/app/data/checkpointer.db` in Compose) | Messages, pending interrupts, pending memory clarification, and graph execution state | Scoped by `thread_id`; `/clear` starts a new thread without deleting the file |
+| Business data | `~/.iron/iron.db` | Training sessions, sets, meals, and facts used by Insights/proactive review | Survives threads, `/clear`, and restarts |
+| Durable user memory | `USER_MEMORY_DB_PATH` (`/app/data/user-memory.db` in Compose) | User-authorized preferences, constraints, templates, and profile facts | Freshly loaded on every request; survives new threads, `/clear`, and restarts until explicitly forgotten |
 
-| 配置 | 默认值/要求 | 作用 |
-| --- | --- | --- |
-| `PROACTIVE_REVIEWS_ENABLED` | `false` | 开启 Bot JobQueue 的每日/每周回顾 |
-| `TELEGRAM_CHAT_ID` | 仅启用时必填，且必须为整数 | 主动消息的唯一接收 chat；当前不支持多用户路由 |
-| `API_PROACTIVE_REVIEW_URL` | `http://api:8000/proactive-review`（Bot 容器） | JobQueue 请求的内部 API 地址 |
+The short-term summary is not a durable-memory writer. `context_governance`
+only compresses old messages once a thread grows long. Conversely, the Memory
+Agent does not write training or meal records and does not replace checkpoints.
+Specialists fresh-read durable memory for their own prompts without publishing
+competing state snapshots. After every selected branch completes,
+`refresh_memories` performs the single final `memory_context` write, including
+after interrupt/resume and after a Memory Agent mutation. The Memory Agent also
+defers its user-facing result to this node, so API, CLI, and evaluation streams
+observe exactly one finalized memory response. If a committed mutation cannot
+be reloaded, that one response includes both the success and refresh warning.
 
-JobQueue 每天在 `21:00 Asia/Shanghai` 触发一次，未运行期间不会补发。API 使用
-SQLite 的当天训练和饮食记录判断是否需要每日提示：只记录饮食时提示补训练，只记录
-训练时提示补饮食，两类都没有时同时询问当天饮食和训练，两类齐全时不发消息。周六只生成并
-发送一条合并回顾：Insights Agent 汇总当周周日至周六的数据，并在有缺失类别时附加
-当天提醒。该流程不会建立 catch-up 队列，也不为多个 Telegram chat 分发消息。
+## Durable-memory contract
 
-The backend-neutral signal envelope and fail-open sinks live in
-`agents/observability.py`. Versioned datasets, deterministic graders, and release
-scorecards live under `evaluation/`.
+Only supported explicit command forms authorize a mutation, such as
+`记住我乳糖不耐受`, `我不吃香菜，记下来`,
+`把 2-1-3 模板更新成……`, and `忘掉乳糖不耐受`. Ordinary chat is not
+automatically persisted, and arbitrary natural-language paraphrases are not
+promised. Missing content, zero/multiple matches, and ambiguous references lead
+to clarification without a database change. An explicit update or forget whose
+target freshly resolves to one exact current-owner durable-memory alias is sent
+to the Memory Agent independently of the probabilistic router. A clarification
+reply must still be interpreted as the same operation and remain bound to the
+captured target and missing field before it can commit.
+
+The store preserves the explicit user payload. A row is unique by
+`(owner_key, memory_type, canonical_key)`; aliases provide normalized exact
+lookup and cannot ambiguously belong to two memories for one owner. An update
+keeps the row ID and creation time, replaces content/aliases on that row, and
+increments its optimistic-concurrency version. Forget physically deletes the
+selected row and cascades its aliases.
+
+## Existing 2-1-3 migration
+
+`scripts/migrate_explicit_memories.py` defaults to dry-run. It opens the source
+training database read-only and only approves an explicitly marked, complete
+legacy 2-1-3 definition. Other candidates are reported but not imported.
+
+```bash
+uv run python scripts/migrate_explicit_memories.py \
+  --source-db ~/.iron/iron.db \
+  --memory-db runtime-data/user-memory.db \
+  --user-id '<telegram-user-id>'
+
+uv run python scripts/migrate_explicit_memories.py \
+  --source-db ~/.iron/iron.db \
+  --memory-db runtime-data/user-memory.db \
+  --user-id '<telegram-user-id>' \
+  --apply
+```
+
+For apply, the destination's immediate parent directory must already exist.
+The source and destination must remain distinct and unchanged during the run.
+Repeated application reconciles the same `(owner, training_template, 213)` row
+idempotently rather than inserting duplicates. Reconciliation may repair display
+metadata and aliases only when the stored content is already identical. A
+different stored value or an alias owned by another row is a non-mutating
+conflict in both dry-run and apply. Dry-run also fails closed when destination
+SQLite sidecars prevent a complete immutable compatibility snapshot; checkpoint
+and close destination writers before retrying.
+
+## Cross-cutting systems
+
+- [Agent Evaluation](evaluation.md) defines datasets, deterministic graders,
+  quality metrics, release gates, and the production feedback loop.
+- [Agent Observability](observability.md) defines trace identity, span
+  hierarchy, instrumentation, metrics, alerts, and privacy controls.
+- [Quality and Verification](quality.md) defines static-analysis and test gates.
+
+Evaluation and observability share the same correlation model. A request has
+one `trace_id`; related turns share `session_id/thread_id`; evaluation traffic
+also carries `run_id` and `case_id`. Observability records execution, while
+Evaluation determines whether the behavior was acceptable. DB-state assertions
+explicitly select the case's business or durable-memory database.
+
+## Optional proactive review
+
+Proactive Telegram review defaults off. With
+`PROACTIVE_REVIEWS_ENABLED=true`, an integer `TELEGRAM_CHAT_ID` selects the one
+supported recipient. The Bot JobQueue calls `/proactive-review` at
+`21:00 Asia/Shanghai`; missed runs are not replayed. Daily review checks which
+of training and meal records are missing. On Saturday, one combined message
+contains the Sunday-through-Saturday Insights summary plus any current-day
+missing-category reminder.

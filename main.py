@@ -12,9 +12,16 @@ from rich.prompt import Prompt
 from rich.markdown import Markdown
 
 from agents.llm_factory import LLMConfig
+from agents.memory.agent import LLMMemoryInterpreter
+from agents.memory.config import (
+    require_distinct_sqlite_files,
+    resolve_sqlite_file_path,
+)
+from agents.memory.store import UserMemoryStore
 from agents.sqlite_handler import init_db
 from agents.roles.supervisor import make_agent_graph
 from agents.rag import get_or_create_vector_store
+from agents.utils import USER_RESPONSE_NODES, extract_text
 
 console = Console()
 
@@ -28,7 +35,17 @@ async def main():
         kwargs={"client_args": {"proxy": "socks5://127.0.0.1:8990"}},
     )
 
-    db_path = "chatfit.db"
+    business_db = resolve_sqlite_file_path(
+        "chatfit.db", setting_name="CLI business database path"
+    )
+    memory_db = resolve_sqlite_file_path(
+        os.environ.get("USER_MEMORY_DB_PATH", "user-memory.db"),
+        setting_name="USER_MEMORY_DB_PATH",
+    )
+    require_distinct_sqlite_files(
+        {"CLI business database": business_db, "user-memory database": memory_db}
+    )
+    db_path = str(business_db)
     if not os.path.exists(db_path):
         init_db(db_path)
 
@@ -38,11 +55,18 @@ async def main():
         )
 
     # init memory
+    memory_store = UserMemoryStore(memory_db)
+    memory_interpreter = LLMMemoryInterpreter(llm_config)
     app = make_agent_graph(
-        llm_config, db_path, vector_store, checkpointer=MemorySaver()
+        llm_config,
+        db_path,
+        vector_store,
+        checkpointer=MemorySaver(),
+        memory_store=memory_store,
+        memory_interpreter=memory_interpreter,
     )
     thread_id = str(uuid.uuid4())
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {"configurable": {"thread_id": thread_id, "user_id": "local-cli"}}
 
     welcome_msg = (
         "[bold green]ChatFit Agent Initialized.[/]\nType [bold red]'quit'[/] to exit."
@@ -67,28 +91,20 @@ async def main():
                 initial_state, config=config, stream_mode="updates"
             ):
                 for node_name, node_output in event.items():
-                    if node_name in [
-                        "training",
-                        "meal",
-                        "assistant_selector",
-                        "chatter",
-                    ]:
+                    if node_name in USER_RESPONSE_NODES:
                         new_messages = node_output.get("messages", [])
                         if new_messages:
                             last_message = new_messages[-1]
 
-                            # Handle Gemini's list-based content (extract text parts)
-                            if isinstance(last_message.content, list):
-                                text_content = "".join(
-                                    part.get("text", "")
-                                    for part in last_message.content
-                                    if isinstance(part, dict) and "text" in part
-                                )
-                            else:
-                                text_content = str(last_message.content)
+                            text_content = extract_text(last_message)
 
                             if text_content.strip():
-                                console.print(f"[bold green]Agent ({node_name}):[/]")
+                                display_name = (
+                                    "memory"
+                                    if node_name == "refresh_memories"
+                                    else node_name
+                                )
+                                console.print(f"[bold green]Agent ({display_name}):[/]")
                                 console.print(Markdown(text_content))
                                 console.print()
 

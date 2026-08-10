@@ -189,6 +189,19 @@ source ID hash。
 
 只记录摘要正文的哈希与大小，默认不上传摘要内容。
 
+### Durable-memory Mutation Event
+
+`memory.mutation` 在共享 Memory Agent 边界记录显式长期记忆操作：
+
+- `memory.operation`：`remember`、`update` 或 `forget`
+- `memory.result`：`committed`、`unchanged`、`conflict`、`clarify`、`failed`
+  或 `forgotten`
+- `memory.owner_id`：稳定 keyed hash
+- `memory.id`：仅在已精确识别记录时提供的稳定 keyed hash
+
+事件不得包含原始 user ID、owner key、memory UUID、内容、别名、用户消息、澄清问题
+或异常文本。观测 sink 失败必须 fail-open，不得改变事务结果或用户响应。
+
 ## 6. 执行路径采集点
 
 | 位置 | 当前信号 | 目标补充 |
@@ -197,6 +210,7 @@ source ID hash。
 | LangGraph stream | node update | node span、父子关系、并行分支 |
 | `assistant_selector` | `assistant_names` | route event、fallback、latency |
 | Context governance | summary state | message/token delta、summary hash |
+| Memory Agent | mutation result | operation/result、opaque owner/memory IDs |
 | LLM factory/safe execution | callback、错误文本 | model span、attempt、timeout、token |
 | `SafeToolNode` | ToolMessage、interrupt | tool span、retry、truncate、HITL event |
 | SQLite handler | 返回值 | 操作名、耗时、影响行数、事务结果 |

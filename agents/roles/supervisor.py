@@ -1,4 +1,5 @@
 from langchain_core.prompts.prompt import PromptTemplate
+from langchain_core.runnables import RunnableConfig
 from langchain_core.messages import (
     AIMessage,
     HumanMessage,
@@ -11,6 +12,15 @@ from langgraph.graph.state import CompiledStateGraph
 
 from agents.models import AgentState
 from agents.llm_factory import create_chat_model, LLMConfig
+from agents.memory.agent import LLMMemoryInterpreter, MemoryAgent, MemoryInterpreter
+from agents.memory.commands import parse_memory_command, should_auto_route_memory
+from agents.memory.context import (
+    append_agent_context,
+    format_durable_memories,
+    format_unavailable_memories,
+)
+from agents.memory.models import MemoryType, PendingMemoryAction
+from agents.memory.store import UserMemoryStore, owner_key_for
 from agents.roles.meal import make_meal_subagent_graph
 from agents.roles.training import make_training_agent_graph
 from agents.roles.insights import make_insights_agent_graph
@@ -23,6 +33,7 @@ INSTRUCTION_FOR_ROUTING_SUBAGENTS = """
 You skilled at assigning user input to the correct subagents.
 
 These are the subagents you can assign to:
+- memory_agent: responsible only for explicit requests to remember, update, or forget durable user memories.
 - training_agent: responsible for saving user training sessions to the database, invoke it when user tells you about their training/workout sessions.
 - meal_agent: responsible for saving user meal details to the database, invoke it when user tells you about their meals.
 - insights_agent: responsible for analyzing training progress, intensity, recovery, waveness, or answering questions about "am I training too much", "how is my consistency".
@@ -55,7 +66,7 @@ chatter
 """
 
 CONTEXT_GOVERNANCE_PROMPT = """
-You are an assistant memory manager. Compress the following conversation history into a concise summary.
+You are a conversation context summarizer. Compress the following conversation history into a concise summary.
 Focus on training(fitness) goals, dietary context, user preferences, and any important ongoing context.
 
 Here is the existing summary that you must merge with the new information:
@@ -65,14 +76,32 @@ Here is the new conversation history to compress:
 {summary_text}
 """
 
+_ROUTABLE_AGENTS = frozenset(
+    ("training_agent", "meal_agent", "insights_agent", "chatter")
+)
+_MEMORY_UNAVAILABLE_RESPONSE = "长期记忆暂时不可用，请稍后重试。"
+_MEMORY_REFRESH_FAILED_RESPONSE = (
+    "长期记忆操作已完成，但长期记忆上下文暂时无法刷新，请稍后再试。"
+)
+
 
 async def route_assistant_on_relevance(
-    llm_config: LLMConfig, messages: list
+    llm_config: LLMConfig,
+    messages: list,
+    *,
+    pending_memory_action=None,
+    resolved_memory_target: bool = False,
+    memory_context: str | None = None,
+    summary: str | None = None,
 ) -> list[str]:
     """Select the appropriate assistant based on conversation history"""
 
     prompt_template = PromptTemplate.from_template(INSTRUCTION_FOR_ROUTING_SUBAGENTS)
-    system_prompt = prompt_template.format()
+    system_prompt = append_agent_context(
+        prompt_template.format(),
+        memory_context=memory_context,
+        summary=summary,
+    )
 
     recent_messages = messages[-10:]
     history_text = "\n".join(
@@ -89,49 +118,227 @@ async def route_assistant_on_relevance(
     response = await _execute_llm_query_safely(llm, routing_messages)
     content_str = extract_text(response["messages"])
 
-    if "LLM request timeout exceeded" in content_str:
-        return ["chatter"]
+    selected = []
+    if "LLM request timeout exceeded" not in content_str:
+        selected = [agent.strip() for agent in content_str.split(",")]
+    routed = [agent for agent in selected if agent in _ROUTABLE_AGENTS]
 
-    decision = [agent.strip() for agent in content_str.split(",") if "agent" in agent]
-    if not decision:
-        return ["chatter"]
-    return decision
+    latest_user_message = next(
+        (
+            extract_text(message)
+            for message in reversed(messages)
+            if isinstance(message, HumanMessage)
+        ),
+        "",
+    )
+    command = parse_memory_command(latest_user_message)
+    if (
+        pending_memory_action is not None
+        or should_auto_route_memory(command)
+        or (
+            resolved_memory_target
+            and command is not None
+            and command.operation in ("update", "forget")
+        )
+    ):
+        routed.insert(0, "memory_agent")
+
+    routed = list(dict.fromkeys(routed))
+    if any(agent != "chatter" for agent in routed):
+        routed = [agent for agent in routed if agent != "chatter"]
+    return routed or ["chatter"]
 
 
 def make_agent_graph(
-    llm_config: LLMConfig, db_path: str, vector_store, checkpointer=None
+    llm_config: LLMConfig,
+    db_path: str,
+    vector_store,
+    checkpointer=None,
+    *,
+    memory_store: UserMemoryStore | None = None,
+    memory_interpreter: MemoryInterpreter | None = None,
 ) -> CompiledStateGraph:
+    memory_store = memory_store or UserMemoryStore(f"{db_path}.user-memory.db")
+    memory_interpreter = memory_interpreter or LLMMemoryInterpreter(llm_config)
+    durable_memory_agent = MemoryAgent(
+        store=memory_store,
+        interpreter=memory_interpreter,
+    )
     training_recorder_node = make_training_agent_graph(llm_config, db_path)
     meal_recorder_node = make_meal_subagent_graph(llm_config, db_path, vector_store)
     insights_recorder_node = make_insights_agent_graph(llm_config, db_path)
 
-    async def training_wrapper(state: AgentState):
+    def configured_user_id(config: RunnableConfig) -> str:
+        configurable = config.get("configurable", {})
+        user_id = configurable.get("user_id") or configurable.get("thread_id")
+        if not isinstance(user_id, str) or not user_id:
+            raise ValueError("configurable.user_id or thread_id is required")
+        return user_id
+
+    def fresh_memory_context(user_id: str) -> str:
+        memories = memory_store.list_memories(owner_key_for(user_id))
+        return format_durable_memories(memories)
+
+    def try_fresh_memory_context(user_id: str, *, stage: str) -> str | None:
+        try:
+            return fresh_memory_context(user_id)
+        except Exception:
+            emit_event("memory.load_failed", {"memory.load.stage": stage})
+            return None
+
+    def resolves_current_memory_target(
+        state: AgentState, config: RunnableConfig
+    ) -> bool:
+        user_message = next(
+            (
+                extract_text(message)
+                for message in reversed(state["messages"])
+                if isinstance(message, HumanMessage)
+            ),
+            "",
+        )
+        command = parse_memory_command(user_message)
+        if command is None or command.operation not in ("update", "forget"):
+            return False
+        owner_key = owner_key_for(configured_user_id(config))
+        try:
+            matching_memories = {
+                memory.id: memory
+                for query in command.target_queries
+                for memory in memory_store.resolve(owner_key, query)
+            }
+        except Exception:
+            return False
+        if len(matching_memories) != 1:
+            return False
+        target = next(iter(matching_memories.values()))
+        return target.memory_type is not MemoryType.OTHER
+
+    async def invoke_specialist(
+        specialist,
+        state: AgentState,
+        config: RunnableConfig,
+    ) -> dict[str, object]:
+        user_id = configured_user_id(config)
+        memory_context = state.get("memory_context") or (
+            format_unavailable_memories()
+            if state.get("memory_available") is False
+            else format_durable_memories(())
+        )
+        refreshed_context = try_fresh_memory_context(user_id, stage="specialist")
+        if refreshed_context is not None:
+            memory_context = refreshed_context
+        refreshed_state = {**state, "memory_context": memory_context}
+        result = await specialist.ainvoke(refreshed_state)
+        return {"messages": result["messages"]}
+
+    async def training_wrapper(state: AgentState, config: RunnableConfig):
         with observe_span("agent.training"):
-            result = await training_recorder_node.ainvoke(state)
-            return {"messages": result["messages"]}
+            return await invoke_specialist(training_recorder_node, state, config)
 
-    async def meal_wrapper(state: AgentState):
+    async def meal_wrapper(state: AgentState, config: RunnableConfig):
         with observe_span("agent.meal"):
-            result = await meal_recorder_node.ainvoke(state)
-            return {"messages": result["messages"]}
+            return await invoke_specialist(meal_recorder_node, state, config)
 
-    async def insights_wrapper(state: AgentState):
+    async def insights_wrapper(state: AgentState, config: RunnableConfig):
         with observe_span("agent.insights"):
-            result = await insights_recorder_node.ainvoke(state)
-            return {"messages": result["messages"]}
+            return await invoke_specialist(insights_recorder_node, state, config)
 
     async def chatter_node(state: AgentState):
         with observe_span("agent.chatter"):
             llm = create_chat_model(llm_config)
             system_msg = "You are ChatFit, a friendly fitness and nutrition assistant. Answer general questions, say hello, and be helpful."
-            # adding previous conversation summary as context
-            if state.get("summary"):
-                system_msg += (
-                    f"\n\n[Historical Conversation Summary]:\n{state['summary']}"
-                )
+            system_msg = append_agent_context(
+                system_msg,
+                memory_context=state.get("memory_context"),
+                summary=state.get("summary"),
+            )
             messages = [SystemMessage(content=system_msg)] + state["messages"]
             response = await _execute_llm_query_safely(llm, messages)
             return {"messages": [response["messages"]]}
+
+    async def load_memories_node(
+        state: AgentState, config: RunnableConfig
+    ) -> dict[str, object]:
+        del state
+        user_id = configured_user_id(config)
+        memory_context = try_fresh_memory_context(user_id, stage="request")
+        if memory_context is None:
+            return {
+                "memory_context": format_unavailable_memories(),
+                "memory_available": False,
+                "memory_mutation_committed": False,
+                "memory_mutation_response": None,
+            }
+        return {
+            "memory_context": memory_context,
+            "memory_available": True,
+            "memory_mutation_committed": False,
+            "memory_mutation_response": None,
+        }
+
+    async def memory_agent_node(
+        state: AgentState, config: RunnableConfig
+    ) -> dict[str, object]:
+        if state.get("memory_available") is False:
+            return {
+                "memory_mutation_committed": False,
+                "memory_mutation_response": _MEMORY_UNAVAILABLE_RESPONSE,
+            }
+        user_message = next(
+            (
+                extract_text(message)
+                for message in reversed(state["messages"])
+                if isinstance(message, HumanMessage)
+            ),
+            "",
+        )
+        user_id = configured_user_id(config)
+        pending_raw = state.get("pending_memory_action")
+        pending = (
+            PendingMemoryAction.model_validate(pending_raw)
+            if pending_raw is not None
+            else None
+        )
+        result = await durable_memory_agent.handle(
+            user_id=user_id,
+            user_message=user_message,
+            pending=pending,
+        )
+        return {
+            "pending_memory_action": (
+                result.pending.model_dump(mode="json")
+                if result.pending is not None
+                else None
+            ),
+            "memory_mutation_committed": result.mutation_committed,
+            "memory_mutation_response": result.response,
+        }
+
+    async def refresh_memories_node(
+        state: AgentState, config: RunnableConfig
+    ) -> dict[str, object]:
+        user_id = configured_user_id(config)
+        memory_context = try_fresh_memory_context(user_id, stage="final_refresh")
+        response = state.get("memory_mutation_response")
+        if memory_context is None:
+            update: dict[str, object] = {
+                "memory_context": state.get("memory_context")
+                or format_unavailable_memories(),
+                "memory_available": False,
+            }
+            if response is not None:
+                if state.get("memory_mutation_committed"):
+                    response = f"{response} {_MEMORY_REFRESH_FAILED_RESPONSE}"
+                update["messages"] = [AIMessage(content=response)]
+            return update
+        update = {
+            "memory_context": memory_context,
+            "memory_available": True,
+        }
+        if response is not None:
+            update["messages"] = [AIMessage(content=response)]
+        return update
 
     async def context_governance_node(state: AgentState):
         """cut off the messages when its length exceeds max length
@@ -197,12 +404,19 @@ def make_agent_graph(
             return {"summary": new_summary, "messages": delete_cmd}
 
     # routing node
-    async def assistant_selector_node(state: AgentState):
+    async def assistant_selector_node(state: AgentState, config: RunnableConfig):
         with observe_span(
             "assistant_selector",
             {"context.messages": len(state["messages"])},
         ):
-            decision = await route_assistant_on_relevance(llm_config, state["messages"])
+            decision = await route_assistant_on_relevance(
+                llm_config,
+                state["messages"],
+                pending_memory_action=state.get("pending_memory_action"),
+                resolved_memory_target=resolves_current_memory_target(state, config),
+                memory_context=state.get("memory_context"),
+                summary=state.get("summary"),
+            )
             emit_event(
                 "agent.route.decided",
                 {
@@ -219,14 +433,18 @@ def make_agent_graph(
         return state["assistant_names"]
 
     builder = StateGraph(AgentState)
+    builder.add_node("load_memories", load_memories_node)
     builder.add_node("context_governance", context_governance_node)
     builder.add_node("training", training_wrapper)
     builder.add_node("meal", meal_wrapper)
     builder.add_node("insights", insights_wrapper)
     builder.add_node("chatter", chatter_node)
     builder.add_node("assistant_selector", assistant_selector_node)
+    builder.add_node("memory", memory_agent_node)
+    builder.add_node("refresh_memories", refresh_memories_node)
 
-    builder.add_edge(START, "context_governance")
+    builder.add_edge(START, "load_memories")
+    builder.add_edge("load_memories", "context_governance")
     builder.add_edge("context_governance", "assistant_selector")
     builder.add_conditional_edges(
         "assistant_selector",
@@ -235,8 +453,11 @@ def make_agent_graph(
             "training_agent": "training",
             "meal_agent": "meal",
             "insights_agent": "insights",
+            "memory_agent": "memory",
             "chatter": "chatter",
         },
     )
+    for terminal_agent in ("training", "meal", "insights", "memory", "chatter"):
+        builder.add_edge(terminal_agent, "refresh_memories")
 
     return builder.compile(checkpointer=checkpointer)

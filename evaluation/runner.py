@@ -4,6 +4,7 @@ import logging
 import sqlite3
 import sys
 import tempfile
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
@@ -13,12 +14,14 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from agents.roles.supervisor import make_agent_graph
 from agents.llm_factory import LLMConfig
+from agents.memory.agent import LLMMemoryInterpreter
+from agents.memory.store import UserMemoryStore
 from agents.rag import get_or_create_vector_store
 from agents.sqlite_handler import init_db
-from agents.utils import extract_text
+from agents.utils import USER_RESPONSE_NODES, extract_text
 
 from evaluation.graders import Trajectory, grade_turn
-from evaluation.models import load_evaluation_cases
+from evaluation.models import ExpectedTrajectoryAssertion, load_evaluation_cases
 from evaluation.report import (
     CaseResult,
     DimensionStat,
@@ -30,6 +33,20 @@ from scripts.llm_judge import evaluate_trace
 
 # Suppress asyncio's "Task was destroyed but it is pending" stderr prints
 logging.getLogger("asyncio").setLevel(logging.CRITICAL)
+_MISSING_DB_ROW = object()
+
+
+def query_expected_scalar(
+    assertion: ExpectedTrajectoryAssertion,
+    *,
+    business_db_path: str | Path,
+    memory_db_path: str | Path,
+):
+    """Return the first scalar selected by one database-state assertion."""
+    db_path = memory_db_path if assertion.database == "memory" else business_db_path
+    with closing(sqlite3.connect(db_path)) as connection, connection:
+        row = connection.execute(assertion.query or "").fetchone()
+    return row[0] if row is not None else _MISSING_DB_ROW
 
 
 class MockLangfuse:
@@ -41,14 +58,27 @@ async def evaluate_case(case, llm_config, vector_store, sem, enable_llm_judge):
     async with sem:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "test_eval.db")
+            memory_path = Path(tmpdir) / "user-memory.db"
             init_db(db_path)
 
             checkpointer = MemorySaver()
+            memory_store = UserMemoryStore(memory_path)
+            memory_interpreter = LLMMemoryInterpreter(llm_config)
             app = make_agent_graph(
-                llm_config, db_path, vector_store, checkpointer=checkpointer
+                llm_config,
+                db_path,
+                vector_store,
+                checkpointer=checkpointer,
+                memory_store=memory_store,
+                memory_interpreter=memory_interpreter,
             )
 
-            config = {"configurable": {"thread_id": case.case_id}}
+            config = {
+                "configurable": {
+                    "thread_id": case.case_id,
+                    "user_id": case.case_id,
+                }
+            }
             case_passed = True
             failure_codes = []
 
@@ -97,7 +127,11 @@ async def evaluate_case(case, llm_config, vector_store, sem, enable_llm_judge):
                             if hasattr(msg, "tool_calls"):
                                 for tc in msg.tool_calls:
                                     tool_calls_made.append(tc)
-                            if msg.type == "ai" and extract_text(msg).strip():
+                            if (
+                                node_name in USER_RESPONSE_NODES
+                                and msg.type == "ai"
+                                and extract_text(msg).strip()
+                            ):
                                 turn_response_text += extract_text(msg) + "\n"
 
                 state = await app.aget_state(config)
@@ -142,7 +176,11 @@ async def evaluate_case(case, llm_config, vector_store, sem, enable_llm_judge):
                                 if hasattr(msg, "tool_calls"):
                                     for tc in msg.tool_calls:
                                         tool_calls_made.append(tc)
-                                if msg.type == "ai" and extract_text(msg).strip():
+                                if (
+                                    node_name in USER_RESPONSE_NODES
+                                    and msg.type == "ai"
+                                    and extract_text(msg).strip()
+                                ):
                                     turn_response_text += extract_text(msg) + "\n"
                     state = await app.aget_state(config)
                     iterations += 1
@@ -164,29 +202,28 @@ async def evaluate_case(case, llm_config, vector_store, sem, enable_llm_judge):
                             f"  [{case.case_id}] [Fail] Turn {turn_idx}: {failure.code} - {failure.message}"
                         )
 
-                if expected_db_state:
-                    with sqlite3.connect(db_path) as conn:
-                        cursor = conn.cursor()
-                        for state_check in expected_db_state:
-                            cursor.execute(state_check.query)
-                            row = cursor.fetchone()
-                            if row is None:
-                                case_passed = False
-                                code = "db_missing"
-                                failure_codes.append(code)
-                                print(
-                                    f"  [{case.case_id}] [Fail] Turn {turn_idx}: {code} - DB query {state_check.query} returned no results"
-                                )
-                            else:
-                                result = row[0]
-                                expected_val = state_check.expected_value
-                                if result != expected_val:
-                                    case_passed = False
-                                    code = "db_mismatch"
-                                    failure_codes.append(code)
-                                    print(
-                                        f"  [{case.case_id}] [Fail] Turn {turn_idx}: {code} - DB query {state_check.query} returned {result}, expected {expected_val}"
-                                    )
+                for state_check in expected_db_state:
+                    result = query_expected_scalar(
+                        state_check,
+                        business_db_path=db_path,
+                        memory_db_path=memory_path,
+                    )
+                    if result is _MISSING_DB_ROW:
+                        case_passed = False
+                        code = "db_missing"
+                        failure_codes.append(code)
+                        print(
+                            f"  [{case.case_id}] [Fail] Turn {turn_idx}: {code} - DB query {state_check.query} returned no results"
+                        )
+                    else:
+                        expected_val = state_check.expected_value
+                        if result != expected_val:
+                            case_passed = False
+                            code = "db_mismatch"
+                            failure_codes.append(code)
+                            print(
+                                f"  [{case.case_id}] [Fail] Turn {turn_idx}: {code} - DB query {state_check.query} returned {result}, expected {expected_val}"
+                            )
 
                 if (
                     enable_llm_judge

@@ -1,6 +1,10 @@
 from langchain_core.messages import BaseMessage
 from typing import Union, List, Dict, Any
 
+USER_RESPONSE_NODES = frozenset(
+    ("training", "meal", "insights", "chatter", "refresh_memories")
+)
+
 
 def extract_text(
     message_or_content: Union[BaseMessage, str, List[Dict[str, Any]], Any],

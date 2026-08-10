@@ -4,7 +4,7 @@ ChatFit 是一个基于自然语言交互的个人训练与饮食助手。用户
 记录训练、饮食和身体感受，并让 Agent 分析训练量、恢复情况与饮食习惯。
 
 项目使用 FastAPI 提供服务接口，使用 LangGraph 编排多个专业 Agent，并将业务数据、
-对话检查点和食谱向量索引持久化到本地。
+对话检查点、长期用户记忆和食谱向量索引按不同职责持久化到本地。
 
 ## 核心能力
 
@@ -17,6 +17,7 @@ ChatFit 是一个基于自然语言交互的个人训练与饮食助手。用户
 - 数据写入前支持 Human-in-the-loop 确认
 - 如果确认回复同时补充或修改了训练信息，ChatFit 不会立即写入；它会更新待保存内容并再次请求确认。确认后的重复投递使用幂等键，不会生成重复训练记录。
 - 长对话自动压缩历史上下文，保留重要训练和饮食信息
+- 支持用户显式记住、更新和忘掉长期偏好；目标不明确时先澄清，不会猜测后写入
 - 支持 Google、OpenAI、Anthropic 以及 OpenAI-compatible 本地模型
 - 可选接入 Langfuse 进行 Agent 链路追踪和质量评估
 - 使用脱敏的结构化 trace 重建 Agent、LLM、工具、HITL 和 checkpoint 执行路径
@@ -32,11 +33,14 @@ flowchart LR
     G --> M["Meal Agent"]
     G --> I["Insights Agent"]
     G --> C["Chatter Agent"]
+    G --> L["Memory Agent"]
     T --> DB[("业务 SQLite")]
     M --> DB
     I --> DB
     M --> VS[("Chroma 食谱索引")]
     G --> CP[("LangGraph Checkpoint")]
+    L --> UM[("独立 user-memory.db")]
+    UM -->|每次请求重新加载| G
     G -. 可选追踪 .-> LF["Langfuse"]
     J["Bot JobQueue<br/>每天 21:00 Asia/Shanghai"] --> P["FastAPI /proactive-review"]
     P --> DB
@@ -54,8 +58,9 @@ flowchart LR
 | Training Agent | 解析并保存训练动作、组数、重量、次数、距离和 RPE |
 | Meal Agent | 保存饮食记录，并检索本地食谱上下文 |
 | Insights Agent | 聚合训练与饮食数据，生成趋势和恢复分析 |
+| Memory Agent | 处理明确的记住、更新、忘掉命令；歧义或信息不全时先询问 |
 | 主动回顾任务 | Bot JobQueue 在每天 21:00（Asia/Shanghai）调用 `/proactive-review`；API 查询 SQLite，并在周六调用 Insights Agent 汇总，随后由 Bot 发送 Telegram |
-| Context Governance | 压缩过长的对话历史，避免上下文无限增长 |
+| Context Governance | 压缩过长的短期对话历史；不负责长期记忆的增删改 |
 | Langfuse | 可选的运行轨迹、评分与生产质量观测 |
 
 更完整的设计参见 [系统架构](docs/architecture.md)。
@@ -67,6 +72,7 @@ flowchart LR
 - Docker Compose 或 Podman Compose
 - 一个由 [BotFather](https://t.me/BotFather) 创建的 Telegram Bot Token
 - Google Gemini API Key（当前 API 默认使用 Google Provider）
+- API 与 Bot 共享的独立随机 `CHATFIT_API_TOKEN`
 - 可选：本地 SOCKS5 代理和 Langfuse 账号
 
 ### 1. 配置环境变量
@@ -80,7 +86,12 @@ cp .env.example .env
 ```dotenv
 GOOGLE_API_KEY=your-google-api-key
 TELEGRAM_BOT_TOKEN=your-telegram-bot-token
+CHATFIT_API_TOKEN=replace-with-an-independent-random-secret
 ```
+
+Compose 会通过 `env_file` 把 `.env` 注入 API 与 Bot 容器。编辑 `.env` 不会让直接在
+宿主机启动的 `api.py` 自动加载这些变量；宿主机命令需要先 `source`/`export`，或使用
+明确支持 env file 的启动器参数。
 
 常用可选配置：
 
@@ -92,8 +103,10 @@ TELEGRAM_BOT_TOKEN=your-telegram-bot-token
 | `LANGFUSE_PUBLIC_KEY` | Langfuse Public Key |
 | `LANGFUSE_SECRET_KEY` | Langfuse Secret Key |
 | `LANGFUSE_CAPTURE_CONTENT` | 是否允许 Langfuse 保存 prompt/output；默认 `false` |
+| `CHATFIT_API_TOKEN` | 必填；Bot 与 API 共用的 Bearer 凭据，不要复用 Telegram 或 LLM token |
 | `CHECKPOINTER_DB_PATH` | LangGraph checkpoint SQLite 文件路径 |
 | `TZ` | API/Bot 容器的本地时区，用于未明确指定日期的训练和饮食记录；默认 `Asia/Shanghai`，应使用 IANA 时区名称 |
+| `USER_MEMORY_DB_PATH` | 长期用户记忆 SQLite 文件；容器默认 `/app/data/user-memory.db` |
 | `OBSERVABILITY_HASH_KEY` | 对用户标识和敏感内容生成稳定 keyed hash 的随机密钥 |
 | `PROACTIVE_REVIEWS_ENABLED` | 是否启用每日/每周 Telegram 主动回顾；默认 `false` |
 | `TELEGRAM_CHAT_ID` | 启用主动回顾时必填的整数 Telegram chat ID；关闭时不需要设置 |
@@ -125,12 +138,14 @@ Langfuse 是可选依赖。Tracing 初始化或导出失败时，系统会记录
 
 - `~/.iron`：业务 SQLite 数据库
 - `./chroma.db`：食谱向量索引
-- `./runtime-data`：LangGraph 对话 checkpoint
+- `./runtime-data`：LangGraph 对话 checkpoint 和与其分离的 `user-memory.db`
 - `~/Documents/LifeOS/下厨房/`：本地食谱 Markdown 文件
 
 如果你的目录不同，请修改 Compose 文件中的 volume 路径。Checkpoint 应挂载目录
 `runtime-data/`，不要把一个不存在的宿主机文件直接绑定到
 `/app/data/checkpointer.db`，否则容器运行时可能将其创建成目录。
+`/app/data/user-memory.db` 是容器内路径；宿主机直接运行时应使用项目内或其他宿主机
+可写路径。
 
 ### 3. 启动服务
 
@@ -173,9 +188,17 @@ docker compose logs -f api bot
 ### 4. 验证聊天接口
 
 ```bash
-curl -X POST http://localhost:8000/chat \
-  -H 'Content-Type: application/json' \
-  -d '{"user_id":"readme-smoke-test","message":"你好"}'
+set -a
+source .env
+set +a
+if [ -z "${CHATFIT_API_TOKEN:-}" ]; then
+  echo "CHATFIT_API_TOKEN is required; set it in .env." >&2
+else
+  curl -X POST http://localhost:8000/chat \
+    -H "Authorization: Bearer $CHATFIT_API_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d '{"user_id":"readme-smoke-test","message":"你好"}'
+fi
 ```
 
 成功响应示例：
@@ -188,6 +211,11 @@ curl -X POST http://localhost:8000/chat \
 ```
 
 ## API
+
+`/chat` 和 `/clear` 是 Bot 调用的受信后端接口，必须携带
+`Authorization: Bearer <CHATFIT_API_TOKEN>`。API 和 Bot 必须配置同一个值；缺失或
+格式错误的 Bearer 凭据返回 `401`，值不匹配返回 `403`。API 启动时若未配置该变量
+会直接失败，避免接受调用方伪造的 `user_id`。
 
 ### `POST /chat`
 
@@ -213,7 +241,8 @@ curl -X POST http://localhost:8000/chat \
 
 ### `POST /clear`
 
-为指定用户创建新的 thread，清除当前会话上下文；已保存的训练和饮食业务数据不会被删除。
+为指定用户创建新的 thread，清除当前短期会话上下文；已保存的训练、饮食和长期
+用户记忆都不会被删除。
 
 请求：
 
@@ -233,7 +262,17 @@ curl -X POST http://localhost:8000/chat \
 
 ```bash
 uv sync --dev
-uv run uvicorn api:app --reload
+set -a
+source .env
+set +a
+if [ -z "${GOOGLE_API_KEY:-}" ] || [ -z "${CHATFIT_API_TOKEN:-}" ]; then
+  echo "GOOGLE_API_KEY and CHATFIT_API_TOKEN must both be set in .env." >&2
+else
+  mkdir -p runtime-data
+  export CHECKPOINTER_DB_PATH=./runtime-data/checkpointer.db
+  export USER_MEMORY_DB_PATH=./runtime-data/user-memory.db
+  uv run uvicorn api:app --reload
+fi
 ```
 
 也可以运行终端交互版本：
@@ -303,12 +342,67 @@ ChatFit 将不同类型的数据分开保存：
 - **Thread 上下文**：LangGraph 消息与执行 checkpoint，位于
   `runtime-data/checkpointer.db`
 - **压缩摘要**：长对话中的重要上下文，作为 LangGraph state 的一部分持久化
+- **长期用户记忆**：只有明确记住命令授权的偏好、约束、模板或资料，位于独立的
+  `USER_MEMORY_DB_PATH`（容器默认 `/app/data/user-memory.db`）
 - **RAG 数据**：从本地食谱生成的 Chroma 向量索引，位于 `chroma.db/`
 - **主动回顾**：Bot JobQueue 调用 `/proactive-review`，API 从 SQLite 读取当天
   记录；周六再通过 Insights Agent 生成周日至周六总结，随后由 Bot 发送至配置的
   Telegram chat。
 
-`/clear` 只切换当前用户的 thread，不会删除业务数据库或向量索引。
+这四类状态用途不同：压缩摘要是当前 thread 的短期、可丢失对话提示；checkpoint
+保存该 thread 的消息和执行状态；业务数据库保存训练与饮食事实；长期记忆保存用户
+明确要求跨 thread 保留的信息。长期记忆会在每次请求从数据库重新读取，因此新
+thread、`/clear` 和 API 重启后仍可使用；`/clear` 只切换当前用户的 thread，不会
+删除业务数据、长期记忆或向量索引。
+
+### 显式长期记忆
+
+当前只为明确命令提供确定性授权边界，例如：
+
+- `记住我乳糖不耐受` 或 `我不吃香菜，记下来`
+- `把 2-1-3 模板更新成……`
+- `忘掉乳糖不耐受`
+
+ChatFit 不会把普通聊天自动推断为长期记忆，也不保证任意自然语言改写都能触发
+记忆操作。内容或目标缺失、没有精确匹配、可能匹配多条时会先澄清，确认前数据库
+不变。明确更新或忘掉命令若通过别名精确命中当前用户的一条长期记忆，会确定性进入
+Memory Agent，不依赖概率路由器的选择；澄清回复仍必须与原操作、目标及缺失字段一致。
+保存时保留用户明确给出的原文；每条记录由
+`(owner, memory_type, canonical_key)` 唯一标识，并可有多个别名。更新会修改同一行、
+保留其 ID 并递增版本；忘掉会物理删除该行及其别名。
+
+本地 CLI 使用固定 owner `local-cli`，所以在同一个 `USER_MEMORY_DB_PATH` 上重启 CLI
+仍可读取其记忆。Evaluation Runner 则为每个 case 创建独立的业务数据库和
+`user-memory.db`，同一 case 的 turns 共享 case identity，不同 case 互不污染。
+
+### 迁移已有的 2-1-3 模板
+
+迁移脚本默认 dry-run，只读扫描业务数据库，不会修改来源文件：
+
+```bash
+uv run python scripts/migrate_explicit_memories.py \
+  --source-db ~/.iron/iron.db \
+  --memory-db runtime-data/user-memory.db \
+  --user-id '<telegram-user-id>'
+```
+
+确认输出后增加 `--apply`：
+
+```bash
+uv run python scripts/migrate_explicit_memories.py \
+  --source-db ~/.iron/iron.db \
+  --memory-db runtime-data/user-memory.db \
+  --user-id '<telegram-user-id>' \
+  --apply
+```
+
+执行 apply 前，目标文件的直接父目录必须已经存在。脚本只迁移带明确记忆标记、且
+完整匹配已批准 2-1-3 定义（抓举、挺举、长循环、三分钟左右/双手安排、波比跳和
+thruster）的记录；其他候选只报告、不导入。重复执行会按唯一键对同一行做幂等
+reconcile，不会创建重复记忆。只有目标内容完全相同时才会修复显示名称和别名；若
+同一目标已有不同内容或待迁移别名已属于另一条记忆，dry-run 与 apply 都会以非零
+状态报告冲突且保留原数据。目标存在 WAL、SHM 或 journal sidecar 时，dry-run 也会
+fail closed；请先 checkpoint 并关闭写入者，再执行兼容性检查或 apply。
 
 ## 项目结构
 
@@ -316,6 +410,7 @@ ChatFit 将不同类型的数据分开保存：
 ChatFit/
 ├── agents/
 │   ├── roles/              # Supervisor 与专业 Agent
+│   ├── memory/             # 独立长期记忆 Agent、模型与 SQLite store
 │   ├── llm_factory.py      # LLM Provider 工厂
 │   ├── models.py           # Agent State 与业务模型
 │   ├── rag.py              # 食谱检索与向量库
