@@ -159,6 +159,10 @@ docker compose up -d --build
 podman-compose up -d --build
 ```
 
+Bot 连接 Telegram 时使用 30 秒连接/读取超时；启动连接失败后最多重试 5 次。
+若重试耗尽或 Bot 进程意外退出，Compose 的 `unless-stopped` 策略会自动重启 Bot，
+直到操作者明确停止容器。该机制不会自动重发已经提交给 ChatFit API 的用户消息。
+
 容器通过 `.env` 中的 `TZ` 计算本地日期。修改时请使用 IANA 时区名称（例如
 `Asia/Shanghai`、`Europe/Berlin`），然后必须重新创建 API 与 Bot 容器；普通的
 `restart` 不会应用环境变量变更。
