@@ -6,7 +6,7 @@ Reviewed branch: `codex/long-term-memory`
 
 Review base: `7463fcb`
 
-Implementation commit: `460881c`
+Implementation commits: `460881c`, `a9894a4`
 
 ## Outcome
 
@@ -41,9 +41,10 @@ and aliases without changing content, row ID, or version.
 Apply performs the check inside its existing write transaction. Dry-run performs
 an immutable, read-only compatibility check for a checkpointed existing
 destination. Both modes return a safe nonzero conflict for different existing
-content and preserve the destination memory rows, aliases, and SQLite file
-family. The established active-WAL dry-run contract remains stat-only so it does
-not create an SHM file or disturb a live destination.
+content or an alias owned by another row, and preserve the destination memory
+rows, aliases, and SQLite file family. If WAL, SHM, or journal sidecars prevent a
+complete immutable snapshot, dry-run returns a safe nonzero result without
+opening SQLite or changing any destination-family member.
 
 ### 3. Pending completions stay operation- and source-bound
 
@@ -87,6 +88,11 @@ Each finding was reproduced before its implementation:
 - Migration RED: 4 cases exposed dry-run success, apply overwrite, a version
   increment during metadata repair, and the missing store conflict. Focused
   GREEN: 4 passed.
+- Independent-verifier follow-up RED: 2 of 3 focused cases failed because an
+  active-WAL canonical conflict and a checkpointed alias collision returned zero
+  in dry-run. Focused GREEN after fail-closed parity: 3 passed, 57 deselected in
+  6.88s; both subprocess regressions preserve rows, aliases, and file-family
+  snapshots.
 - Observability RED: 2 cases observed zero events and zero sink calls. Focused
   GREEN: 2 passed, 57 deselected in 2.01s.
 
@@ -95,12 +101,12 @@ Each finding was reproduced before its implementation:
 - `.venv/bin/pytest -q tests/test_memory_agent.py tests/test_observability.py`:
   64 passed in 1.96s.
 - `.venv/bin/pytest -q tests/test_user_memory_store.py tests/test_memory_migration.py`:
-  76 passed in 79.03s.
+  77 passed in 77.44s after the verifier follow-up.
 - `.venv/bin/pytest -q -W error tests/test_memory_agent.py tests/test_memory_graph.py tests/test_memory_migration.py tests/test_user_memory_store.py tests/test_observability.py`:
-  186 passed in 81.90s, with zero warnings.
+  187 passed in 82.92s, with zero warnings.
 - `make quality`: Ruff clean, Black clean (58 files unchanged), MyPy clean
   (58 source files), Bandit zero issues.
-- `make verify` (non-PTY): 434 passed, 3 deselected in 82.35s.
+- `make verify` (non-PTY): 435 passed, 3 deselected in 89.54s.
 - `.venv/bin/pytest -q tests/test_documentation.py`: 17 passed in 5.17s after
   the contract documentation update.
 - `git diff --check`: clean.
@@ -124,15 +130,16 @@ does not require a change.
 - Generic business edits remain intentionally specialist-mediated when an exact
   colliding durable row is typed `other`; this prevents ordinary meal/training
   record edits from becoming memory writes.
-- A dry-run encountering active destination SQLite sidecars remains stat-only by
-  design. Apply already rejects active WAL/journal state; operators must
-  checkpoint/close writers before apply or before relying on a destination
-  content comparison.
+- Dry-run fails closed rather than attempting to interpret an active destination
+  SQLite file family. Operators must checkpoint and close writers before retrying
+  the compatibility check or apply.
 - Telemetry is intentionally best-effort. A broken sink produces a sanitized
   warning and cannot be used as proof that the durable transaction failed.
 
 ## Independent verification
 
-Pending. A separate verifier must review the full fix-wave diff and this report,
-then run the repository quality and verification gates plus the strict relevant
-suite before the wave is declared complete.
+Round 1 returned NOT READY after reproducing dry-run success for both an
+active-WAL canonical conflict and a checkpointed alias collision. Commit
+`a9894a4` addresses both with fail-closed sidecar handling and complete alias
+compatibility checks. A fresh independent re-verification of the follow-up and
+all required gates is pending.
