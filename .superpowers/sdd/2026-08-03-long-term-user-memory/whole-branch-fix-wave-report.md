@@ -122,8 +122,9 @@ artifact, not a product or test regression.
 `README.md`, `docs/architecture.md`, and `docs/observability.md` now describe
 deterministic exact-alias routing, source-bound clarification, non-overwriting
 migration reconciliation, the mutation event schema, privacy exclusions, and
-sink fail-open behavior. `docs/index.html` makes no memory behavior claim and
-does not require a change.
+sink fail-open behavior. The existing high-level durable-memory persistence,
+mutation, model-injection, and tracing/privacy claims in `docs/index.html` remain
+accurate and require no product-copy change.
 
 ## Residual constraints and risk
 
@@ -141,5 +142,9 @@ does not require a change.
 Round 1 returned NOT READY after reproducing dry-run success for both an
 active-WAL canonical conflict and a checkpointed alias collision. Commit
 `a9894a4` addresses both with fail-closed sidecar handling and complete alias
-compatibility checks. A fresh independent re-verification of the follow-up and
-all required gates is pending.
+compatibility checks. Round 2 re-audited the correction and all original findings:
+focused strict migration passed 3 tests, the relevant `-W error` suite passed
+187 tests, `make quality` was clean, and non-PTY `make verify` passed 435 tests
+with 3 deselected. Its only finding was the report-only `docs/index.html`
+misstatement corrected above; no code, behavior, privacy, or product-document
+finding remained.
