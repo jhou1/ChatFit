@@ -102,6 +102,9 @@ UNSUPPORTED_INPUT_REPLY = (
 )
 PROACTIVE_REVIEW_READ_TIMEOUT_SECONDS = WEEKLY_INSIGHTS_TIMEOUT_SECONDS + 15.0
 PROACTIVE_REVIEW_CONNECT_TIMEOUT_SECONDS = 10.0
+TELEGRAM_BOOTSTRAP_RETRIES = 5
+TELEGRAM_CONNECT_TIMEOUT_SECONDS = 30.0
+TELEGRAM_READ_TIMEOUT_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -496,13 +499,18 @@ def build_telegram_application(
 
     if request is not None:
         builder = builder.request(request)
-    elif proxy_url:
-        print(f"Using proxy: {proxy_url}")
+    else:
+        if proxy_url:
+            print(f"Using proxy: {proxy_url}")
         telegram_request = HTTPXRequest(
-            proxy=proxy_url, connect_timeout=30.0, read_timeout=30.0
+            proxy=proxy_url,
+            connect_timeout=TELEGRAM_CONNECT_TIMEOUT_SECONDS,
+            read_timeout=TELEGRAM_READ_TIMEOUT_SECONDS,
         )
         updates_request = HTTPXRequest(
-            proxy=proxy_url, connect_timeout=30.0, read_timeout=30.0
+            proxy=proxy_url,
+            connect_timeout=TELEGRAM_CONNECT_TIMEOUT_SECONDS,
+            read_timeout=TELEGRAM_READ_TIMEOUT_SECONDS,
         )
         builder = builder.request(telegram_request).get_updates_request(updates_request)
 
@@ -552,7 +560,7 @@ def main():
         register_proactive_review_job(app, proactive_settings)
 
     print("Bot is polling for messages. Press Ctrl+C to stop.")
-    app.run_polling()
+    app.run_polling(bootstrap_retries=TELEGRAM_BOOTSTRAP_RETRIES)
 
 
 async def clear_context(update: Update, context: ContextTypes.DEFAULT_TYPE):

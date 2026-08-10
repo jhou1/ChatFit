@@ -68,6 +68,14 @@ class FakeApplicationBuilder:
         return self.app
 
 
+class RecordingHTTPXRequest:
+    instances: list["RecordingHTTPXRequest"] = []
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+        self.instances.append(self)
+
+
 class FakeTelegramRequest(BaseRequest):
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
@@ -858,7 +866,7 @@ def test_main_registers_photo_message_handler(monkeypatch):
     assert "handle_photo" in callback_names
     assert app.job_queue is None
     assert app.polling_started
-    assert app.polling_kwargs == {}
+    assert app.polling_kwargs == {"bootstrap_retries": 5}
 
 
 def test_main_registers_enabled_proactive_review_job(monkeypatch):
@@ -878,6 +886,7 @@ def test_main_registers_enabled_proactive_review_job(monkeypatch):
 
     assert len(app.job_queue.registrations) == 1
     assert app.polling_started
+    assert app.polling_kwargs == {"bootstrap_retries": 5}
 
 
 def test_main_exits_with_non_sensitive_settings_error(monkeypatch, capsys):
@@ -921,18 +930,31 @@ def test_telegram_proxy_does_not_reuse_llm_proxy(monkeypatch):
     assert bot.get_telegram_proxy_url() is None
 
 
+def test_direct_telegram_requests_configure_resilient_timeouts(monkeypatch):
+    app = FakeApplication()
+    builder = FakeApplicationBuilder(app)
+    RecordingHTTPXRequest.instances = []
+
+    monkeypatch.setattr(bot, "ApplicationBuilder", lambda: builder)
+    monkeypatch.setattr(bot, "HTTPXRequest", RecordingHTTPXRequest)
+
+    assert bot.build_telegram_application("test-token") is app
+
+    assert [request.kwargs for request in RecordingHTTPXRequest.instances] == [
+        {"connect_timeout": 30.0, "read_timeout": 30.0, "proxy": None},
+        {"connect_timeout": 30.0, "read_timeout": 30.0, "proxy": None},
+    ]
+    assert builder.bot_request is RecordingHTTPXRequest.instances[0]
+    assert builder.updates_request is RecordingHTTPXRequest.instances[1]
+
+
 def test_telegram_proxy_configures_polling_request(monkeypatch):
     app = FakeApplication()
     builder = FakeApplicationBuilder(app)
-    created_requests = []
-
-    class FakeHTTPXRequest:
-        def __init__(self, **kwargs: Any) -> None:
-            self.kwargs = kwargs
-            created_requests.append(self)
+    RecordingHTTPXRequest.instances = []
 
     monkeypatch.setattr(bot, "ApplicationBuilder", lambda: builder)
-    monkeypatch.setattr(bot, "HTTPXRequest", FakeHTTPXRequest)
+    monkeypatch.setattr(bot, "HTTPXRequest", RecordingHTTPXRequest)
 
     assert (
         bot.build_telegram_application(
@@ -941,11 +963,20 @@ def test_telegram_proxy_configures_polling_request(monkeypatch):
         is app
     )
 
-    assert len(created_requests) == 2
-    assert builder.bot_request is created_requests[0]
-    assert builder.updates_request is created_requests[1]
-    assert created_requests[0].kwargs["proxy"] == "socks5h://host.docker.internal:8990"
-    assert created_requests[1].kwargs["proxy"] == "socks5h://host.docker.internal:8990"
+    assert [request.kwargs for request in RecordingHTTPXRequest.instances] == [
+        {
+            "connect_timeout": 30.0,
+            "read_timeout": 30.0,
+            "proxy": "socks5h://host.docker.internal:8990",
+        },
+        {
+            "connect_timeout": 30.0,
+            "read_timeout": 30.0,
+            "proxy": "socks5h://host.docker.internal:8990",
+        },
+    ]
+    assert builder.bot_request is RecordingHTTPXRequest.instances[0]
+    assert builder.updates_request is RecordingHTTPXRequest.instances[1]
 
 
 @pytest.mark.asyncio
