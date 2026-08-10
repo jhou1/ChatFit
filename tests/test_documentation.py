@@ -4,7 +4,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
+COMPOSE = Path(__file__).resolve().parents[1] / "docker-compose.yml"
 README = Path(__file__).resolve().parents[1] / "README.md"
 INTERACTIVE_SHELLS = tuple(
     shell for name in ("bash", "zsh") if (shell := shutil.which(name)) is not None
@@ -201,3 +203,10 @@ def test_readme_distinguishes_compose_env_file_from_host_processes() -> None:
 
     assert "Compose 会通过 `env_file` 把 `.env` 注入 API 与 Bot 容器" in readme
     assert "`/app/data/user-memory.db` 是容器内路径" in readme
+
+
+def test_only_bot_service_restarts_after_exhausted_bootstrap_retries() -> None:
+    compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+
+    assert compose["services"]["bot"]["restart"] == "unless-stopped"
+    assert "restart" not in compose["services"]["api"]

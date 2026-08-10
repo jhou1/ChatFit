@@ -25,6 +25,7 @@ services:
   bot:
     build: .
     container_name: chatfit_bot
+    restart: unless-stopped
     command: python bot.py
     depends_on:
     - api
