@@ -174,6 +174,7 @@ class UserMemoryStore:
         connection.row_factory = sqlite3.Row
         _initialize_schema(connection)
         try:
+            cls.require_reconcile_content_match(connection, owner_key, memory)
             existing = cls._find_canonical(connection, owner_key, memory)
             desired_aliases = cls._alias_values(memory.canonical_key, memory.aliases)
             desired_display_aliases = {alias for _, alias in desired_aliases}
@@ -213,7 +214,6 @@ class UserMemoryStore:
 
             if (
                 existing.display_name == memory.display_name
-                and existing.content == memory.content
                 and set(existing.aliases) == desired_display_aliases
             ):
                 return "unchanged"
@@ -221,13 +221,11 @@ class UserMemoryStore:
             connection.execute(
                 """
                 UPDATE user_memories
-                SET display_name = ?, content = ?, version = version + 1,
-                    updated_at = ?
+                SET display_name = ?, updated_at = ?
                 WHERE owner_key = ? AND id = ?
                 """,
                 (
                     memory.display_name,
-                    memory.content,
                     timestamp,
                     owner_key,
                     existing.id,
@@ -256,6 +254,28 @@ class UserMemoryStore:
             raise MemoryConflictError(
                 "The canonical key or an alias belongs to another memory"
             ) from None
+
+    @classmethod
+    def require_reconcile_content_match(
+        cls,
+        connection: sqlite3.Connection,
+        owner_key: str,
+        memory: NewUserMemory,
+    ) -> None:
+        """Reject an existing canonical row whose content is not migration-exact."""
+        connection.row_factory = sqlite3.Row
+        table_exists = connection.execute("""
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'user_memories'
+            """).fetchone()
+        if table_exists is None:
+            return
+        existing = cls._find_canonical(connection, owner_key, memory)
+        if existing is not None and existing.content != memory.content:
+            raise MemoryConflictError(
+                "A memory with this canonical key already has different content"
+            )
 
     def _find_by_id(
         self, connection: sqlite3.Connection, owner_key: str, memory_id: str

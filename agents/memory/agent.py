@@ -19,6 +19,7 @@ from agents.memory.models import (
     UserMemory,
 )
 from agents.memory.store import UserMemoryStore, normalize_memory_key, owner_key_for
+from agents.observability import emit_event, private_fingerprint
 
 
 class MemoryInterpreter(Protocol):
@@ -145,6 +146,43 @@ class MemoryAgent:
     ) -> MemoryAgentResult:
         owner_key = owner_key_for(user_id)
         command = parse_memory_command(user_message)
+        operation = pending.operation if pending is not None else None
+        if operation is None and command is not None:
+            operation = command.operation
+
+        result = await self._handle(
+            user_id=user_id,
+            user_message=user_message,
+            pending=pending,
+        )
+        if operation is None:
+            return result
+
+        mutation_result = result.mutation_result
+        if mutation_result is None:
+            mutation_result = "clarify" if result.pending is not None else "failed"
+            result = result.model_copy(update={"mutation_result": mutation_result})
+        attributes = {
+            "memory.operation": operation,
+            "memory.result": mutation_result,
+            "memory.owner_id": private_fingerprint(f"memory-owner:{owner_key}"),
+        }
+        if result.memory_id is not None:
+            attributes["memory.id"] = private_fingerprint(
+                f"memory-id:{result.memory_id}"
+            )
+        emit_event("memory.mutation", attributes)
+        return result
+
+    async def _handle(
+        self,
+        *,
+        user_id: str,
+        user_message: str,
+        pending: PendingMemoryAction | None,
+    ) -> MemoryAgentResult:
+        owner_key = owner_key_for(user_id)
+        command = parse_memory_command(user_message)
         operation = command.operation if command is not None else None
         if pending is not None:
             if pending.owner_key != owner_key:
@@ -164,7 +202,16 @@ class MemoryAgent:
         if pending is None and decision.intent not in (operation, "clarify"):
             return MemoryAgentResult(response="无法确认这条记忆操作，请重新明确说明。")
         if pending is not None:
-            decision = self._merge_pending_decision(pending.decision, decision)
+            clarification_content = decision.content
+            if not self._pending_reply_matches_scope(
+                owner_key=owner_key,
+                pending=pending,
+                clarification=decision,
+                memories=memories,
+                user_message=user_message,
+            ):
+                return MemoryAgentResult(response=pending.question, pending=pending)
+            decision = self._merge_pending_decision(pending, decision)
             pending_content = pending.decision.content
             if pending_content is None or not pending_content.strip():
                 if (
@@ -191,6 +238,11 @@ class MemoryAgent:
                         extracted if extracted is not None else user_message
                     )
                 if continuation_content is not None:
+                    if clarification_content != continuation_content:
+                        return MemoryAgentResult(
+                            response=pending.question,
+                            pending=pending,
+                        )
                     decision = decision.model_copy(
                         update={"content": continuation_content}
                     )
@@ -257,15 +309,22 @@ class MemoryAgent:
                 content=content,
             )
         except Exception:
-            return MemoryAgentResult(response="记忆保存失败，请稍后重试。")
+            return MemoryAgentResult(
+                response="记忆保存失败，请稍后重试。",
+                mutation_result="failed",
+            )
 
         if result.status == "unchanged":
             return MemoryAgentResult(
-                response=f"已记住，无需重复记录「{result.memory.display_name}」。"
+                response=f"已记住，无需重复记录「{result.memory.display_name}」。",
+                mutation_result="unchanged",
+                memory_id=result.memory.id,
             )
         return MemoryAgentResult(
             response=f"已记住「{result.memory.display_name}」。",
             mutation_committed=True,
+            mutation_result="committed",
+            memory_id=result.memory.id,
         )
 
     def _clarify_remember_conflict(
@@ -297,7 +356,7 @@ class MemoryAgent:
                 f"「{decision.display_name}」已有不同内容，要更新它吗？"
             ),
         )
-        return self._pending_result(
+        pending_result = self._pending_result(
             owner_key,
             "update",
             update_decision,
@@ -305,23 +364,129 @@ class MemoryAgent:
             update_decision.clarification_question or "要更新这条记忆吗？",
             requires_confirmation=True,
         )
+        candidate_ids = tuple(candidates_by_id)
+        return pending_result.model_copy(
+            update={
+                "mutation_result": "conflict",
+                "memory_id": candidate_ids[0] if len(candidate_ids) == 1 else None,
+            }
+        )
+
+    def _pending_reply_matches_scope(
+        self,
+        *,
+        owner_key: str,
+        pending: PendingMemoryAction,
+        clarification: MemoryMutationDecision,
+        memories: Sequence[UserMemory],
+        user_message: str,
+    ) -> bool:
+        if clarification.intent != pending.operation:
+            return False
+
+        original = pending.decision
+        if (
+            original.memory_type is not None
+            and clarification.memory_type is not None
+            and clarification.memory_type != original.memory_type
+        ):
+            return False
+
+        captured = [memory for memory in memories if memory.id in pending.candidate_ids]
+        if clarification.memory_type is not None and any(
+            memory.memory_type != clarification.memory_type for memory in captured
+        ):
+            return False
+
+        if pending.operation == "remember":
+            if (
+                original.canonical_key
+                and clarification.canonical_key
+                and normalize_memory_key(original.canonical_key)
+                != normalize_memory_key(clarification.canonical_key)
+            ):
+                return False
+            if (
+                original.display_name
+                and clarification.display_name
+                and original.display_name != clarification.display_name
+            ):
+                return False
+            return True
+
+        if (
+            captured
+            and clarification.canonical_key
+            and all(
+                normalize_memory_key(memory.canonical_key)
+                != normalize_memory_key(clarification.canonical_key)
+                for memory in captured
+            )
+        ):
+            return False
+        if (
+            captured
+            and clarification.display_name
+            and all(
+                normalize_memory_key(memory.display_name)
+                != normalize_memory_key(clarification.display_name)
+                for memory in captured
+            )
+        ):
+            return False
+
+        missing_update_content = (
+            pending.operation == "update"
+            and len(pending.candidate_ids) == 1
+            and (original.content is None or not original.content.strip())
+            and not pending.requires_confirmation
+        )
+        needs_target = (
+            not pending.requires_confirmation
+            and not missing_update_content
+            and len(pending.candidate_ids) != 1
+        )
+        if needs_target:
+            if not clarification.target_query:
+                return False
+            if normalize_memory_key(clarification.target_query) != normalize_memory_key(
+                _clean_target_query(user_message)
+            ):
+                return False
+
+        if clarification.target_query and captured:
+            try:
+                resolved = self._resolve_exact_queries(
+                    owner_key,
+                    memories,
+                    (clarification.target_query,),
+                    allowed_ids=set(pending.candidate_ids),
+                )
+            except Exception:
+                return False
+            if len(resolved) != 1:
+                return False
+        return True
 
     @staticmethod
     def _merge_pending_decision(
-        original: MemoryMutationDecision,
+        pending: PendingMemoryAction,
         clarification: MemoryMutationDecision,
     ) -> MemoryMutationDecision:
+        original = pending.decision
         updates = {}
-        for field in (
-            "memory_type",
-            "canonical_key",
-            "display_name",
-            "clarification_question",
-        ):
+        fields = ["clarification_question"]
+        if pending.operation == "remember":
+            fields.extend(("memory_type", "canonical_key", "display_name"))
+        for field in fields:
             value = getattr(clarification, field)
             if getattr(original, field) is None and value is not None:
                 updates[field] = value
-        if not original.aliases and clarification.aliases:
+        if (
+            pending.operation == "remember"
+            and not original.aliases
+            and clarification.aliases
+        ):
             updates["aliases"] = clarification.aliases
         return original.model_copy(update=updates)
 
@@ -446,6 +611,8 @@ class MemoryAgent:
             return MemoryAgentResult(
                 response=f"已更新「{updated.display_name}」。",
                 mutation_committed=True,
+                mutation_result="committed",
+                memory_id=updated.id,
             )
 
         try:
@@ -463,6 +630,8 @@ class MemoryAgent:
         return MemoryAgentResult(
             response=f"已忘掉「{target.display_name}」。",
             mutation_committed=True,
+            mutation_result="forgotten",
+            memory_id=target.id,
         )
 
     def _resolve_exact_queries(
@@ -524,12 +693,19 @@ class MemoryAgent:
                 requires_confirmation=requires_confirmation,
                 question=question,
             ),
+            mutation_result="clarify",
         )
 
     @staticmethod
     def _repository_failure() -> MemoryAgentResult:
-        return MemoryAgentResult(response="记忆操作失败，请稍后重试。")
+        return MemoryAgentResult(
+            response="记忆操作失败，请稍后重试。",
+            mutation_result="failed",
+        )
 
     @staticmethod
     def _stale_memory_result() -> MemoryAgentResult:
-        return MemoryAgentResult(response="检测到更新，请先查看新内容后再确认。")
+        return MemoryAgentResult(
+            response="检测到更新，请先查看新内容后再确认。",
+            mutation_result="conflict",
+        )

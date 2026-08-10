@@ -466,7 +466,8 @@ def test_apply_is_idempotent_and_preserves_source_bytes_schema_and_rows(tmp_path
     assert _source_snapshot(source_db) == before
 
 
-def test_apply_updates_different_existing_content_with_stable_id(tmp_path):
+@pytest.mark.parametrize("apply", (False, True), ids=("dry-run", "apply"))
+def test_existing_different_content_is_a_non_mutating_conflict(tmp_path, apply):
     source_db = tmp_path / "source.db"
     memory_db = tmp_path / "memory.db"
     _create_source(source_db, [HISTORICAL_NOTE])
@@ -481,23 +482,18 @@ def test_apply_updates_different_existing_content_with_stable_id(tmp_path):
             aliases=("213", "2-1-3", "壶铃213"),
         ),
     ).memory
+    rows_before = _memory_rows(memory_db)
+    files_before = _file_family_snapshot(memory_db)
 
-    result = _run_migration(source_db, memory_db, apply=True)
-    memories, aliases = _memory_rows(memory_db)
+    result = _run_migration(source_db, memory_db, apply=apply)
 
-    assert result.returncode == 0, result.stderr
-    assert "status=updated" in result.stdout
-    assert len(memories) == 1
-    assert memories[0] == (
-        original.id,
-        owner_key_for("user-a"),
-        "training_template",
-        "213",
-        "2-1-3",
-        EXPECTED_DEFINITION,
-        2,
-    )
-    assert {alias[1] for alias in aliases} == {"213", "2-1-3", "壶铃213"}
+    assert result.returncode != 0
+    assert "conflict" in result.stderr.lower()
+    assert "Traceback" not in result.stderr
+    assert "status=" not in result.stdout
+    assert _memory_rows(memory_db) == rows_before
+    assert _file_family_snapshot(memory_db) == files_before
+    assert rows_before[0][0][0] == original.id
 
 
 def test_apply_repairs_incomplete_aliases_for_identical_existing_content(tmp_path):
@@ -529,7 +525,7 @@ def test_apply_repairs_incomplete_aliases_for_identical_existing_content(tmp_pat
     memories, aliases = second_rows
     assert len(memories) == 1
     assert memories[0][0] == original.id
-    assert memories[0][4:] == ("2-1-3", EXPECTED_DEFINITION, 2)
+    assert memories[0][4:] == ("2-1-3", EXPECTED_DEFINITION, 1)
     assert {alias[1] for alias in aliases} == {"213", "2-1-3", "壶铃213"}
 
 

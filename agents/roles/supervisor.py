@@ -19,7 +19,7 @@ from agents.memory.context import (
     format_durable_memories,
     format_unavailable_memories,
 )
-from agents.memory.models import PendingMemoryAction
+from agents.memory.models import MemoryType, PendingMemoryAction
 from agents.memory.store import UserMemoryStore, owner_key_for
 from agents.roles.meal import make_meal_subagent_graph
 from agents.roles.training import make_training_agent_graph
@@ -132,13 +132,14 @@ async def route_assistant_on_relevance(
         "",
     )
     command = parse_memory_command(latest_user_message)
-    router_authorized_memory = (
-        "memory_agent" in selected and command is not None and resolved_memory_target
-    )
     if (
         pending_memory_action is not None
         or should_auto_route_memory(command)
-        or router_authorized_memory
+        or (
+            resolved_memory_target
+            and command is not None
+            and command.operation in ("update", "forget")
+        )
     ):
         routed.insert(0, "memory_agent")
 
@@ -201,14 +202,17 @@ def make_agent_graph(
             return False
         owner_key = owner_key_for(configured_user_id(config))
         try:
-            matching_ids = {
-                memory.id
+            matching_memories = {
+                memory.id: memory
                 for query in command.target_queries
                 for memory in memory_store.resolve(owner_key, query)
             }
         except Exception:
             return False
-        return len(matching_ids) == 1
+        if len(matching_memories) != 1:
+            return False
+        target = next(iter(matching_memories.values()))
+        return target.memory_type is not MemoryType.OTHER
 
     async def invoke_specialist(
         specialist,

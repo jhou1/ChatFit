@@ -1,4 +1,5 @@
 from contextlib import closing
+import json
 import sqlite3
 
 import pytest
@@ -6,6 +7,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import ValidationError
 
 from agents.llm_factory import LLMConfig
+from agents.observability import InMemorySink, observation_sink
 from agents.memory.agent import LLMMemoryInterpreter, MemoryAgent
 from agents.memory.models import (
     MemoryMutationDecision,
@@ -238,7 +240,13 @@ async def test_empty_explicit_remember_payload_never_stores_model_content(tmp_pa
                 content="模型擅自补出的内容",
                 clarification_question="你希望我记住什么？",
             ),
-            MemoryMutationDecision(intent="forget", content="模型改写"),
+            MemoryMutationDecision(
+                intent="remember",
+                memory_type=MemoryType.OTHER,
+                canonical_key="invented",
+                display_name="模型猜测",
+                content="  Ada  ",
+            ),
         ),
     )
 
@@ -275,7 +283,13 @@ async def test_whitespace_only_remember_payload_requests_clarification(tmp_path)
                 content="模型擅自补出的内容",
                 clarification_question="你希望我记住什么？",
             ),
-            MemoryMutationDecision(intent="forget", content="模型改写"),
+            MemoryMutationDecision(
+                intent="remember",
+                memory_type=MemoryType.OTHER,
+                canonical_key="invented",
+                display_name="模型猜测",
+                content="  Ada  ",
+            ),
         ),
     )
 
@@ -314,8 +328,11 @@ async def test_pending_remember_uses_exact_user_reply_not_model_content(tmp_path
                 clarification_question="你希望我记住什么？",
             ),
             MemoryMutationDecision(
-                intent="forget",
-                content="模型第二次改写",
+                intent="remember",
+                memory_type=MemoryType.PROFILE,
+                canonical_key="name",
+                display_name="姓名",
+                content="  Ada  ",
             ),
         ),
     )
@@ -332,6 +349,85 @@ async def test_pending_remember_uses_exact_user_reply_not_model_content(tmp_path
     assert len(stored) == 1
     assert stored[0].content == "  Ada  "
     assert "已记住" in result.response
+
+
+@pytest.mark.asyncio
+async def test_pending_remember_rejects_unrelated_reply_when_fresh_decision_clarifies(
+    tmp_path,
+):
+    """Breaks if an ordinary second turn is silently adopted as memory content."""
+    store = UserMemoryStore(tmp_path / "user-memory.db")
+    owner = owner_key_for("user-a")
+    agent = MemoryAgent(
+        store=store,
+        interpreter=DeterministicInterpreter(
+            MemoryMutationDecision(
+                intent="clarify",
+                memory_type=MemoryType.PROFILE,
+                canonical_key="name",
+                display_name="姓名",
+                clarification_question="请告诉我你的名字。",
+            ),
+            MemoryMutationDecision(
+                intent="clarify",
+                memory_type=MemoryType.PROFILE,
+                canonical_key="name",
+                display_name="姓名",
+                clarification_question="请告诉我你的名字。",
+            ),
+        ),
+    )
+
+    first = await agent.handle(
+        user_id="user-a", user_message="记住我的名字", pending=None
+    )
+    assert first.pending is not None
+    second = await agent.handle(
+        user_id="user-a",
+        user_message="今天练了深蹲",
+        pending=first.pending,
+    )
+
+    assert store.list_memories(owner) == []
+    assert second.pending == first.pending
+    assert "已记住" not in second.response
+
+
+@pytest.mark.asyncio
+async def test_pending_remember_requires_fresh_content_to_match_exact_reply(tmp_path):
+    """Breaks if a model paraphrase can bless unrelated pending content."""
+    store = UserMemoryStore(tmp_path / "user-memory.db")
+    owner = owner_key_for("user-a")
+    agent = MemoryAgent(
+        store=store,
+        interpreter=DeterministicInterpreter(
+            MemoryMutationDecision(
+                intent="clarify",
+                memory_type=MemoryType.PROFILE,
+                canonical_key="name",
+                display_name="姓名",
+                clarification_question="请告诉我你的名字。",
+            ),
+            MemoryMutationDecision(
+                intent="remember",
+                memory_type=MemoryType.PROFILE,
+                canonical_key="name",
+                display_name="姓名",
+                content="Ada",
+            ),
+        ),
+    )
+
+    first = await agent.handle(
+        user_id="user-a", user_message="记住我的名字", pending=None
+    )
+    assert first.pending is not None
+    second = await agent.handle(
+        user_id="user-a", user_message="  Ada  ", pending=first.pending
+    )
+
+    assert store.list_memories(owner) == []
+    assert second.pending == first.pending
 
 
 @pytest.mark.asyncio
@@ -397,7 +493,11 @@ async def test_whitespace_only_update_preserves_row_and_requests_clarification(
                 content="模型改写",
                 clarification_question="请提供新的模板内容。",
             ),
-            MemoryMutationDecision(intent="forget", target_query="壶铃213"),
+            MemoryMutationDecision(
+                intent="update",
+                target_query="壶铃213",
+                content="  exact  ",
+            ),
         ),
     )
 
@@ -420,6 +520,118 @@ async def test_whitespace_only_update_preserves_row_and_requests_clarification(
     assert stored[0].content == "  exact  "
     assert completed.pending is None
     assert "已更新" in completed.response
+
+
+@pytest.mark.asyncio
+async def test_pending_update_rejects_unrelated_reply_when_fresh_decision_clarifies(
+    tmp_path,
+):
+    """Breaks if a normal second turn replaces a captured memory target."""
+    store = UserMemoryStore(tmp_path / "user-memory.db")
+    owner = owner_key_for("user-a")
+    original = store.remember(
+        owner,
+        NewUserMemory(
+            memory_type=MemoryType.TRAINING_TEMPLATE,
+            canonical_key="213",
+            display_name="壶铃213",
+            content="原模板内容",
+            aliases=("壶铃213",),
+        ),
+    ).memory
+    agent = MemoryAgent(
+        store=store,
+        interpreter=DeterministicInterpreter(
+            MemoryMutationDecision(
+                intent="clarify",
+                memory_type=MemoryType.TRAINING_TEMPLATE,
+                target_query="壶铃213",
+                clarification_question="请提供新的模板内容。",
+            ),
+            MemoryMutationDecision(
+                intent="clarify",
+                memory_type=MemoryType.TRAINING_TEMPLATE,
+                target_query="壶铃213",
+                clarification_question="请提供新的模板内容。",
+            ),
+        ),
+    )
+
+    first = await agent.handle(
+        user_id="user-a",
+        user_message="把壶铃213更新成   ",
+        pending=None,
+    )
+    assert first.pending is not None
+    second = await agent.handle(
+        user_id="user-a",
+        user_message="今天练了深蹲",
+        pending=first.pending,
+    )
+
+    assert store.list_memories(owner) == [original]
+    assert second.pending == first.pending
+    assert "已更新" not in second.response
+
+
+@pytest.mark.asyncio
+async def test_pending_update_rejects_fresh_target_or_type_drift(tmp_path):
+    """Breaks if a completion can change a captured update's target or type."""
+    store = UserMemoryStore(tmp_path / "user-memory.db")
+    owner = owner_key_for("user-a")
+    original = store.remember(
+        owner,
+        NewUserMemory(
+            memory_type=MemoryType.TRAINING_TEMPLATE,
+            canonical_key="213",
+            display_name="壶铃213",
+            content="原模板内容",
+            aliases=("壶铃213",),
+        ),
+    ).memory
+    store.remember(
+        owner,
+        NewUserMemory(
+            memory_type=MemoryType.PROFILE,
+            canonical_key="name",
+            display_name="姓名",
+            content="Ada",
+            aliases=("姓名",),
+        ),
+    )
+    agent = MemoryAgent(
+        store=store,
+        interpreter=DeterministicInterpreter(
+            MemoryMutationDecision(
+                intent="clarify",
+                memory_type=MemoryType.TRAINING_TEMPLATE,
+                target_query="壶铃213",
+                clarification_question="请提供新的模板内容。",
+            ),
+            MemoryMutationDecision(
+                intent="update",
+                memory_type=MemoryType.PROFILE,
+                canonical_key="name",
+                display_name="姓名",
+                content="精确回复",
+                target_query="姓名",
+            ),
+        ),
+    )
+
+    first = await agent.handle(
+        user_id="user-a",
+        user_message="把壶铃213更新成   ",
+        pending=None,
+    )
+    assert first.pending is not None
+    second = await agent.handle(
+        user_id="user-a", user_message="精确回复", pending=first.pending
+    )
+
+    stored = store.resolve(owner, "壶铃213")[0]
+    assert stored == original
+    assert second.pending == first.pending
 
 
 @pytest.mark.asyncio
@@ -757,14 +969,7 @@ async def test_ambiguous_forget_waits_then_deletes_only_confirmed_target(tmp_pat
                 target_query="那个训练模板",
                 clarification_question="你是指壶铃213还是晨练模板？",
             ),
-            MemoryMutationDecision(
-                intent="remember",
-                target_query="晨练",
-                memory_type=MemoryType.PROFILE,
-                canonical_key="malicious",
-                display_name="恶意记忆",
-                content="不应保存",
-            ),
+            MemoryMutationDecision(intent="forget", target_query="壶铃213"),
         ),
     )
     await agent.handle(user_id="user-a", user_message="记住原始模板内容", pending=None)
@@ -834,7 +1039,7 @@ async def test_pending_action_is_bound_to_original_owner(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_pending_update_cannot_be_changed_to_forget(tmp_path):
+async def test_pending_update_rejects_changed_operation(tmp_path):
     memory_db = tmp_path / "user-memory.db"
     store = UserMemoryStore(memory_db)
     owner = owner_key_for("user-a")
@@ -874,9 +1079,9 @@ async def test_pending_update_cannot_be_changed_to_forget(tmp_path):
     stored = store.list_memories(owner)
     assert len(stored) == 1
     assert stored[0].id == original.id
-    assert stored[0].version == 2
-    assert stored[0].content == "新的模板内容"
-    assert "已更新" in result.response
+    assert stored[0] == original
+    assert result.pending == pending_result.pending
+    assert "已更新" not in result.response
 
 
 @pytest.mark.asyncio
@@ -915,9 +1120,9 @@ async def test_pending_update_preserves_exact_explicit_replacement(tmp_path):
                 clarification_question="请确认训练模板。",
             ),
             MemoryMutationDecision(
-                intent="forget",
-                target_query="晨练",
-                content="模型第二次改写",
+                intent="update",
+                target_query="壶铃213",
+                content="壶铃213",
             ),
         ),
     )
@@ -1025,8 +1230,8 @@ async def test_zero_candidate_pending_recovers_by_capture_then_confirmation(tmp_
                 target_query="不存在的记忆",
                 clarification_question="请提供准确名称。",
             ),
-            MemoryMutationDecision(intent="forget", target_query="晨练"),
-            MemoryMutationDecision(intent="forget", target_query="晨练"),
+            MemoryMutationDecision(intent="forget", target_query="２‐１‐３"),
+            MemoryMutationDecision(intent="forget", target_query="壶铃213"),
         ),
     )
 
@@ -1085,10 +1290,18 @@ async def test_recovered_update_confirmation_is_not_used_as_missing_content(tmp_
             MemoryMutationDecision(
                 intent="clarify", clarification_question="请提供准确名称。"
             ),
-            MemoryMutationDecision(intent="update", target_query="晨练"),
-            MemoryMutationDecision(intent="update", target_query="晨练"),
-            MemoryMutationDecision(intent="forget", target_query="晨练"),
-            MemoryMutationDecision(intent="forget", target_query="晨练"),
+            MemoryMutationDecision(intent="update", target_query="２‐１‐３"),
+            MemoryMutationDecision(intent="update", target_query="壶铃213"),
+            MemoryMutationDecision(
+                intent="update",
+                target_query="壶铃213",
+                content="再次确认。",
+            ),
+            MemoryMutationDecision(
+                intent="update",
+                target_query="壶铃213",
+                content="  用户精确的新内容  ",
+            ),
         ),
     )
 
@@ -1455,6 +1668,174 @@ async def test_repository_failure_never_returns_mutation_success(tmp_path, monke
         assert (
             connection.execute("SELECT COUNT(*) FROM user_memories").fetchone()[0] == 0
         )
+
+
+@pytest.mark.asyncio
+async def test_memory_mutation_events_cover_results_without_payload_leakage(
+    tmp_path, monkeypatch
+):
+    """Breaks if mutation outcomes are invisible or include user-controlled text."""
+    monkeypatch.setenv("OBSERVABILITY_HASH_KEY", "stable-memory-event-key")
+    store = UserMemoryStore(tmp_path / "user-memory.db")
+    owner = owner_key_for("raw-user-a")
+    private_alias = "私密模板别名"
+    decisions = (
+        MemoryMutationDecision(
+            intent="remember",
+            memory_type=MemoryType.TRAINING_TEMPLATE,
+            canonical_key="private-template",
+            display_name="私人模板",
+            content="模型不得记录",
+            aliases=(private_alias,),
+        ),
+        MemoryMutationDecision(
+            intent="remember",
+            memory_type=MemoryType.TRAINING_TEMPLATE,
+            canonical_key="private-template",
+            display_name="私人模板",
+            content="模型不得记录",
+            aliases=(private_alias,),
+        ),
+        MemoryMutationDecision(
+            intent="remember",
+            memory_type=MemoryType.TRAINING_TEMPLATE,
+            canonical_key="private-template",
+            display_name="私人模板",
+            content="模型不得记录",
+            aliases=(private_alias,),
+        ),
+        MemoryMutationDecision(
+            intent="clarify",
+            memory_type=MemoryType.PROFILE,
+            canonical_key="private-name",
+            display_name="私人姓名",
+            clarification_question="请提供私人姓名。",
+        ),
+        MemoryMutationDecision(
+            intent="remember",
+            memory_type=MemoryType.OTHER,
+            canonical_key="failure",
+            display_name="失败内容",
+            content="模型不得记录",
+        ),
+        MemoryMutationDecision(intent="forget", target_query=private_alias),
+    )
+    agent = MemoryAgent(
+        store=store,
+        interpreter=DeterministicInterpreter(*decisions),
+    )
+    sink = InMemorySink()
+
+    with observation_sink(sink):
+        await agent.handle(
+            user_id="raw-user-a", user_message="记住私人模板内容", pending=None
+        )
+        memory_id = store.list_memories(owner)[0].id
+        await agent.handle(
+            user_id="raw-user-a", user_message="记住私人模板内容", pending=None
+        )
+        await agent.handle(
+            user_id="raw-user-a",
+            user_message="记住不同的私人模板内容",
+            pending=None,
+        )
+        await agent.handle(user_id="raw-user-a", user_message="记住", pending=None)
+        real_remember = store.remember
+
+        def fail_remember(*_args, **_kwargs):
+            raise OSError("private repository failure")
+
+        monkeypatch.setattr(store, "remember", fail_remember)
+        await agent.handle(
+            user_id="raw-user-a", user_message="记住失败内容", pending=None
+        )
+        monkeypatch.setattr(store, "remember", real_remember)
+        await agent.handle(
+            user_id="raw-user-a",
+            user_message=f"忘掉{private_alias}",
+            pending=None,
+        )
+
+    events = [
+        observation
+        for observation in sink.observations
+        if observation.name == "memory.mutation"
+    ]
+    assert [event.attributes["memory.result"] for event in events] == [
+        "committed",
+        "unchanged",
+        "conflict",
+        "clarify",
+        "failed",
+        "forgotten",
+    ]
+    assert [event.attributes["memory.operation"] for event in events] == [
+        "remember",
+        "remember",
+        "remember",
+        "remember",
+        "remember",
+        "forget",
+    ]
+    assert all(len(event.attributes["memory.owner_id"]) == 64 for event in events)
+    assert all(event.attributes["memory.owner_id"] != owner for event in events)
+    identified = [
+        event.attributes["memory.id"]
+        for event in events
+        if "memory.id" in event.attributes
+    ]
+    assert len(identified) == 4
+    assert all(len(identifier) == 64 for identifier in identified)
+    assert all(identifier != memory_id for identifier in identified)
+    assert all(
+        set(event.attributes)
+        <= {"memory.operation", "memory.result", "memory.owner_id", "memory.id"}
+        for event in events
+    )
+    serialized = json.dumps(
+        [event.__dict__ for event in events], ensure_ascii=False, sort_keys=True
+    )
+    for private_value in (
+        "raw-user-a",
+        owner,
+        memory_id,
+        private_alias,
+        "私人模板内容",
+        "不同的私人模板内容",
+        "请提供私人姓名。",
+        "private repository failure",
+    ):
+        assert private_value not in serialized
+
+
+@pytest.mark.asyncio
+async def test_memory_mutation_event_sink_failure_does_not_change_commit(tmp_path):
+    """Breaks if telemetry failure changes the database or user response."""
+
+    class BrokenSink:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def emit(self, _observation) -> None:
+            self.calls += 1
+            raise RuntimeError("telemetry unavailable")
+
+    store = UserMemoryStore(tmp_path / "user-memory.db")
+    owner = owner_key_for("user-a")
+    agent = MemoryAgent(
+        store=store,
+        interpreter=DeterministicInterpreter(_training_decision()),
+    )
+    sink = BrokenSink()
+
+    with observation_sink(sink):
+        result = await agent.handle(
+            user_id="user-a", user_message="记住原始模板内容", pending=None
+        )
+
+    assert sink.calls == 1
+    assert "已记住" in result.response
+    assert [memory.content for memory in store.list_memories(owner)] == ["原始模板内容"]
 
 
 @pytest.mark.asyncio

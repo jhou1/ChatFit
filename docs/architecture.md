@@ -90,7 +90,11 @@ Only supported explicit command forms authorize a mutation, such as
 `把 2-1-3 模板更新成……`, and `忘掉乳糖不耐受`. Ordinary chat is not
 automatically persisted, and arbitrary natural-language paraphrases are not
 promised. Missing content, zero/multiple matches, and ambiguous references lead
-to clarification without a database change.
+to clarification without a database change. An explicit update or forget whose
+target freshly resolves to one exact current-owner durable-memory alias is sent
+to the Memory Agent independently of the probabilistic router. A clarification
+reply must still be interpreted as the same operation and remain bound to the
+captured target and missing field before it can commit.
 
 The store preserves the explicit user payload. A row is unique by
 `(owner_key, memory_type, canonical_key)`; aliases provide normalized exact
@@ -121,7 +125,9 @@ uv run python scripts/migrate_explicit_memories.py \
 For apply, the destination's immediate parent directory must already exist.
 The source and destination must remain distinct and unchanged during the run.
 Repeated application reconciles the same `(owner, training_template, 213)` row
-idempotently rather than inserting duplicates.
+idempotently rather than inserting duplicates. Reconciliation may repair display
+metadata and aliases only when the stored content is already identical. A
+different stored value is a non-mutating conflict in both dry-run and apply.
 
 ## Cross-cutting systems
 

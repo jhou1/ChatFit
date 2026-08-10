@@ -715,6 +715,46 @@ def _memory_value(definition: str) -> NewUserMemory:
     )
 
 
+def _require_dry_run_destination_compatible(
+    anchor: _DestinationAnchor,
+    source_path: Path,
+    source_before: _FileFamilySnapshot,
+    user_id: str,
+    definition: str,
+) -> None:
+    destination_before = _destination_snapshot(anchor)
+    expected_main = destination_before[0]
+    if expected_main is None:
+        return
+    if any(state is not None for state in destination_before[1:]):
+        return
+
+    _require_unchanged(source_path, source_before, role="source")
+    _require_destination_unchanged(anchor, destination_before)
+    destination_fd = _open_verified_destination(anchor, expected_main, source_path)
+    try:
+        sqlite_path = _anchored_entry_path(anchor, anchor.name)
+        with closing(
+            sqlite3.connect(_read_only_uri(sqlite_path), uri=True)
+        ) as connection:
+            connection.execute("PRAGMA query_only = ON")
+            UserMemoryStore.require_reconcile_content_match(
+                connection,
+                owner_key_for(user_id),
+                _memory_value(definition),
+            )
+    except sqlite3.Error as error:
+        raise MigrationError(
+            "destination database conflict prevented migration"
+        ) from error
+    finally:
+        os.close(destination_fd)
+
+    _require_main_identity(anchor, expected_main, source_path)
+    _require_unchanged(source_path, source_before, role="source")
+    _require_destination_unchanged(anchor, destination_before)
+
+
 def _reconcile_existing_destination(
     anchor: _DestinationAnchor,
     destination_before: _FileFamilySnapshot,
@@ -950,7 +990,18 @@ def _run_validated(
     unique_definitions = set(definitions)
     if len(unique_definitions) > 1:
         raise MigrationError("conflicting explicit definitions were found")
-    if not definitions or not args.apply:
+    if not definitions:
+        return 0
+
+    if not args.apply:
+        if anchor is not None:
+            _require_dry_run_destination_compatible(
+                anchor,
+                source_path,
+                source_before,
+                args.user_id,
+                definitions[0],
+            )
         return 0
 
     if anchor is None:

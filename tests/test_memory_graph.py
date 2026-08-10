@@ -609,7 +609,13 @@ async def test_unavailable_mutation_response_streams_once_from_final_refresh(
     assert _memory_rows(memory_db) == []
 
 
-async def _route_with_llm_decision(monkeypatch, message: str, decision: str):
+async def _route_with_llm_decision(
+    monkeypatch,
+    message: str,
+    decision: str,
+    *,
+    resolved_memory_target: bool = False,
+):
     monkeypatch.setattr(
         "agents.roles.supervisor.create_chat_model",
         lambda config: object(),
@@ -623,7 +629,9 @@ async def _route_with_llm_decision(monkeypatch, message: str, decision: str):
         "agents.roles.supervisor._execute_llm_query_safely", route_response
     )
     return await route_assistant_on_relevance(
-        _llm_config(), [HumanMessage(content=message)]
+        _llm_config(),
+        [HumanMessage(content=message)],
+        resolved_memory_target=resolved_memory_target,
     )
 
 
@@ -653,6 +661,19 @@ async def test_ordinary_training_message_does_not_enter_memory(monkeypatch):
 
     assert routes == ["training_agent"]
     assert "memory_agent" not in routes
+
+
+@pytest.mark.asyncio
+async def test_forged_resolution_flag_cannot_bypass_the_shared_parser(monkeypatch):
+    """Breaks if target resolution alone can authorize an arbitrary memory write."""
+    routes = await _route_with_llm_decision(
+        monkeypatch,
+        "今天练了深蹲",
+        "training_agent, memory_agent",
+        resolved_memory_target=True,
+    )
+
+    assert routes == ["training_agent"]
 
 
 @pytest.mark.asyncio
@@ -878,15 +899,19 @@ async def test_shared_command_grammar_routes_and_applies_modify_template(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "router_response",
+    ("chatter", "LLM request timeout exceeded"),
+)
 async def test_alias_update_routes_only_for_exact_current_owner_memory(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, router_response
 ):
-    """Breaks if an exact owned alias cannot authorize its explicit update route."""
+    """Breaks if an exact owned alias still needs the LLM to select memory."""
     memory_db = tmp_path / "user-memory.db"
     store = UserMemoryStore(memory_db)
     owner_a = owner_key_for("user-a")
     owner_b = owner_key_for("user-b")
-    app = _build_graph(
+    app = _build_routed_graph(
         monkeypatch,
         store,
         DeterministicInterpreter(
@@ -906,6 +931,7 @@ async def test_alias_update_routes_only_for_exact_current_owner_memory(
             ),
             MemoryMutationDecision(intent="forget", target_query="模型错误目标"),
         ),
+        route=router_response,
     )
 
     remembered = await app.ainvoke(
@@ -986,6 +1012,68 @@ async def test_alias_update_routes_only_for_exact_current_owner_memory(
     assert forgotten["assistant_names"] == ["memory_agent"]
     assert "已忘掉" in forgotten["messages"][-1].content
     assert (memory_count, alias_count) == (0, 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_mode", ("multiple_targets", "resolve_failure"))
+async def test_alias_resolution_failure_cannot_mutate_any_memory(
+    tmp_path, monkeypatch, failure_mode
+):
+    """Breaks if the LLM can write through a non-unique or failed resolution."""
+    store = UserMemoryStore(tmp_path / "user-memory.db")
+    owner = owner_key_for("user-a")
+    first = store.remember(
+        owner,
+        NewUserMemory(
+            memory_type=MemoryType.TRAINING_TEMPLATE,
+            canonical_key="alpha-template",
+            display_name="alpha模板",
+            content="alpha content",
+            aliases=("alpha模板",),
+        ),
+    ).memory
+    expected = [first]
+    if failure_mode == "multiple_targets":
+        second = store.remember(
+            owner,
+            NewUserMemory(
+                memory_type=MemoryType.TRAINING_TEMPLATE,
+                canonical_key="alpha",
+                display_name="alpha",
+                content="second content",
+                aliases=("alpha",),
+            ),
+        ).memory
+        expected.append(second)
+    else:
+        monkeypatch.setattr(
+            store,
+            "resolve",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                OSError("simulated exact-resolution failure")
+            ),
+        )
+
+    app = _build_routed_graph(
+        monkeypatch,
+        store,
+        DeterministicInterpreter(
+            MemoryMutationDecision(
+                intent="update",
+                target_query="模型选择的任意目标",
+                content="模型不得写入",
+            )
+        ),
+        route="memory_agent",
+    )
+    result = await app.ainvoke(
+        {"messages": [HumanMessage(content="把alpha模板更新成不得写入")]},
+        config={"configurable": {"thread_id": "thread-a", "user_id": "user-a"}},
+    )
+
+    assert result["assistant_names"] == ["memory_agent"]
+    assert "已更新" not in result["messages"][-1].content
+    assert store.list_memories(owner) == expected
 
 
 @pytest.mark.asyncio
@@ -1192,7 +1280,9 @@ async def test_remember_name_uses_second_turn_exact_content_after_checkpoint_res
         second_app = _build_graph(
             monkeypatch,
             memory_store,
-            DeterministicInterpreter(MemoryMutationDecision(intent="remember")),
+            DeterministicInterpreter(
+                MemoryMutationDecision(intent="remember", content="Ada")
+            ),
             checkpointer=second_saver,
         )
         completed = await second_app.ainvoke(

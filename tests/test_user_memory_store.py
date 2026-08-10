@@ -182,7 +182,10 @@ def test_connection_scoped_reconcile_is_exact_and_caller_transactional(tmp_path)
     UserMemoryStore(db_path)
     owner = owner_key_for("telegram-123")
     initial = _training_template(content="old", aliases=("213",))
-    exact = _training_template(content="new", aliases=("213", "2-1-3", "壶铃213"))
+    metadata_repair = _training_template(
+        content="old", aliases=("213", "2-1-3", "壶铃213")
+    )
+    conflict = _training_template(content="new", aliases=("213", "2-1-3", "壶铃213"))
 
     with closing(sqlite3.connect(db_path)) as connection, connection:
         connection.row_factory = sqlite3.Row
@@ -211,20 +214,34 @@ def test_connection_scoped_reconcile_is_exact_and_caller_transactional(tmp_path)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("BEGIN IMMEDIATE")
+        with pytest.raises(MemoryConflictError):
+            UserMemoryStore.reconcile_exact_in_transaction(connection, owner, conflict)
+        connection.rollback()
+
+    assert UserMemoryStore(db_path).list_memories(owner) == [original]
+
+    with closing(sqlite3.connect(db_path)) as connection, connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("BEGIN IMMEDIATE")
         assert (
-            UserMemoryStore.reconcile_exact_in_transaction(connection, owner, exact)
+            UserMemoryStore.reconcile_exact_in_transaction(
+                connection, owner, metadata_repair
+            )
             == "updated"
         )
         assert (
-            UserMemoryStore.reconcile_exact_in_transaction(connection, owner, exact)
+            UserMemoryStore.reconcile_exact_in_transaction(
+                connection, owner, metadata_repair
+            )
             == "unchanged"
         )
         connection.commit()
 
     updated = UserMemoryStore(db_path).list_memories(owner)[0]
     assert updated.id == original.id
-    assert updated.version == original.version + 1
-    assert updated.content == "new"
+    assert updated.version == original.version
+    assert updated.content == "old"
     assert set(updated.aliases) == {"213", "2-1-3", "壶铃213"}
 
 
