@@ -1,0 +1,57 @@
+nameOverride: ""
+fullnameOverride: ""
+image:
+  repository: ""
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+existingSecret: ""
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+persistence:
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 10Gi
+  keep: true
+config:
+  timezone: Asia/Shanghai
+  proactiveReviewsEnabled: false
+  telegramChatId: ""
+  voiceMaxDurationSeconds: 180
+  mediaMaxNormalizedBytes: 12582912
+  imageMaxPixels: 20000000
+  mediaParseConcurrency: 4
+  mediaProviderTimeoutSeconds: 45.0
+  mediaProviderMaxRetries: 2
+  speechProvider: gemini
+  imageProvider: gemini
+  geminiMediaModel: gemini-3.5-flash-lite
+  langfuseHost: https://cloud.langfuse.com
+  langfuseCaptureContent: false
+secretKeys:
+  googleApiKey: GOOGLE_API_KEY
+  telegramBotToken: TELEGRAM_BOT_TOKEN
+  chatfitApiToken: CHATFIT_API_TOKEN
+  langfuseSecretKey: LANGFUSE_SECRET_KEY
+  langfusePublicKey: LANGFUSE_PUBLIC_KEY
+  observabilityHashKey: OBSERVABILITY_HASH_KEY
+  telegramProxy: TELEGRAM_PROXY
+  llmProxy: LLM_PROXY
+api:
+  resources:
+    requests: {cpu: 250m, memory: 512Mi}
+    limits: {cpu: "1", memory: 1Gi}
+  startupProbe: {failureThreshold: 30, periodSeconds: 10}
+  readinessProbe: {initialDelaySeconds: 5, periodSeconds: 10}
+  livenessProbe: {initialDelaySeconds: 15, periodSeconds: 20}
+bot:
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: 500m, memory: 512Mi}
+  livenessProbe: {initialDelaySeconds: 30, periodSeconds: 30}
+nodeSelector: {}
+tolerations: []
+affinity: {}

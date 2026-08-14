@@ -1,0 +1,22 @@
+{{- include "chatfit.validateValues" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "chatfit.fullname" . }}-config
+  labels:
+    {{- include "chatfit.labels" . | nindent 4 }}
+data:
+  TZ: {{ .Values.config.timezone | quote }}
+  PROACTIVE_REVIEWS_ENABLED: {{ .Values.config.proactiveReviewsEnabled | quote }}
+  TELEGRAM_CHAT_ID: {{ .Values.config.telegramChatId | quote }}
+  VOICE_MAX_DURATION_SECONDS: {{ .Values.config.voiceMaxDurationSeconds | quote }}
+  MEDIA_MAX_NORMALIZED_BYTES: {{ .Values.config.mediaMaxNormalizedBytes | int64 | quote }}
+  IMAGE_MAX_PIXELS: {{ .Values.config.imageMaxPixels | int64 | quote }}
+  MEDIA_PARSE_CONCURRENCY: {{ .Values.config.mediaParseConcurrency | quote }}
+  MEDIA_PROVIDER_TIMEOUT_SECONDS: {{ .Values.config.mediaProviderTimeoutSeconds | quote }}
+  MEDIA_PROVIDER_MAX_RETRIES: {{ .Values.config.mediaProviderMaxRetries | quote }}
+  SPEECH_PROVIDER: {{ .Values.config.speechProvider | quote }}
+  IMAGE_PROVIDER: {{ .Values.config.imageProvider | quote }}
+  GEMINI_MEDIA_MODEL: {{ .Values.config.geminiMediaModel | quote }}
+  LANGFUSE_HOST: {{ .Values.config.langfuseHost | quote }}
+  LANGFUSE_CAPTURE_CONTENT: {{ .Values.config.langfuseCaptureContent | quote }}
