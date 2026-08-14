@@ -613,8 +613,6 @@ git commit -m "feat: deploy ChatFit bot and Helm smoke test"
 ### Task 4: Document ECR-to-EKS operations and run project-wide gates
 
 **Files:**
-- Modify: `tests/test_helm_chart.py`
-- Modify: `tests/test_documentation.py`
 - Create: `deploy/helm/chatfit/README.md`
 - Modify: `README.md`
 - Modify: `docs/index.html`
@@ -623,85 +621,7 @@ git commit -m "feat: deploy ChatFit bot and Helm smoke test"
 - Consumes: the final chart values and resource names from Tasks 1–3.
 - Produces: copyable ECR build/push, Secret creation, `helm upgrade --install`, `helm test`, observability, upgrade, uninstall, retained-PVC cleanup, and troubleshooting workflows.
 
-- [ ] **Step 1: Write failing documentation and chart-validation tests**
-
-Append to `tests/test_documentation.py`:
-
-```python
-HELM_README = Path(__file__).resolve().parents[1] / "deploy" / "helm" / "chatfit" / "README.md"
-DOCS_INDEX = Path(__file__).resolve().parents[1] / "docs" / "index.html"
-
-
-def test_helm_deployment_is_documented_and_discoverable() -> None:
-    root_readme = README.read_text(encoding="utf-8")
-    helm_readme = HELM_README.read_text(encoding="utf-8")
-    docs_index = DOCS_INDEX.read_text(encoding="utf-8")
-
-    assert "deploy/helm/chatfit" in root_readme
-    assert "deploy/helm/chatfit" in docs_index
-    for command in (
-        "aws ecr get-login-password",
-        "docker build",
-        "docker push",
-        "kubectl create secret generic chatfit-secrets",
-        "helm upgrade --install chatfit",
-        "helm test chatfit",
-        "kubectl port-forward service/chatfit-api",
-        "helm uninstall chatfit",
-    ):
-        assert command in helm_readme
-    assert "helm.sh/resource-policy: keep" in helm_readme
-    assert "kubectl delete pvc chatfit-data" in helm_readme
-```
-
-Append to `tests/test_helm_chart.py`:
-
-```python
-def test_chart_lints_and_is_accepted_by_kubectl_client_dry_run(tmp_path) -> None:
-    lint = _helm("lint", str(CHART), *REQUIRED_SET_ARGS)
-    assert lint.returncode == 0, lint.stdout + lint.stderr
-
-    rendered = _helm(
-        "template",
-        RELEASE,
-        str(CHART),
-        "--namespace",
-        "chatfit",
-        *REQUIRED_SET_ARGS,
-    )
-    manifest = tmp_path / "chatfit.yaml"
-    manifest.write_text(rendered.stdout, encoding="utf-8")
-    kubectl = shutil.which("kubectl")
-    if kubectl is None:
-        pytest.fail("kubectl must be installed to validate rendered resources")
-    dry_run = subprocess.run(
-        (
-            kubectl,
-            "apply",
-            "--dry-run=client",
-            "--validate=false",
-            "-f",
-            str(manifest),
-        ),
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert dry_run.returncode == 0, dry_run.stdout + dry_run.stderr
-```
-
-- [ ] **Step 2: Run the documentation tests and verify the RED state**
-
-Run:
-
-```bash
-uv run pytest tests/test_documentation.py tests/test_helm_chart.py -v
-```
-
-Expected: the new discovery test FAILS because the Helm README and links do not exist; chart behavior tests remain green.
-
-- [ ] **Step 3: Write the operational documentation**
+- [ ] **Step 1: Write the operational documentation**
 
 Create `deploy/helm/chatfit/README.md` with these concrete variable-based steps:
 
@@ -745,7 +665,17 @@ Add a concise `## EKS / Helm 部署` section to `README.md` linking to the chart
 README. Add a visible deployment link containing `deploy/helm/chatfit` to
 `docs/index.html` without restructuring the landing page.
 
-- [ ] **Step 4: Run focused documentation and chart tests**
+- [ ] **Step 2: Review documentation against the approved design**
+
+Read `deploy/helm/chatfit/README.md`, `README.md`, and `docs/index.html` with
+the Documentation deliverables section of
+`docs/superpowers/specs/2026-08-14-eks-helm-deployment-design.md` beside them.
+Confirm every required workflow is present, every example uses the rendered
+resource names, no credential value is committed, and both project entry points
+link to the chart guide. Human-facing prose is reviewed directly rather than
+protected by brittle exact-substring tests.
+
+- [ ] **Step 3: Run existing documentation and chart tests**
 
 Run:
 
@@ -755,14 +685,14 @@ uv run pytest tests/test_documentation.py tests/test_helm_chart.py -v
 
 Expected: all focused tests PASS without warnings.
 
-- [ ] **Step 5: Commit documentation**
+- [ ] **Step 4: Commit documentation**
 
 ```bash
-git add deploy/helm/chatfit/README.md README.md docs/index.html tests/test_documentation.py tests/test_helm_chart.py
+git add deploy/helm/chatfit/README.md README.md docs/index.html
 git commit -m "docs: explain EKS Helm deployment"
 ```
 
-- [ ] **Step 6: Run local final verification before independent review**
+- [ ] **Step 5: Run local final verification before independent review**
 
 Run:
 
@@ -780,7 +710,7 @@ git status --short
 
 Expected: Helm lint reports zero failed charts; pytest reports all selected tests passing; Ruff, Black, MyPy, and Bandit emit no errors or warnings; diff check is empty; worktree is clean.
 
-- [ ] **Step 7: Dispatch the required independent verification subagent**
+- [ ] **Step 6: Dispatch the required independent verification subagent**
 
 Give the subagent this exact brief:
 
