@@ -304,6 +304,11 @@ uv run pytest -m e2e -v
 默认测试配置会排除标记为 `e2e` 的用例，避免普通验证意外调用外部 LLM、
 Langfuse 或 Telegram 服务。质量规范参见 [质量与验证](docs/quality.md)。
 
+## EKS / Helm 部署
+
+在现有 Amazon EKS 集群上使用 ECR 镜像、EBS 持久卷和 Helm 部署 ChatFit 的完整操作说明，
+请参见 [部署指南](deploy/helm/chatfit/README.md)。
+
 ## Agent Evaluation (Agent 能力评测)
 
 ChatFit 采用了一套“测试即文档”的严谨评测架构，实现了工程代码与业务评测用例的完全解耦。
