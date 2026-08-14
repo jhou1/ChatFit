@@ -183,6 +183,10 @@ def test_api_prepares_and_mounts_all_persistent_subdirectories() -> None:
         "mkdir -p /storage/iron /storage/runtime-data /storage/chroma.db /storage/cookbook"
         in initializer["args"][0]
     )
+    assert initializer["securityContext"] == {
+        "allowPrivilegeEscalation": False,
+        "capabilities": {"drop": ["ALL"]},
+    }
     assert mounts == {
         "iron": "/root/.iron",
         "runtime-data": "/app/data",

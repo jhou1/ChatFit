@@ -37,6 +37,11 @@ spec:
           command: ["sh", "-ec"]
           args:
             - mkdir -p /storage/iron /storage/runtime-data /storage/chroma.db /storage/cookbook
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           volumeMounts:
             - name: data
               mountPath: /storage
