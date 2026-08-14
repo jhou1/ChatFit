@@ -1,0 +1,96 @@
+{{- include "chatfit.validateValues" . -}}
+{{- $apiBase := printf "http://%s-api:8000" (include "chatfit.fullname" .) -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "chatfit.fullname" . }}-bot
+  labels:
+    {{- include "chatfit.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "chatfit.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: bot
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+      labels:
+        {{- include "chatfit.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: bot
+    spec:
+      serviceAccountName: {{ include "chatfit.serviceAccountName" . }}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: bot
+          image: {{ include "chatfit.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python"]
+          args: ["bot.py"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "chatfit.fullname" . }}-config
+          env:
+            - name: API_URL
+              value: {{ printf "%s/chat" $apiBase | quote }}
+            - name: API_CLEAR_URL
+              value: {{ printf "%s/clear" $apiBase | quote }}
+            - name: API_RESUME_URL
+              value: {{ printf "%s/resume" $apiBase | quote }}
+            - name: API_PROACTIVE_REVIEW_URL
+              value: {{ printf "%s/proactive-review" $apiBase | quote }}
+            - name: GOOGLE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "existingSecret is required" .Values.existingSecret }}
+                  key: {{ .Values.secretKeys.googleApiKey }}
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "existingSecret is required" .Values.existingSecret }}
+                  key: {{ .Values.secretKeys.telegramBotToken }}
+            - name: CHATFIT_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "existingSecret is required" .Values.existingSecret }}
+                  key: {{ .Values.secretKeys.chatfitApiToken }}
+            - name: TELEGRAM_PROXY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "existingSecret is required" .Values.existingSecret }}
+                  key: {{ .Values.secretKeys.telegramProxy }}
+                  optional: true
+          resources:
+            {{- toYaml .Values.bot.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "from pathlib import Path; import sys; sys.exit(0 if b'bot.py' in Path('/proc/1/cmdline').read_bytes() else 1)"
+            {{- toYaml .Values.bot.livenessProbe | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

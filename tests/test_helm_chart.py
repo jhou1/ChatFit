@@ -229,3 +229,54 @@ def test_api_uses_distinct_databases_explicit_secret_refs_and_security_defaults(
     assert api["startupProbe"]["tcpSocket"]["port"] == "http"
     assert api["readinessProbe"]["tcpSocket"]["port"] == "http"
     assert api["livenessProbe"]["tcpSocket"]["port"] == "http"
+
+
+def test_bot_calls_only_the_internal_api_service() -> None:
+    deployment = _resource(_render(), "Deployment", "bot")
+    bot = _container(deployment, "bot")
+    env = _env(bot)
+    base = "http://contract-chatfit-api:8000"
+
+    assert deployment["spec"]["replicas"] == 1
+    assert bot["command"] == ["python"]
+    assert bot["args"] == ["bot.py"]
+    assert env["API_URL"]["value"] == f"{base}/chat"
+    assert env["API_CLEAR_URL"]["value"] == f"{base}/clear"
+    assert env["API_RESUME_URL"]["value"] == f"{base}/resume"
+    assert env["API_PROACTIVE_REVIEW_URL"]["value"] == f"{base}/proactive-review"
+    for name in ("GOOGLE_API_KEY", "TELEGRAM_BOT_TOKEN", "CHATFIT_API_TOKEN"):
+        assert env[name]["valueFrom"]["secretKeyRef"]["name"] == "chatfit-secrets"
+    assert env["TELEGRAM_PROXY"]["valueFrom"]["secretKeyRef"]["optional"] is True
+    assert bot["livenessProbe"]["exec"]["command"][0:2] == ["python", "-c"]
+    assert bot["securityContext"]["capabilities"]["drop"] == ["ALL"]
+
+
+def test_chart_has_an_internal_api_helm_test() -> None:
+    resources = _render()
+    test_pod = _resource(resources, "Pod", "test")
+    container = test_pod["spec"]["containers"][0]
+
+    assert test_pod["metadata"]["annotations"]["helm.sh/hook"] == "test"
+    assert (
+        test_pod["metadata"]["annotations"]["helm.sh/hook-delete-policy"]
+        == "before-hook-creation,hook-succeeded"
+    )
+    assert test_pod["spec"]["restartPolicy"] == "Never"
+    assert container["image"].endswith("/chatfit:test-sha")
+    assert container["command"] == ["python", "-c"]
+    assert "http://contract-chatfit-api:8000/docs" in container["args"][0]
+
+
+def test_complete_chart_renders_expected_resource_inventory() -> None:
+    resources = _render()
+    kinds = [resource["kind"] for resource in resources]
+
+    assert kinds.count("Deployment") == 2
+    assert kinds.count("Service") == 1
+    assert kinds.count("PersistentVolumeClaim") == 1
+    assert kinds.count("ServiceAccount") == 1
+    assert kinds.count("ConfigMap") == 1
+    assert kinds.count("Pod") == 1
+    assert not (
+        {"Ingress", "Secret", "StorageClass", "Role", "RoleBinding"} & set(kinds)
+    )

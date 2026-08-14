@@ -1,0 +1,34 @@
+{{- include "chatfit.validateValues" . -}}
+{{- $apiURL := printf "http://%s-api:8000/docs" (include "chatfit.fullname" .) -}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "chatfit.fullname" . }}-connection-test
+  labels:
+    {{- include "chatfit.labels" . | nindent 4 }}
+    app.kubernetes.io/component: test
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  serviceAccountName: {{ include "chatfit.serviceAccountName" . }}
+  securityContext:
+    seccompProfile:
+      type: RuntimeDefault
+  {{- with .Values.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  containers:
+    - name: connection-test
+      image: {{ include "chatfit.image" . }}
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      command: ["python", "-c"]
+      args:
+        - {{ printf "import urllib.request; urllib.request.urlopen(%q, timeout=10)" $apiURL | quote }}
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL

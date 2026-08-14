@@ -1,0 +1,15 @@
+{{- $fullname := include "chatfit.fullname" . -}}
+ChatFit has been deployed.
+
+Run the installed-release smoke test:
+  helm test {{ .Release.Name }} --namespace {{ .Release.Namespace }}
+
+Inspect the application Pods and persistent volume claim:
+  kubectl get pods,pvc --namespace {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}
+
+View the API and Bot logs:
+  kubectl logs deployment/{{ $fullname }}-api --namespace {{ .Release.Namespace }}
+  kubectl logs deployment/{{ $fullname }}-bot --namespace {{ .Release.Namespace }}
+
+Forward the internal API locally:
+  kubectl port-forward service/{{ $fullname }}-api 8000:8000 --namespace {{ .Release.Namespace }}
