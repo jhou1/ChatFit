@@ -1,0 +1,18 @@
+{{- include "chatfit.validateValues" . -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "chatfit.fullname" . }}-api
+  labels:
+    {{- include "chatfit.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8000
+      protocol: TCP
+      targetPort: http
+  selector:
+    {{- include "chatfit.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: api
