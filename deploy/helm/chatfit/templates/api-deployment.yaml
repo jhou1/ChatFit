@@ -22,6 +22,7 @@ spec:
         {{- include "chatfit.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: api
     spec:
+      automountServiceAccountToken: false
       serviceAccountName: {{ include "chatfit.serviceAccountName" . }}
       securityContext:
         seccompProfile:

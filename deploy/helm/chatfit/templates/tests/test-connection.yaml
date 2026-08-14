@@ -1,5 +1,5 @@
 {{- include "chatfit.validateValues" . -}}
-{{- $apiURL := printf "http://%s-api:8000/docs" (include "chatfit.fullname" .) -}}
+{{- $apiURL := printf "http://%s:8000/docs" (include "chatfit.apiServiceName" .) -}}
 apiVersion: v1
 kind: Pod
 metadata:
@@ -12,12 +12,25 @@ metadata:
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
 spec:
   restartPolicy: Never
+  automountServiceAccountToken: false
   serviceAccountName: {{ include "chatfit.serviceAccountName" . }}
   securityContext:
     seccompProfile:
       type: RuntimeDefault
   {{- with .Values.imagePullSecrets }}
   imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.nodeSelector }}
+  nodeSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.tolerations }}
+  tolerations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.affinity }}
+  affinity:
     {{- toYaml . | nindent 4 }}
   {{- end }}
   containers:

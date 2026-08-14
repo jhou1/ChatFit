@@ -7,6 +7,9 @@ avoid concurrent SQLite writers. The chart does not create an ECR repository,
 Kubernetes Namespace, Secret, StorageClass, EBS CSI driver, Ingress, or public
 load balancer.
 
+The Bot also uses a `Recreate` rollout so an upgrade never overlaps two
+Telegram long-polling processes.
+
 ## Prerequisites
 
 - An EKS cluster selected by your current `kubectl` context, plus Helm 3,
@@ -97,6 +100,24 @@ The minimal installation below supplies the required values directly. To use
 the override file, add `-f chatfit-values.yaml`; command-line `--set-string`
 values take precedence over it.
 
+Before installing, confirm that `kubectl` selects the intended, reachable EKS
+cluster, then ask that cluster's API server to validate the rendered objects:
+
+```bash
+kubectl config current-context
+helm template chatfit deploy/helm/chatfit \
+  --namespace chatfit \
+  --set-string image.repository="${IMAGE_URI}" \
+  --set-string image.tag="${IMAGE_TAG}" \
+  --set-string existingSecret=chatfit-secrets | \
+  kubectl apply --dry-run=server --namespace chatfit -f -
+```
+
+This target-context validation requires network access and credentials for the
+selected EKS cluster. Local or offline checks such as `helm lint`, `helm
+template`, or client-side Kubernetes dry-runs can catch rendering problems but
+cannot validate admission against the target cluster.
+
 ```bash
 helm upgrade --install chatfit deploy/helm/chatfit \
   --namespace chatfit \
@@ -109,8 +130,10 @@ helm test chatfit --namespace chatfit
 
 With release name `chatfit`, the rendered resources are `chatfit-chatfit-api`,
 `chatfit-chatfit-bot`, `chatfit-chatfit-data`, and
-`chatfit-chatfit-config`. Change these names consistently if you install under
-a different Helm release name or set `fullnameOverride`.
+`chatfit-chatfit-config`. A different release name or `fullnameOverride`
+changes these values. For a very long override, the API Service reserves room
+for its `-api` suffix within the 63-character DNS-label limit, and every
+in-cluster Service consumer uses that rendered name.
 
 ## Observe and operate
 
@@ -129,6 +152,15 @@ After port-forwarding, open `http://localhost:8000/docs`. For a normal image or
 configuration update, repeat the install command with the desired new values;
 Helm performs an upgrade. The API's `Recreate` strategy causes brief API
 downtime during the rollout so two API Pods do not write SQLite concurrently.
+When you change an environment-backed value in the existing Secret, restart
+both Deployments so both processes receive it:
+
+```bash
+kubectl rollout restart deployment/chatfit-chatfit-api \
+  deployment/chatfit-chatfit-bot --namespace chatfit
+kubectl rollout status deployment/chatfit-chatfit-api --namespace chatfit
+kubectl rollout status deployment/chatfit-chatfit-bot --namespace chatfit
+```
 
 ```bash
 IMAGE_TAG="$(git rev-parse --short HEAD)"

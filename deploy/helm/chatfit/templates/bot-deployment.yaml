@@ -1,5 +1,5 @@
 {{- include "chatfit.validateValues" . -}}
-{{- $apiBase := printf "http://%s-api:8000" (include "chatfit.fullname" .) -}}
+{{- $apiBase := printf "http://%s:8000" (include "chatfit.apiServiceName" .) -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -9,6 +9,8 @@ metadata:
     app.kubernetes.io/component: bot
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "chatfit.selectorLabels" . | nindent 6 }}
@@ -21,6 +23,7 @@ spec:
         {{- include "chatfit.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: bot
     spec:
+      automountServiceAccountToken: false
       serviceAccountName: {{ include "chatfit.serviceAccountName" . }}
       securityContext:
         seccompProfile:

@@ -1,4 +1,5 @@
 {{- $fullname := include "chatfit.fullname" . -}}
+{{- $apiServiceName := include "chatfit.apiServiceName" . -}}
 ChatFit has been deployed.
 
 Run the installed-release smoke test:
@@ -12,4 +13,4 @@ View the API and Bot logs:
   kubectl logs deployment/{{ $fullname }}-bot --namespace {{ .Release.Namespace }}
 
 Forward the internal API locally:
-  kubectl port-forward service/{{ $fullname }}-api 8000:8000 --namespace {{ .Release.Namespace }}
+  kubectl port-forward service/{{ $apiServiceName }} 8000:8000 --namespace {{ .Release.Namespace }}

@@ -12,6 +12,12 @@
 {{- end }}
 {{- end }}
 
+{{/* Reserve room for the API Service suffix within a DNS label. */}}
+{{- define "chatfit.apiServiceName" -}}
+{{- $fullname := include "chatfit.fullname" . -}}
+{{- printf "%s-api" ($fullname | trunc 59 | trimSuffix "-") -}}
+{{- end }}
+
 {{/* Chart name and version for labels. */}}
 {{- define "chatfit.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}

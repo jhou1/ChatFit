@@ -167,6 +167,46 @@ def test_api_is_an_exclusive_single_writer_with_internal_service() -> None:
     assert pod_spec["serviceAccountName"] == "contract-chatfit"
 
 
+def test_api_service_name_reserves_its_suffix_at_the_dns_label_boundary() -> None:
+    fullname = "a" * 63
+    resources = _render("--set-string", f"fullnameOverride={fullname}")
+    service = _resource(resources, "Service", "api")
+    bot = _container(_resource(resources, "Deployment", "bot"), "bot")
+    test_container = _resource(resources, "Pod", "test")["spec"]["containers"][0]
+    service_name = service["metadata"]["name"]
+    expected_name = f"{'a' * 59}-api"
+    expected_base = f"http://{expected_name}:8000"
+
+    assert service_name == expected_name
+    assert len(service_name) <= 63
+    assert {
+        item["value"] for item in bot["env"] if item["name"].startswith("API_")
+    } == {
+        f"{expected_base}/chat",
+        f"{expected_base}/clear",
+        f"{expected_base}/resume",
+        f"{expected_base}/proactive-review",
+    }
+    assert test_container["args"] == [
+        "import urllib.request; "
+        f'urllib.request.urlopen("{expected_base}/docs", timeout=10)'
+    ]
+
+    install = _helm(
+        "install",
+        RELEASE,
+        str(CHART),
+        "--namespace",
+        "chatfit",
+        "--dry-run=client",
+        *REQUIRED_SET_ARGS,
+        "--set-string",
+        f"fullnameOverride={fullname}",
+    )
+    assert install.returncode == 0, install.stderr
+    assert f"service/{service_name} 8000:8000" in install.stdout
+
+
 def test_api_prepares_and_mounts_all_persistent_subdirectories() -> None:
     deployment = _resource(_render(), "Deployment", "api")
     pod_spec = deployment["spec"]["template"]["spec"]
@@ -221,6 +261,7 @@ def test_api_uses_distinct_databases_explicit_secret_refs_and_security_defaults(
         "LLM_PROXY",
     ):
         assert env[name]["valueFrom"]["secretKeyRef"]["optional"] is True
+    assert pod_spec["automountServiceAccountToken"] is False
     assert pod_spec["securityContext"]["seccompProfile"]["type"] == "RuntimeDefault"
     assert api["securityContext"] == {
         "allowPrivilegeEscalation": False,
@@ -251,20 +292,107 @@ def test_bot_calls_only_the_internal_api_service() -> None:
     assert bot["securityContext"]["capabilities"]["drop"] == ["ALL"]
 
 
-def test_chart_has_an_internal_api_helm_test() -> None:
+def test_bot_runtime_contract_keeps_long_polling_singleton_hardened_and_stateless() -> (
+    None
+):
     resources = _render()
+    api_deployment = _resource(resources, "Deployment", "api")
+    bot_deployment = _resource(resources, "Deployment", "bot")
+    api = _container(api_deployment, "api")
+    bot = _container(bot_deployment, "bot")
+    pod_spec = bot_deployment["spec"]["template"]["spec"]
+
+    assert bot_deployment["spec"]["replicas"] == 1
+    assert bot_deployment["spec"]["strategy"]["type"] == "Recreate"
+    assert pod_spec["automountServiceAccountToken"] is False
+    assert (
+        pod_spec["serviceAccountName"]
+        == api_deployment["spec"]["template"]["spec"]["serviceAccountName"]
+    )
+    assert pod_spec["securityContext"] == {"seccompProfile": {"type": "RuntimeDefault"}}
+    assert bot["image"] == api["image"]
+    assert bot["securityContext"] == {
+        "allowPrivilegeEscalation": False,
+        "capabilities": {"drop": ["ALL"]},
+    }
+    assert bot["livenessProbe"]["exec"]["command"] == [
+        "python",
+        "-c",
+        "from pathlib import Path; import sys; sys.exit(0 if b'bot.py' in "
+        "Path('/proc/1/cmdline').read_bytes() else 1)",
+    ]
+    assert "volumeMounts" not in bot
+    assert "volumes" not in pod_spec
+
+
+def test_chart_has_an_internal_api_helm_test() -> None:
+    resources = _render(
+        "--set",
+        "nodeSelector.lifecycle=on-demand",
+        "--set",
+        "tolerations[0].key=dedicated",
+        "--set",
+        "tolerations[0].operator=Exists",
+        "--set",
+        "tolerations[0].effect=NoSchedule",
+        "--set",
+        "affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution."
+        "nodeSelectorTerms[0].matchExpressions[0].key=topology.kubernetes.io/zone",
+        "--set",
+        "affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution."
+        "nodeSelectorTerms[0].matchExpressions[0].operator=In",
+        "--set",
+        "affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution."
+        "nodeSelectorTerms[0].matchExpressions[0].values[0]=us-east-1a",
+    )
+    api_deployment = _resource(resources, "Deployment", "api")
     test_pod = _resource(resources, "Pod", "test")
-    container = test_pod["spec"]["containers"][0]
+    pod_spec = test_pod["spec"]
+    container = pod_spec["containers"][0]
 
     assert test_pod["metadata"]["annotations"]["helm.sh/hook"] == "test"
     assert (
         test_pod["metadata"]["annotations"]["helm.sh/hook-delete-policy"]
         == "before-hook-creation,hook-succeeded"
     )
-    assert test_pod["spec"]["restartPolicy"] == "Never"
+    assert pod_spec["restartPolicy"] == "Never"
+    assert pod_spec["automountServiceAccountToken"] is False
+    assert (
+        pod_spec["serviceAccountName"]
+        == api_deployment["spec"]["template"]["spec"]["serviceAccountName"]
+    )
+    assert pod_spec["securityContext"] == {"seccompProfile": {"type": "RuntimeDefault"}}
+    assert pod_spec["nodeSelector"] == {"lifecycle": "on-demand"}
+    assert pod_spec["tolerations"] == [
+        {"effect": "NoSchedule", "key": "dedicated", "operator": "Exists"}
+    ]
+    assert pod_spec["affinity"] == {
+        "nodeAffinity": {
+            "requiredDuringSchedulingIgnoredDuringExecution": {
+                "nodeSelectorTerms": [
+                    {
+                        "matchExpressions": [
+                            {
+                                "key": "topology.kubernetes.io/zone",
+                                "operator": "In",
+                                "values": ["us-east-1a"],
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+    }
     assert container["image"].endswith("/chatfit:test-sha")
     assert container["command"] == ["python", "-c"]
-    assert "http://contract-chatfit-api:8000/docs" in container["args"][0]
+    assert container["args"] == [
+        "import urllib.request; urllib.request.urlopen("
+        '"http://contract-chatfit-api:8000/docs", timeout=10)'
+    ]
+    assert container["securityContext"] == {
+        "allowPrivilegeEscalation": False,
+        "capabilities": {"drop": ["ALL"]},
+    }
 
 
 def test_complete_chart_renders_expected_resource_inventory() -> None:
