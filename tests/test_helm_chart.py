@@ -104,6 +104,7 @@ def test_foundation_resources_use_safe_defaults() -> None:
     assert account["metadata"]["name"] == "contract-chatfit"
     assert config["metadata"]["name"] == "contract-chatfit-config"
     assert config["data"]["TZ"] == "Asia/Shanghai"
+    assert config["data"]["MEDIA_EPHEMERAL_DIRECTORY"] == "/tmp/chatfit-media"
     assert config["data"]["PROACTIVE_REVIEWS_ENABLED"] == "false"
     assert config["data"]["MEDIA_MAX_NORMALIZED_BYTES"] == "12582912"
     assert config["data"]["IMAGE_MAX_PIXELS"] == "20000000"

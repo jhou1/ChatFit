@@ -15,6 +15,7 @@ data:
   MEDIA_PARSE_CONCURRENCY: {{ .Values.config.mediaParseConcurrency | quote }}
   MEDIA_PROVIDER_TIMEOUT_SECONDS: {{ .Values.config.mediaProviderTimeoutSeconds | quote }}
   MEDIA_PROVIDER_MAX_RETRIES: {{ .Values.config.mediaProviderMaxRetries | quote }}
+  MEDIA_EPHEMERAL_DIRECTORY: {{ .Values.config.mediaEphemeralDirectory | quote }}
   SPEECH_PROVIDER: {{ .Values.config.speechProvider | quote }}
   IMAGE_PROVIDER: {{ .Values.config.imageProvider | quote }}
   GEMINI_MEDIA_MODEL: {{ .Values.config.geminiMediaModel | quote }}

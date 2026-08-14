@@ -26,6 +26,7 @@ config:
   mediaParseConcurrency: 4
   mediaProviderTimeoutSeconds: 45.0
   mediaProviderMaxRetries: 2
+  mediaEphemeralDirectory: /tmp/chatfit-media
   speechProvider: gemini
   imageProvider: gemini
   geminiMediaModel: gemini-3.5-flash-lite
