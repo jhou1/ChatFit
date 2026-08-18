@@ -132,7 +132,7 @@ spec:
             {{- toYaml .Values.api.livenessProbe | nindent 12 }}
       volumes:
         - name: data
-          {{- if eq (default "pvc" .Values.persistence.type) "pvc" }}
+          {{- if eq .Values.persistence.type "pvc" }}
           persistentVolumeClaim:
             claimName: {{ include "chatfit.fullname" . }}-data
           {{- else }}

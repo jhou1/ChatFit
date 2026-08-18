@@ -1,5 +1,5 @@
 {{- include "chatfit.validateValues" . -}}
-{{- if eq (default "pvc" .Values.persistence.type) "pvc" }}
+{{- if eq .Values.persistence.type "pvc" }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

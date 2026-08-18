@@ -5,8 +5,15 @@ ChatFit has been deployed.
 Run the installed-release smoke test:
   helm test {{ .Release.Name }} --namespace {{ .Release.Namespace }}
 
+{{- if eq .Values.persistence.type "pvc" }}
 Inspect the application Pods and persistent volume claim:
   kubectl get pods,pvc --namespace {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}
+{{- else }}
+Inspect the application Pods:
+  kubectl get pods --namespace {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}
+
+Warning: application data is deleted when the API Pod is deleted or replaced.
+{{- end }}
 
 View the API and Bot logs:
   kubectl logs deployment/{{ $fullname }}-api --namespace {{ .Release.Namespace }}

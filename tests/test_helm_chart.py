@@ -109,6 +109,20 @@ def test_unsupported_persistence_type_fails_rendering() -> None:
     assert "persistence.type must be one of: pvc, emptyDir" in result.stderr
 
 
+def test_blank_persistence_type_fails_rendering() -> None:
+    result = _helm(
+        "template",
+        RELEASE,
+        str(CHART),
+        *REQUIRED_SET_ARGS,
+        "--set-string",
+        "persistence.type=",
+    )
+
+    assert result.returncode != 0
+    assert "persistence.type must be one of: pvc, emptyDir" in result.stderr
+
+
 def test_foundation_resources_use_safe_defaults() -> None:
     resources = _render()
     account = _resource(resources, "ServiceAccount")
@@ -263,6 +277,8 @@ def test_empty_dir_storage_preserves_mount_contract_without_a_claim() -> None:
     api = _container(deployment, "api")
 
     assert not any(item["kind"] == "PersistentVolumeClaim" for item in resources)
+    assert deployment["spec"]["replicas"] == 1
+    assert deployment["spec"]["strategy"]["type"] == "Recreate"
     assert pod_spec["volumes"] == [{"name": "data", "emptyDir": {}}]
     assert initializer["volumeMounts"] == [{"name": "data", "mountPath": "/storage"}]
     assert (
@@ -279,6 +295,50 @@ def test_empty_dir_storage_preserves_mount_contract_without_a_claim() -> None:
         "chroma.db": "/app/chroma.db",
         "cookbook": "/root/Documents/LifeOS/下厨房",
     }
+
+
+def test_empty_dir_install_notes_warn_about_data_deletion() -> None:
+    install = _helm(
+        "install",
+        RELEASE,
+        str(CHART),
+        "--namespace",
+        "chatfit",
+        "--dry-run=client",
+        *REQUIRED_SET_ARGS,
+        "--set-string",
+        "persistence.type=emptyDir",
+    )
+
+    assert install.returncode == 0, install.stderr
+    assert (
+        "Warning: application data is deleted when the API Pod is deleted or replaced."
+        in install.stdout
+    )
+    assert "persistent volume claim" not in install.stdout
+    assert (
+        "kubectl get pods --namespace chatfit "
+        "-l app.kubernetes.io/instance=contract" in install.stdout
+    )
+
+
+def test_default_install_notes_keep_persistent_volume_claim_inspection() -> None:
+    install = _helm(
+        "install",
+        RELEASE,
+        str(CHART),
+        "--namespace",
+        "chatfit",
+        "--dry-run=client",
+        *REQUIRED_SET_ARGS,
+    )
+
+    assert install.returncode == 0, install.stderr
+    assert "Inspect the application Pods and persistent volume claim:" in install.stdout
+    assert (
+        "kubectl get pods,pvc --namespace chatfit "
+        "-l app.kubernetes.io/instance=contract" in install.stdout
+    )
 
 
 def test_api_uses_distinct_databases_explicit_secret_refs_and_security_defaults() -> (
