@@ -8,6 +8,9 @@ import yaml
 
 COMPOSE = Path(__file__).resolve().parents[1] / "docker-compose.yml"
 README = Path(__file__).resolve().parents[1] / "README.md"
+HELM_README = (
+    Path(__file__).resolve().parents[1] / "deploy" / "helm" / "chatfit" / "README.md"
+)
 INTERACTIVE_SHELLS = tuple(
     shell for name in ("bash", "zsh") if (shell := shutil.which(name)) is not None
 )
@@ -87,6 +90,83 @@ def _emitted_lines(result: subprocess.CompletedProcess[str]) -> set[str]:
         for line in (result.stdout + result.stderr).splitlines()
         if line.strip()
     }
+
+
+def _run_helm_readme_install_block(
+    block: str, tmp_path: Path
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    assert block.strip().startswith("helm install ")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    helm_stub = bin_dir / "helm"
+    helm_stub.write_text(
+        '#!/bin/sh\nprintf \'helm %s\\n\' "$*" >> "$README_COMMAND_LOG"\n',
+        encoding="utf-8",
+    )
+    helm_stub.chmod(0o755)
+    command_log = tmp_path / "commands.log"
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
+            "README_COMMAND_LOG": str(command_log),
+            "IMAGE_REPOSITORY": "chatfit",
+            "IMAGE_URI": "123456789012.dkr.ecr.us-east-1.amazonaws.com/chatfit",
+            "IMAGE_TAG": "documentation-test",
+        }
+    )
+    result = subprocess.run(
+        ("bash", "-eu"),
+        cwd=tmp_path,
+        env=env,
+        input=block,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    commands = (
+        command_log.read_text(encoding="utf-8").splitlines()
+        if command_log.exists()
+        else []
+    )
+    return result, commands
+
+
+def test_helm_readme_persistent_mode_installs_with_pvc(tmp_path) -> None:
+    readme = HELM_README.read_text(encoding="utf-8")
+    block = _bash_block_containing(readme, "persistence.type=pvc")
+
+    result, commands = _run_helm_readme_install_block(block, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    install = next(
+        command for command in commands if command.startswith("helm install ")
+    )
+    assert (
+        "image.repository=123456789012.dkr.ecr.us-east-1.amazonaws.com/chatfit"
+        in install
+    )
+    assert "image.tag=documentation-test" in install
+    assert "existingSecret=chatfit-secrets" in install
+    assert "persistence.type=pvc" in install
+    assert "image.pullPolicy=Never" not in install
+
+
+def test_helm_readme_experimental_emptydir_installs_loaded_image(tmp_path) -> None:
+    readme = HELM_README.read_text(encoding="utf-8")
+    block = _bash_block_containing(readme, "persistence.type=emptyDir")
+
+    result, commands = _run_helm_readme_install_block(block, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    install = next(
+        command for command in commands if command.startswith("helm install ")
+    )
+    assert "image.repository=chatfit" in install
+    assert "image.tag=documentation-test" in install
+    assert "image.pullPolicy=Never" in install
+    assert "existingSecret=chatfit-secrets" in install
+    assert "persistence.type=emptyDir" in install
 
 
 @pytest.mark.parametrize("shell", INTERACTIVE_SHELLS, ids=lambda path: Path(path).name)
