@@ -1,11 +1,13 @@
-# ChatFit on Amazon EKS
+# ChatFit with Helm
 
-This chart runs one internal FastAPI Deployment and one Telegram Bot Deployment
-on an existing EKS cluster. The API uses a single `ReadWriteOnce` EBS-backed
-PVC, so it intentionally has one replica and uses a `Recreate` rollout to
-avoid concurrent SQLite writers. The chart does not create an ECR repository,
-Kubernetes Namespace, Secret, StorageClass, EBS CSI driver, Ingress, or public
-load balancer.
+This chart supports an existing EKS cluster with the default
+`persistence.type: pvc`, or a local Kind cluster with explicit
+`persistence.type: emptyDir`. On EKS, it runs one internal FastAPI Deployment
+and one Telegram Bot Deployment. The API uses a single `ReadWriteOnce`
+EBS-backed PVC, so it intentionally has one replica and uses a `Recreate`
+rollout to avoid concurrent SQLite writers. The chart does not create an ECR
+repository, Kubernetes Namespace, Secret, StorageClass, EBS CSI driver,
+Ingress, or public load balancer.
 
 The Bot also uses a `Recreate` rollout so an upgrade never overlaps two
 Telegram long-polling processes.
@@ -33,6 +35,49 @@ kubectl get storageclass
 The first EBS volume is empty. This deployment does **not** migrate existing
 Compose data: `~/.iron`, `runtime-data`, `chroma.db`, and cookbook Markdown
 files are not copied to EKS.
+
+## Local Kind deployment with ephemeral storage
+
+For a local smoke test without a registry or StorageClass, build the image on
+the host, load it into every node of the selected Kind cluster, and explicitly
+select `emptyDir`. Run these commands from the repository root:
+
+```bash
+KIND_CLUSTER="kind"
+IMAGE_REPOSITORY="chatfit"
+IMAGE_TAG="$(git rev-parse --short HEAD)"
+
+docker build -t "${IMAGE_REPOSITORY}:${IMAGE_TAG}" .
+kind load docker-image \
+  --name "${KIND_CLUSTER}" \
+  "${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+kubectl config use-context "kind-${KIND_CLUSTER}"
+
+kubectl create namespace chatfit
+kubectl -n chatfit create secret generic chatfit-secrets \
+  --from-literal=GOOGLE_API_KEY="${GOOGLE_API_KEY}" \
+  --from-literal=TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}" \
+  --from-literal=CHATFIT_API_TOKEN="${CHATFIT_API_TOKEN}"
+
+helm upgrade --install chatfit deploy/helm/chatfit \
+  --namespace chatfit \
+  --set-string image.repository="${IMAGE_REPOSITORY}" \
+  --set-string image.tag="${IMAGE_TAG}" \
+  --set-string image.pullPolicy=Never \
+  --set-string existingSecret=chatfit-secrets \
+  --set-string persistence.type=emptyDir \
+  --wait --timeout 10m
+helm test chatfit --namespace chatfit
+```
+
+`image.pullPolicy=Never` makes Kubernetes use the image already loaded into
+the Kind nodes. If the cluster name is not `kind`, obtain it with
+`kind get clusters` and change `KIND_CLUSTER`.
+
+**Data warning:** `emptyDir` is tied to the API Pod. Deleting or replacing that
+Pod, including during an upgrade or uninstall, permanently removes ChatFit's
+business records, checkpoints, durable memory, Chroma data, and cookbook
+files. Use the default PVC mode for data that must survive Pod replacement.
 
 ## Build and push an ECR image
 
