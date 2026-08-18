@@ -59,5 +59,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "chatfit.validateValues" -}}
 {{- $_ := include "chatfit.image" . -}}
 {{- $_ := required "existingSecret is required" .Values.existingSecret -}}
+{{- $persistenceType := default "pvc" .Values.persistence.type -}}
+{{- if not (or (eq $persistenceType "pvc") (eq $persistenceType "emptyDir")) -}}
+{{- fail "persistence.type must be one of: pvc, emptyDir" -}}
+{{- end -}}
 {{- "" -}}
 {{- end }}

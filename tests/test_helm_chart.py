@@ -95,6 +95,20 @@ def test_required_install_values_fail_rendering(set_args, expected) -> None:
     assert expected in result.stderr
 
 
+def test_unsupported_persistence_type_fails_rendering() -> None:
+    result = _helm(
+        "template",
+        RELEASE,
+        str(CHART),
+        *REQUIRED_SET_ARGS,
+        "--set",
+        "persistence.type=hostPath",
+    )
+
+    assert result.returncode != 0
+    assert "persistence.type must be one of: pvc, emptyDir" in result.stderr
+
+
 def test_foundation_resources_use_safe_defaults() -> None:
     resources = _render()
     account = _resource(resources, "ServiceAccount")
@@ -239,6 +253,32 @@ def test_api_prepares_and_mounts_all_persistent_subdirectories() -> None:
             "persistentVolumeClaim": {"claimName": "contract-chatfit-data"},
         }
     ]
+
+
+def test_empty_dir_storage_preserves_mount_contract_without_a_claim() -> None:
+    resources = _render("--set", "persistence.type=emptyDir")
+    deployment = _resource(resources, "Deployment", "api")
+    pod_spec = deployment["spec"]["template"]["spec"]
+    initializer = pod_spec["initContainers"][0]
+    api = _container(deployment, "api")
+
+    assert not any(item["kind"] == "PersistentVolumeClaim" for item in resources)
+    assert pod_spec["volumes"] == [{"name": "data", "emptyDir": {}}]
+    assert initializer["volumeMounts"] == [{"name": "data", "mountPath": "/storage"}]
+    assert (
+        "mkdir -p /storage/iron /storage/runtime-data /storage/chroma.db /storage/cookbook"
+        in initializer["args"][0]
+    )
+    assert {
+        item["subPath"]: item["mountPath"]
+        for item in api["volumeMounts"]
+        if "subPath" in item
+    } == {
+        "iron": "/root/.iron",
+        "runtime-data": "/app/data",
+        "chroma.db": "/app/chroma.db",
+        "cookbook": "/root/Documents/LifeOS/下厨房",
+    }
 
 
 def test_api_uses_distinct_databases_explicit_secret_refs_and_security_defaults() -> (
