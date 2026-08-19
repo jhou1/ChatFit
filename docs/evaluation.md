@@ -131,6 +131,12 @@ flowchart TD
 uv run pytest tests/eval -m e2e -v
 ```
 
+审批语义还提供一个可选的真实模型用例，验证肯定、修改和拒绝等自然语言回复。该用例需要 `GOOGLE_API_KEY`，且只会在显式选择时调用外部模型：
+
+```bash
+uv run pytest -o addopts='' -m e2e tests/test_safe_execution.py::test_live_google_approval_resolver_understands_reply_semantics
+```
+
 ### L3：LLM Judge 与人工校准
 
 LLM Judge 只负责需要语义判断的维度：

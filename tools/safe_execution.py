@@ -15,7 +15,6 @@ from agents.observability import (
     mark_current_span_status,
     observe_span,
 )
-from agents.utils import extract_text
 
 MAX_RETRIES = 3
 MAX_TOOL_TOKENS = 5000
@@ -25,15 +24,6 @@ MAX_OUTPUT_TOKENS = 500
 TRUNCATE_WARNINGS = "\n[OUTPUT TRUNCATED - the tool returned more data than can be processed. Please ask a more specific question]"
 HITL_TIMEOUT_SECONDS = 300.0  # 5 minutes for human-in-the-loop timeout
 HITL_TOOL_CALLS = ["log_training_session", "log_meal"]
-PURE_APPROVAL_REPLIES = frozenset({"确认", "保存", "确认保存"})
-PURE_APPROVAL_TERMINATORS = frozenset({"。", ".", "！", "!"})
-
-
-def _is_pure_approval(user_message: str) -> bool:
-    normalized = user_message.strip()
-    if normalized[-1:] in PURE_APPROVAL_TERMINATORS:
-        normalized = normalized[:-1].rstrip()
-    return normalized in PURE_APPROVAL_REPLIES
 
 
 class ApprovalDecision(BaseModel):
@@ -53,20 +43,21 @@ class ApprovalIntentModel(BaseModel):
 
 class ApprovalResolver:
     def __init__(self, llm_config: LLMConfig):
-        self.llm = create_chat_model(llm_config)
+        chat_model = create_chat_model(llm_config)
+        self.llm = chat_model.with_structured_output(ApprovalIntentModel)
 
     async def resolve(
         self, user_message: str, pending_tool_calls: list[dict]
     ) -> ApprovalDecision:
-        if _is_pure_approval(user_message):
-            return ApprovalDecision(intent="approve", feedback=user_message)
-
         instruction = (
-            "Classify a reply to a pending database-write approval. Return "
-            "approve only when it purely approves the exact pending data. "
-            "Return revise when it adds, corrects, removes, or replaces any "
-            "business data, even if it also says approve. Return reject when "
-            "it declines the write. Output only JSON with one intent field."
+            "Semantically classify a reply to a pending database-write approval. "
+            "Judge the reply's meaning rather than matching exact words. Choose "
+            "approve only when the reply solely accepts the exact pending data; "
+            "this includes concise or conversational affirmations in any language, "
+            "such as 是的, 确认保存, or 当然，就这样保存吧. Choose revise when "
+            "the reply adds, corrects, removes, or replaces any business data, even "
+            "if it also expresses approval. Choose reject when it declines or "
+            "postpones the write, or when its meaning is unclear."
         )
         context = json.dumps(pending_tool_calls, ensure_ascii=False, default=str)
         resolver_messages = [
@@ -77,8 +68,7 @@ class ApprovalResolver:
         ]
         response = await _execute_llm_query_safely(self.llm, resolver_messages)
         try:
-            payload = json.loads(extract_text(response["messages"]))
-            intent = ApprovalIntentModel.model_validate(payload).intent
+            intent = ApprovalIntentModel.model_validate(response["messages"]).intent
         except (ValueError, TypeError, ValidationError):
             intent = "reject"
         return ApprovalDecision(intent=intent, feedback=user_message)

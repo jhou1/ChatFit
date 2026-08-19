@@ -1,5 +1,6 @@
 from tools.safe_execution import SafeToolNode
 import asyncio
+import os
 import pytest
 from unittest.mock import Mock, AsyncMock, patch
 
@@ -11,12 +12,14 @@ from tools.safe_execution import (
     _execute_single_tool_safely,
     _execute_llm_query_safely,
     ApprovalDecision,
+    ApprovalIntentModel,
     ApprovalResolver,
     MAX_RETRIES,
     MAX_OUTPUT_TOKENS,
     TRUNCATE_WARNINGS,
 )
 from agents.observability import InMemorySink, observation_sink, start_trace
+from agents.llm_factory import LLMConfig
 from agents.roles.training import INSTRUCTION_FOR_RECORDING_TRAINING_SESSIONS
 from langchain_core.prompts.prompt import PromptTemplate
 
@@ -565,33 +568,104 @@ async def test_resumed_hitl_emits_resolved_revision_without_raw_reply(mock_inter
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "reply",
-    ["确认", "保存", "确认保存", " 确认 ", "保存。", "确认保存！"],
+    ("reply", "model_intent"),
+    [
+        ("是的", "approve"),
+        ("确认保存", "approve"),
+        ("当然，就这样保存吧", "approve"),
+        ("是的，但重量改成 14kg", "revise"),
+        ("先别保存", "reject"),
+    ],
 )
-@patch("tools.safe_execution._execute_llm_query_safely")
-@patch("tools.safe_execution.create_chat_model")
-async def test_approval_resolver_deterministically_approves_pure_reply(
-    mock_create_chat_model, mock_execute, reply
+async def test_approval_resolver_uses_structured_lm_semantics_for_every_reply(
+    monkeypatch, reply, model_intent
 ):
+    captured = {}
+
+    class FakeStructuredRunnable:
+        async def ainvoke(self, messages):
+            captured["messages"] = messages
+            return ApprovalIntentModel(intent=model_intent)
+
+    class FakeChatModel:
+        def with_structured_output(self, schema):
+            captured["schema"] = schema
+            return FakeStructuredRunnable()
+
+    monkeypatch.setattr(
+        "tools.safe_execution.create_chat_model", lambda config: FakeChatModel()
+    )
     resolver = ApprovalResolver(Mock())
 
     decision = await resolver.resolve(reply, [{"name": "log_meal", "args": {}}])
 
-    assert decision == ApprovalDecision(intent="approve", feedback=reply)
-    mock_execute.assert_not_awaited()
+    assert decision == ApprovalDecision(intent=model_intent, feedback=reply)
+    assert captured["schema"] is ApprovalIntentModel
+    assert reply in captured["messages"][1].content
+
+
+@pytest.mark.asyncio
+@pytest.mark.e2e
+@pytest.mark.parametrize(
+    ("reply", "expected_intent"),
+    [
+        ("是的", "approve"),
+        ("确认保存", "approve"),
+        ("当然，就这样保存吧", "approve"),
+        ("是的，但重量改成 14kg", "revise"),
+        ("先别保存", "reject"),
+    ],
+)
+async def test_live_google_approval_resolver_understands_reply_semantics(
+    reply, expected_intent
+):
+    if not os.environ.get("GOOGLE_API_KEY"):
+        pytest.skip("GOOGLE_API_KEY is required for live approval semantics")
+    proxy = os.environ.get("LLM_PROXY")
+    kwargs = {"client_args": {"proxy": proxy}} if proxy else {}
+    resolver = ApprovalResolver(
+        LLMConfig(
+            provider="google",
+            model_name="gemini-3.5-flash",
+            temperature=0,
+            max_tokens=1024,
+            kwargs=kwargs,
+        )
+    )
+
+    decision = await resolver.resolve(
+        reply,
+        [
+            {
+                "name": "log_training_session",
+                "args": {"weight": 10.0, "reps": [5]},
+                "id": "pending-training",
+            }
+        ],
+    )
+
+    assert decision.intent == expected_intent
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "reply",
-    ["确认，RPE 改成 7", "保存，同时 RPE 7", "确认？", "保存..."],
+    [
+        "确认，RPE 改成 7",
+        "保存，同时 RPE 7",
+        "是的，RPE 改成 7",
+        "对，但重量是 14kg",
+        "好的，同时备注肩膀不舒服",
+        "确认？",
+        "保存...",
+    ],
 )
 @patch("tools.safe_execution._execute_llm_query_safely")
 @patch("tools.safe_execution.create_chat_model")
-async def test_approval_resolver_sends_non_pure_reply_to_classifier(
+async def test_approval_resolver_sends_reply_to_classifier(
     mock_create_chat_model, mock_execute, reply
 ):
-    mock_execute.return_value = {"messages": AIMessage(content='{"intent":"revise"}')}
+    mock_execute.return_value = {"messages": ApprovalIntentModel(intent="revise")}
     resolver = ApprovalResolver(Mock())
 
     decision = await resolver.resolve(reply, [{"name": "log_meal", "args": {}}])
@@ -601,15 +675,16 @@ async def test_approval_resolver_sends_non_pure_reply_to_classifier(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reply", ["确认保存", "是的", "当然，就这样保存吧"])
 @patch("tools.safe_execution.interrupt")
 @patch("tools.safe_execution._execute_single_tool_safely")
 @patch("tools.safe_execution._execute_llm_query_safely")
 @patch("tools.safe_execution.create_chat_model")
-async def test_bare_confirmation_executes_pending_write_without_llm(
-    mock_create_chat_model, mock_llm_query, mock_tool_execute, mock_interrupt
+async def test_semantic_lm_approval_executes_original_pending_write_once(
+    mock_create_chat_model, mock_llm_query, mock_tool_execute, mock_interrupt, reply
 ):
-    mock_llm_query.return_value = {"messages": AIMessage(content='{"intent":"revise"}')}
-    mock_interrupt.return_value = {"user_message": "确认"}
+    mock_llm_query.return_value = {"messages": ApprovalIntentModel(intent="approve")}
+    mock_interrupt.return_value = {"user_message": reply}
     mock_tool_execute.return_value = ToolMessage(
         content="Saved", tool_call_id="training-1"
     )
@@ -622,7 +697,10 @@ async def test_bare_confirmation_executes_pending_write_without_llm(
 
     result = await node({"messages": [AIMessage(content="", tool_calls=[pending])]})
 
-    mock_llm_query.assert_not_awaited()
+    mock_create_chat_model.return_value.with_structured_output.assert_called_once_with(
+        ApprovalIntentModel
+    )
+    mock_llm_query.assert_awaited_once()
     mock_tool_execute.assert_awaited_once()
     assert result["messages"][0].content == "Saved"
 
@@ -633,7 +711,7 @@ async def test_bare_confirmation_executes_pending_write_without_llm(
 async def test_approval_resolver_returns_revision_and_preserves_full_feedback(
     mock_create_chat_model, mock_execute
 ):
-    mock_execute.return_value = {"messages": AIMessage(content='{"intent":"revise"}')}
+    mock_execute.return_value = {"messages": ApprovalIntentModel(intent="revise")}
     resolver = ApprovalResolver(Mock())
 
     decision = await resolver.resolve(
@@ -647,10 +725,10 @@ async def test_approval_resolver_returns_revision_and_preserves_full_feedback(
 @pytest.mark.asyncio
 @patch("tools.safe_execution._execute_llm_query_safely")
 @patch("tools.safe_execution.create_chat_model")
-async def test_approval_resolver_safely_rejects_malformed_json(
+async def test_approval_resolver_safely_rejects_malformed_structured_output(
     mock_create_chat_model, mock_execute
 ):
-    mock_execute.return_value = {"messages": AIMessage(content="not JSON")}
+    mock_execute.return_value = {"messages": {"unexpected": "value"}}
     resolver = ApprovalResolver(Mock())
 
     decision = await resolver.resolve("不保存", [])
