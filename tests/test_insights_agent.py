@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import date, datetime, timedelta
 
 import pytest
@@ -10,6 +11,14 @@ from agents.llm_factory import LLMConfig
 from agents.sqlite_handler import init_db, add_training_session, add_meal_log
 from agents.models import TrainingSession, TrainingSet, TrainingInputRecorder, MealInfo
 from agents.utils import extract_text
+
+
+@pytest.fixture(autouse=True)
+def gemini_key_for_graph_construction(monkeypatch):
+    """Graph construction validates key presence even when requests are mocked."""
+
+    if not os.environ.get("GOOGLE_API_KEY"):
+        monkeypatch.setenv("GOOGLE_API_KEY", "unit-test-dummy-key")
 
 
 @pytest.fixture

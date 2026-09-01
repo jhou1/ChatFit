@@ -102,3 +102,4 @@ class AgentState(TypedDict):
     memory_mutation_committed: NotRequired[bool]
     memory_mutation_response: NotRequired[str | None]
     pending_memory_action: NotRequired[dict[str, object] | None]
+    hitl_write_cancelled: NotRequired[bool]

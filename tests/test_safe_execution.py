@@ -2,9 +2,11 @@ from tools.safe_execution import SafeToolNode
 import asyncio
 import os
 import pytest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, AsyncMock, patch
 
 from langchain_core.messages import ToolMessage, AIMessage, HumanMessage
+from langgraph.graph import END
 
 from tools.safe_execution import (
     _is_transient_tool_error,
@@ -14,6 +16,11 @@ from tools.safe_execution import (
     ApprovalDecision,
     ApprovalIntentModel,
     ApprovalResolver,
+    PendingReplyClassifier,
+    PendingReplyKind,
+    HITL_TIMEOUT_SECONDS,
+    hitl_interrupt_payload_expired,
+    route_after_hitl_cancel,
     MAX_RETRIES,
     MAX_OUTPUT_TOKENS,
     TRUNCATE_WARNINGS,
@@ -334,19 +341,19 @@ async def test_safe_tool_node_write_tool_approved(mock_execute, mock_interrupt):
     result = await node(state)
 
     # Verification
-    mock_interrupt.assert_called_once_with(
+    mock_interrupt.assert_called_once()
+    payload = mock_interrupt.call_args.args[0]
+    assert payload["action"] == "approval_required"
+    assert payload["tool_calls"] == [
         {
-            "action": "approval_required",
-            "tool_calls": [
-                {
-                    "name": "log_training_session",
-                    "args": {"note": "test"},
-                    "id": "call_2",
-                    "type": "tool_call",
-                }
-            ],
+            "name": "log_training_session",
+            "args": {"note": "test"},
+            "id": "call_2",
+            "type": "tool_call",
         }
-    )
+    ]
+    created_at = datetime.fromisoformat(payload["created_at"])
+    assert created_at.tzinfo is not None
     mock_execute.assert_called_once()
     assert len(result["messages"]) == 1
     assert result["messages"][0].content == "Saved successfully"
@@ -892,3 +899,204 @@ async def test_rejected_hitl_emits_cancelled_without_execution(
     assert any(
         observation.name == "hitl.cancelled" for observation in sink.observations
     )
+
+
+def test_hitl_interrupt_payload_expired_detects_stale_requests():
+    now = datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc)
+    fresh = {"created_at": (now - timedelta(seconds=299)).isoformat()}
+    stale = {"created_at": (now - timedelta(seconds=301)).isoformat()}
+
+    assert hitl_interrupt_payload_expired(stale, now=now)
+    assert not hitl_interrupt_payload_expired(fresh, now=now)
+
+
+def test_hitl_interrupt_payload_expired_treats_legacy_payloads_as_fresh():
+    """Breaks if interrupts persisted without created_at hijack fresh messages."""
+
+    now = datetime.now(timezone.utc)
+    assert not hitl_interrupt_payload_expired({"tool_calls": []}, now=now)
+    assert not hitl_interrupt_payload_expired({"created_at": None}, now=now)
+    assert not hitl_interrupt_payload_expired({"created_at": 12345}, now=now)
+    assert not hitl_interrupt_payload_expired({}, now=now)
+    assert not hitl_interrupt_payload_expired(None, now=now)
+    assert not hitl_interrupt_payload_expired("interrupt", now=now)
+    assert not hitl_interrupt_payload_expired(
+        {"created_at": "not-a-timestamp"}, now=now
+    )
+
+
+def test_hitl_interrupt_payload_expired_assumes_naive_timestamps_are_utc():
+    now = datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc)
+    naive_stale = {"created_at": "2020-01-01T00:00:00"}
+
+    assert hitl_interrupt_payload_expired(naive_stale, now=now)
+
+
+def test_hitl_interrupt_payload_expired_honors_custom_timeout():
+    now = datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc)
+    payload = {
+        "created_at": (now - timedelta(seconds=HITL_TIMEOUT_SECONDS / 2)).isoformat()
+    }
+
+    assert hitl_interrupt_payload_expired(payload, now=now, timeout_seconds=60.0)
+    assert not hitl_interrupt_payload_expired(payload, now=now)
+
+
+def test_route_after_hitl_cancel_ends_graph_only_after_terminal_cancellation():
+    assert route_after_hitl_cancel({"hitl_write_cancelled": True}, "log_meal") == END
+    assert route_after_hitl_cancel({}, "log_meal") == "log_meal"
+    assert (
+        route_after_hitl_cancel({"hitl_write_cancelled": False}, "log_meal")
+        == "log_meal"
+    )
+
+
+@pytest.mark.asyncio
+@patch("tools.safe_execution.interrupt")
+@patch("tools.safe_execution._execute_single_tool_safely")
+async def test_cancel_payload_supersedes_pending_write_without_execution(
+    mock_execute, mock_interrupt
+):
+    """Breaks if a stale pending approval still executes after terminal cancel."""
+
+    node = SafeToolNode(tools=[])
+    pending = {"name": "log_meal", "args": {"items": "香蕉"}, "id": "meal-1"}
+    mock_interrupt.return_value = {"cancelled": True, "feedback": "approval_expired"}
+
+    result = await node({"messages": [AIMessage(content="", tool_calls=[pending])]})
+
+    mock_execute.assert_not_called()
+    assert result["hitl_write_cancelled"] is True
+    assert len(result["messages"]) == 1
+    cancelled_message = result["messages"][0]
+    assert isinstance(cancelled_message, ToolMessage)
+    assert cancelled_message.status == "error"
+    assert "Pending write cancelled" in cancelled_message.content
+    assert "approval_expired" in cancelled_message.content
+    assert cancelled_message.tool_call_id == "meal-1"
+
+
+@pytest.mark.asyncio
+@patch("tools.safe_execution.interrupt")
+@patch("tools.safe_execution._execute_single_tool_safely")
+async def test_cancelled_hitl_executes_parallel_read_tool_but_not_write(
+    mock_execute, mock_interrupt
+):
+    node = SafeToolNode(tools=[])
+    write_call = {"name": "log_meal", "args": {"items": "苹果"}, "id": "meal-1"}
+    read_call = {"name": "retrieve_training_sessions", "args": {}, "id": "read-1"}
+    mock_interrupt.return_value = {
+        "cancelled": True,
+        "feedback": "superseded_by_new_request",
+    }
+    mock_execute.return_value = ToolMessage(content="history", tool_call_id="read-1")
+
+    result = await node(
+        {"messages": [AIMessage(content="", tool_calls=[write_call, read_call])]}
+    )
+
+    mock_execute.assert_awaited_once()
+    assert mock_execute.await_args.args[0]["id"] == "read-1"
+    assert [message.tool_call_id for message in result["messages"]] == [
+        "meal-1",
+        "read-1",
+    ]
+    assert result["messages"][0].status == "error"
+    assert result["messages"][1].content == "history"
+    assert result["hitl_write_cancelled"] is True
+
+
+@pytest.mark.asyncio
+@patch("tools.safe_execution.interrupt")
+async def test_cancelled_hitl_emits_stale_cancelled_without_execution(mock_interrupt):
+    node = SafeToolNode(tools=[])
+    state = {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "log_meal", "args": {}, "id": "meal-1"}],
+            )
+        ]
+    }
+    mock_interrupt.return_value = {"cancelled": True, "feedback": "approval_expired"}
+    sink = InMemorySink()
+
+    with observation_sink(sink):
+        with start_trace(
+            "chat.request",
+            request_id="request-1",
+            session_id="session-1",
+            user_key="user-key",
+        ):
+            await node(state)
+
+    stale_cancelled = next(
+        observation
+        for observation in sink.observations
+        if observation.name == "hitl.stale_cancelled"
+    )
+    assert stale_cancelled.attributes == {
+        "hitl.cancel.reason": "approval_expired",
+        "tool.count": 1,
+        "tool.call_ids": ["meal-1"],
+    }
+    assert not any(
+        observation.name == "hitl.resumed" for observation in sink.observations
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reply", "expected_kind"),
+    [
+        ("确认保存", "approval_reply"),
+        ("保存，但重量改成 14kg", "approval_reply"),
+        ("先别保存", "approval_reply"),
+        ("我昨天练了 mace，5kg 100 次", "new_request"),
+        ("今天天气怎么样", "new_request"),
+    ],
+)
+async def test_pending_reply_classifier_uses_structured_lm_semantics(
+    monkeypatch, reply, expected_kind
+):
+    captured = {}
+
+    class FakeStructuredRunnable:
+        async def ainvoke(self, messages):
+            captured["messages"] = messages
+            return PendingReplyKind(kind=expected_kind)
+
+    class FakeChatModel:
+        def with_structured_output(self, schema):
+            captured["schema"] = schema
+            return FakeStructuredRunnable()
+
+    monkeypatch.setattr(
+        "tools.safe_execution.create_chat_model", lambda config: FakeChatModel()
+    )
+    classifier = PendingReplyClassifier(Mock())
+
+    kind = await classifier.classify(
+        reply, [{"name": "log_meal", "args": {"items": "香蕉"}, "id": "meal-1"}]
+    )
+
+    assert kind == expected_kind
+    assert captured["schema"] is PendingReplyKind
+    assert reply in captured["messages"][1].content
+    assert "log_meal" in captured["messages"][1].content
+
+
+@pytest.mark.asyncio
+@patch("tools.safe_execution._execute_llm_query_safely")
+@patch("tools.safe_execution.create_chat_model")
+async def test_pending_reply_classifier_defaults_to_approval_reply_on_malformed_output(
+    mock_create_chat_model, mock_execute
+):
+    """Breaks if classifier failures strand the user's reply outside the graph."""
+
+    mock_execute.return_value = {"messages": {"unexpected": "value"}}
+    classifier = PendingReplyClassifier(Mock())
+
+    kind = await classifier.classify("我昨天练了 mace，5kg 100 次", [])
+
+    assert kind == "approval_reply"

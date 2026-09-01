@@ -1,10 +1,13 @@
 import asyncio
 import json
+from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Protocol, Sequence
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.errors import GraphInterrupt
+from langgraph.graph import END
 from langgraph.types import interrupt
 from pydantic import BaseModel, ValidationError
 
@@ -72,6 +75,78 @@ class ApprovalResolver:
         except (ValueError, TypeError, ValidationError):
             intent = "reject"
         return ApprovalDecision(intent=intent, feedback=user_message)
+
+
+class PendingReplyKind(BaseModel):
+    kind: Literal["approval_reply", "new_request"]
+
+
+class PendingReplyClassifier:
+    """Decide whether a message answers a pending approval or starts a new topic."""
+
+    def __init__(self, llm_config: LLMConfig):
+        chat_model = create_chat_model(llm_config)
+        self.llm = chat_model.with_structured_output(PendingReplyKind)
+
+    async def classify(self, user_message: str, pending_tool_calls: list[dict]) -> str:
+        instruction = (
+            "The assistant has asked the user to approve pending database writes. "
+            "Classify the user's latest message. Choose approval_reply when the "
+            "message responds to that approval request in any way: accepting it "
+            "(e.g. 是的, 确认保存, sounds good), declining or postponing it (e.g. 取消, "
+            "先别保存), or correcting and supplementing the pending data (e.g. 保存，"
+            "但重量改成 14kg). Choose new_request when the message introduces an "
+            "unrelated new topic or request (a workout, a meal, a question, small "
+            "talk) and does not address the pending approval at all. When in doubt, "
+            "choose approval_reply."
+        )
+        context = json.dumps(pending_tool_calls, ensure_ascii=False, default=str)
+        classifier_messages = [
+            SystemMessage(content=instruction),
+            HumanMessage(
+                content=f"Pending tool calls: {context}\nUser reply: {user_message}"
+            ),
+        ]
+        response = await _execute_llm_query_safely(self.llm, classifier_messages)
+        try:
+            return PendingReplyKind.model_validate(response["messages"]).kind
+        except (ValueError, TypeError, ValidationError):
+            return "approval_reply"
+
+
+def hitl_interrupt_payload_expired(
+    payload: Any,
+    *,
+    now: datetime | None = None,
+    timeout_seconds: float = HITL_TIMEOUT_SECONDS,
+) -> bool:
+    """Return True when an interrupt payload carries a creation time older than the HITL timeout.
+
+    Payloads without a parseable ``created_at`` (e.g. interrupts persisted by older
+    deployments) are treated as fresh so they still go through reply classification.
+    """
+
+    if not isinstance(payload, dict):
+        return False
+    created_at = payload.get("created_at")
+    if not isinstance(created_at, str):
+        return False
+    try:
+        created = datetime.fromisoformat(created_at)
+    except ValueError:
+        return False
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    return (current - created) > timedelta(seconds=timeout_seconds)
+
+
+def route_after_hitl_cancel(state: Mapping[str, Any], default_target: str) -> str:
+    """Route a tool node to END after a pending write was terminally cancelled."""
+
+    if state.get("hitl_write_cancelled"):
+        return END
+    return default_target
 
 
 def _is_transient_tool_error(error: Exception) -> bool:
@@ -243,6 +318,41 @@ async def _execute_llm_query_safely(llm_with_tools, messages) -> dict:
         return {"messages": response}
 
 
+async def _build_write_rejection_messages(
+    tool_calls: list[dict],
+    write_tool_call_ids: set[str],
+    write_content: str,
+    tool_list: Sequence[Any],
+) -> list[ToolMessage]:
+    """Reject every pending write tool and still execute the parallel read tools."""
+
+    read_tool_calls = [
+        tool_call
+        for tool_call in tool_calls
+        if str(tool_call["id"]) not in write_tool_call_ids
+    ]
+    read_outputs = await asyncio.gather(
+        *[
+            _execute_single_tool_safely(tool_call, tool_list)
+            for tool_call in read_tool_calls
+        ]
+    )
+    read_outputs_by_id = {str(output.tool_call_id): output for output in read_outputs}
+    return [
+        (
+            ToolMessage(
+                name=tool_call["name"],
+                tool_call_id=tool_call["id"],
+                content=write_content,
+                status="error",
+            )
+            if str(tool_call["id"]) in write_tool_call_ids
+            else read_outputs_by_id[str(tool_call["id"])]
+        )
+        for tool_call in tool_calls
+    ]
+
+
 class SafeToolNode:
     """Callable, wraps safe tool call and can be used like a LangGraph ToolNode"""
 
@@ -285,11 +395,39 @@ class SafeToolNode:
             )
             try:
                 decision = interrupt(
-                    {"action": "approval_required", "tool_calls": write_tools}
+                    {
+                        "action": "approval_required",
+                        "tool_calls": write_tools,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    }
                 )
             except GraphInterrupt:
                 mark_current_span_status("interrupted")
                 raise
+            if decision.get("cancelled"):
+                # Terminal cancellation (expired approval or an unrelated new
+                # message): drop the pending write without executing it and end
+                # the specialist subgraph instead of looping back to its LLM.
+                reason = str(decision.get("feedback") or "superseded")
+                emit_event(
+                    "hitl.stale_cancelled",
+                    {
+                        "hitl.cancel.reason": reason,
+                        "tool.count": len(write_tools),
+                        "tool.call_ids": write_tool_call_ids,
+                    },
+                )
+                rejection_messages = await _build_write_rejection_messages(
+                    tool_calls,
+                    set(write_tool_call_ids),
+                    f"Pending write cancelled: {reason}. "
+                    "It was neither approved nor saved.",
+                    self.tools,
+                )
+                return {
+                    "messages": rejection_messages,
+                    "hitl_write_cancelled": True,
+                }
             user_message = decision.get("user_message")
             if self.approval_resolver and isinstance(user_message, str):
                 pending_tool_calls = [
@@ -308,37 +446,14 @@ class SafeToolNode:
                             "tool.call_ids": write_tool_call_ids,
                         },
                     )
-                    write_tool_call_id_set = set(write_tool_call_ids)
-                    read_tool_calls = [
-                        tool_call
-                        for tool_call in tool_calls
-                        if str(tool_call["id"]) not in write_tool_call_id_set
-                    ]
-                    read_outputs = await asyncio.gather(
-                        *[
-                            _execute_single_tool_safely(tool_call, self.tools)
-                            for tool_call in read_tool_calls
-                        ]
+                    rejection_messages = await _build_write_rejection_messages(
+                        tool_calls,
+                        set(write_tool_call_ids),
+                        "Pending write superseded by user revision",
+                        self.tools,
                     )
-                    read_outputs_by_id = {
-                        str(output.tool_call_id): output for output in read_outputs
-                    }
                     return {
-                        "messages": [
-                            (
-                                ToolMessage(
-                                    name=tool_call["name"],
-                                    tool_call_id=tool_call["id"],
-                                    content=(
-                                        "Pending write superseded by user revision"
-                                    ),
-                                    status="error",
-                                )
-                                if str(tool_call["id"]) in write_tool_call_id_set
-                                else read_outputs_by_id[str(tool_call["id"])]
-                            )
-                            for tool_call in tool_calls
-                        ]
+                        "messages": rejection_messages
                         + [HumanMessage(content=approval.feedback)]
                     }
                 decision = {
@@ -364,39 +479,13 @@ class SafeToolNode:
                         "tool.call_ids": write_tool_call_ids,
                     },
                 )
-                write_tool_call_id_set = set(write_tool_call_ids)
-                read_tool_calls = [
-                    tool_call
-                    for tool_call in tool_calls
-                    if str(tool_call["id"]) not in write_tool_call_id_set
-                ]
-                read_outputs = await asyncio.gather(
-                    *[
-                        _execute_single_tool_safely(tool_call, self.tools)
-                        for tool_call in read_tool_calls
-                    ]
+                rejection_messages = await _build_write_rejection_messages(
+                    tool_calls,
+                    set(write_tool_call_ids),
+                    "User rejected the operation. " f"Feedback: {feedback}",
+                    self.tools,
                 )
-                read_outputs_by_id = {
-                    str(output.tool_call_id): output for output in read_outputs
-                }
-                return {
-                    "messages": [
-                        (
-                            ToolMessage(
-                                name=tool_call["name"],
-                                tool_call_id=tool_call["id"],
-                                content=(
-                                    "User rejected the operation. "
-                                    f"Feedback: {feedback}"
-                                ),
-                                status="error",
-                            )
-                            if str(tool_call["id"]) in write_tool_call_id_set
-                            else read_outputs_by_id[str(tool_call["id"])]
-                        )
-                        for tool_call in tool_calls
-                    ]
-                }
+                return {"messages": rejection_messages}
 
         executable_tool_calls = last_message.tool_calls
         if write_tools:
