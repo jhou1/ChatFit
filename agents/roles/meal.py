@@ -9,13 +9,14 @@ from agents.rag import create_recipe_rag_chain
 from langchain_core.tools import tool
 from langchain_core.messages import SystemMessage
 from langchain_core.prompts.prompt import PromptTemplate
-from langgraph.graph import StateGraph, START
+from langgraph.graph import StateGraph, START, END
 
 from langgraph.prebuilt import tools_condition
 from tools.safe_execution import (
     ApprovalResolver,
     SafeToolNode,
     _execute_llm_query_safely,
+    route_after_hitl_cancel,
 )
 
 INSTRUCTION_FOR_RECORDING_MEALS = """
@@ -81,8 +82,11 @@ def make_meal_subagent_graph(llm_config: LLMConfig, db_path: str, vector_store):
     )
     builder.add_node("tools", tool_node)  # type: ignore # type: ignore
 
+    def route_after_tools(state: AgentState) -> str:
+        return route_after_hitl_cancel(state, "log_meal")
+
     builder.add_edge(START, "log_meal")
     builder.add_conditional_edges("log_meal", tools_condition)
-    builder.add_edge("tools", "log_meal")
+    builder.add_conditional_edges("tools", route_after_tools, ["log_meal", END])
 
     return builder.compile()

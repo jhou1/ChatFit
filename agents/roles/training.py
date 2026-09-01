@@ -7,7 +7,7 @@ from langchain_core.prompts.prompt import PromptTemplate
 from langchain_core.tools import tool
 from langchain_core.messages import SystemMessage
 
-from langgraph.graph import StateGraph, START
+from langgraph.graph import StateGraph, START, END
 
 from agents.models import AgentState, TrainingInputRecorder
 from agents.sqlite_handler import (
@@ -21,6 +21,7 @@ from tools.safe_execution import (
     ApprovalResolver,
     SafeToolNode,
     _execute_llm_query_safely,
+    route_after_hitl_cancel,
 )
 
 INSTRUCTION_FOR_RECORDING_TRAINING_SESSIONS = """
@@ -172,9 +173,14 @@ def make_training_agent_graph(llm_config: LLMConfig, db_path: str):
     )
     builder.add_node("tools", tool_node)  # type: ignore # type: ignore
 
+    def route_after_tools(state: AgentState) -> str:
+        return route_after_hitl_cancel(state, "log_training_node")
+
     builder.add_edge(START, "log_training_node")
     builder.add_conditional_edges("log_training_node", tools_condition)
     builder.add_conditional_edges("retrieve_training_node", tools_condition)
-    builder.add_edge("tools", "log_training_node")
+    builder.add_conditional_edges(
+        "tools", route_after_tools, ["log_training_node", END]
+    )
 
     return builder.compile()

@@ -41,6 +41,10 @@ from agents.observability import (
     start_trace,
 )
 from proactive_reviews import build_proactive_review, today_in_shanghai
+from tools.safe_execution import (
+    PendingReplyClassifier,
+    hitl_interrupt_payload_expired,
+)
 
 UserIdentifier = Annotated[
     str,
@@ -67,6 +71,8 @@ user_sessions: dict[str, str] = {}
 logger = logging.getLogger(__name__)
 CORRELATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 BEARER_AUTHORIZATION_PATTERN = re.compile(r"(?i:Bearer) +([A-Za-z0-9\-._~+/]+=*)")
+PENDING_WRITE_CANCELLED_NOTE = "已取消之前待确认的保存操作。"
+HITL_CANCEL_REASONS = frozenset({"approval_expired", "superseded_by_new_request"})
 
 
 def get_thread_id(user_id: str) -> str:
@@ -239,6 +245,7 @@ async def startup_event(fastapi_app: FastAPI):
             memory_interpreter=memory_interpreter,
         )
         fastapi_app.state.llm_config = llm_config
+        fastapi_app.state.pending_reply_classifier = PendingReplyClassifier(llm_config)
 
         print("ChatFit API is ready.")
 
@@ -302,6 +309,58 @@ async def generate_conversational_approval(
         return "⚠️ I'm about to write save the records to database, is it OK?"
 
 
+def get_pending_reply_classifier(request: Request) -> PendingReplyClassifier:
+    """Reuse the shared pending-reply classifier, building it lazily for tests."""
+
+    classifier = getattr(request.app.state, "pending_reply_classifier", None)
+    if classifier is None:
+        classifier = PendingReplyClassifier(request.app.state.llm_config)
+        request.app.state.pending_reply_classifier = classifier
+    return classifier
+
+
+async def cancel_pending_write_interrupts(
+    agent: Any,
+    config: dict,
+    interrupts: list,
+    *,
+    reason: str,
+) -> bool:
+    """Terminally cancel pending write approvals so a fresh message can be routed."""
+
+    if reason not in HITL_CANCEL_REASONS:
+        raise ValueError(f"unknown HITL cancel reason: {reason}")
+    for attempt in range(2):
+        resume_payload = {
+            intr.id: {"cancelled": True, "feedback": reason} for intr in interrupts
+        }
+        rerouted_interrupt = False
+        async for event in agent.astream(
+            Command(resume=resume_payload), config=config, stream_mode="updates"
+        ):
+            if "__interrupt__" in event:
+                rerouted_interrupt = True
+        if not rerouted_interrupt:
+            return True
+        emit_event(
+            "hitl.stale_cancel_retry",
+            {"hitl.cancel.reason": reason, "hitl.cancel.attempt": attempt + 1},
+        )
+        state = await agent.aget_state(config)
+        interrupts = [
+            intr
+            for task in (state.tasks if state else [])
+            for intr in (task.interrupts or [])
+        ]
+        if not interrupts:
+            return True
+    emit_event(
+        "hitl.stale_cancel_failed",
+        {"hitl.cancel.reason": reason},
+    )
+    return False
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(req: ChatRequest, request: Request, response: Response):
     require_trusted_api_client(request)
@@ -359,6 +418,8 @@ async def chat_endpoint(req: ChatRequest, request: Request, response: Response):
                 if task.interrupts:
                     interrupts.extend(task.interrupts)
 
+        action_command: Command[Any] | dict[str, Any]
+        final_response = ""
         if interrupts:
             emit_event(
                 "hitl.reply_received",
@@ -367,14 +428,40 @@ async def chat_endpoint(req: ChatRequest, request: Request, response: Response):
                     "interrupt.ids": [str(intr.id) for intr in interrupts],
                 },
             )
-            resume_data = {
-                intr.id: {"user_message": req.message} for intr in interrupts
-            }
-            action_command: Command[Any] | dict[str, Any] = Command(resume=resume_data)
+            # A pending approval must not swallow an unrelated or much later
+            # message: expired requests are cancelled outright, fresh ones are
+            # classified, and only genuine approval replies resume the graph.
+            cancel_reason = None
+            if any(hitl_interrupt_payload_expired(intr.value) for intr in interrupts):
+                cancel_reason = "approval_expired"
+            else:
+                pending_tool_calls = [
+                    tool_call
+                    for intr in interrupts
+                    if isinstance(intr.value, dict)
+                    for tool_call in intr.value.get("tool_calls", [])
+                ]
+                classifier = get_pending_reply_classifier(request)
+                reply_kind = await classifier.classify(req.message, pending_tool_calls)
+                emit_event("hitl.reply_classified", {"hitl.reply.kind": reply_kind})
+                if reply_kind == "new_request":
+                    cancel_reason = "superseded_by_new_request"
+            if cancel_reason is None:
+                resume_data = {
+                    intr.id: {"user_message": req.message} for intr in interrupts
+                }
+                action_command = Command(resume=resume_data)
+            else:
+                await cancel_pending_write_interrupts(
+                    request.app.state.agent,
+                    config,
+                    interrupts,
+                    reason=cancel_reason,
+                )
+                action_command = {"messages": [HumanMessage(content=req.message)]}
+                final_response = PENDING_WRITE_CANCELLED_NOTE + "\n\n"
         else:
             action_command = {"messages": [HumanMessage(content=req.message)]}
-
-        final_response = ""
 
         with observe_span("graph.run"):
             async for event in request.app.state.agent.astream(
@@ -410,7 +497,9 @@ async def chat_endpoint(req: ChatRequest, request: Request, response: Response):
                     reply = await generate_conversational_approval(
                         tool_calls, request.app.state.llm_config
                     )
-                    return ChatResponse(response=reply, pending_tools=None)
+                    return ChatResponse(
+                        response=final_response + reply, pending_tools=None
+                    )
                 for node_name, node_output in event.items():
                     if node_name in USER_RESPONSE_NODES:
                         new_messages = node_output.get("messages", [])

@@ -2,12 +2,12 @@ import asyncio
 from contextlib import closing
 import sqlite3
 from types import SimpleNamespace
-from datetime import date
+from datetime import date, datetime, timezone
 
 import httpx
 import pytest
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 import api as api_module
 import evaluation.runner as evaluation_runner
@@ -150,6 +150,92 @@ class FakeParallelInterruptAgent(FakeAgent):
                 ),
             ]
         }
+
+
+class FakePendingReplyClassifier:
+    def __init__(self, kind):
+        self.kind = kind
+        self.calls = []
+
+    async def classify(self, user_message, pending_tool_calls):
+        self.calls.append((user_message, pending_tool_calls))
+        return self.kind
+
+
+def pending_write_interrupt(created_at: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        id="interrupt-123",
+        value={
+            "action": "approval_required",
+            "created_at": created_at,
+            "tool_calls": [
+                {
+                    "name": "log_meal",
+                    "args": {"items": "香蕉、煎饼"},
+                    "id": "tool-123",
+                }
+            ],
+        },
+    )
+
+
+class FakeStaleInterruptAgent(FakeAgent):
+    """Pending write approval whose timestamp is far past the HITL timeout."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.actions: list = []
+
+    async def aget_state(self, config):
+        self.config = config
+        return SimpleNamespace(
+            tasks=[
+                SimpleNamespace(
+                    interrupts=[pending_write_interrupt("2020-01-01T00:00:00+00:00")]
+                )
+            ],
+        )
+
+    async def astream(self, action, *, config, stream_mode):
+        self.config = config
+        self.actions.append(action)
+        if isinstance(action, dict):
+            yield {"training": {"messages": [AIMessage(content="已记录训练")]}}
+
+
+class FakeFreshInterruptAgent(FakeStaleInterruptAgent):
+    """Pending write approval that is still within the HITL timeout."""
+
+    async def aget_state(self, config):
+        self.config = config
+        return SimpleNamespace(
+            tasks=[
+                SimpleNamespace(
+                    interrupts=[
+                        pending_write_interrupt(datetime.now(timezone.utc).isoformat())
+                    ]
+                )
+            ],
+        )
+
+
+class FakeReroutingCancelAgent(FakeStaleInterruptAgent):
+    """Cancel run that immediately re-interrupts once, then settles."""
+
+    async def astream(self, action, *, config, stream_mode):
+        self.config = config
+        self.actions.append(action)
+        if len(self.actions) == 1:
+            yield {
+                "__interrupt__": [
+                    SimpleNamespace(
+                        id="interrupt-456",
+                        value={"tool_calls": [{"name": "log_meal", "id": "tool-456"}]},
+                    )
+                ]
+            }
+        elif isinstance(action, dict):
+            yield {"training": {"messages": [AIMessage(content="已记录训练")]}}
 
 
 @pytest.mark.asyncio
@@ -613,6 +699,9 @@ async def test_chat_passes_complete_revision_reply_to_pending_interrupt(
     agent = FakeResumeAgent()
     api_module.app.state.agent = agent
     api_module.app.state.llm_config = object()
+    api_module.app.state.pending_reply_classifier = FakePendingReplyClassifier(
+        "approval_reply"
+    )
     api_module.user_sessions.clear()
     sink = InMemorySink()
 
@@ -641,6 +730,152 @@ async def test_chat_passes_complete_revision_reply_to_pending_interrupt(
         "interrupt.count": 1,
         "interrupt.ids": ["interrupt-123"],
     }
+
+
+@pytest.mark.asyncio
+async def test_chat_expires_stale_approval_and_routes_new_message_fresh(
+    monkeypatch, api_auth_headers
+):
+    """Breaks if a long-pending approval hijacks an unrelated fresh message."""
+
+    monkeypatch.setattr(api_module, "CallbackHandler", lambda **kwargs: object())
+    agent = FakeStaleInterruptAgent()
+    api_module.app.state.agent = agent
+    api_module.app.state.llm_config = object()
+    classifier = FakePendingReplyClassifier("approval_reply")
+    api_module.app.state.pending_reply_classifier = classifier
+    api_module.user_sessions.clear()
+    new_message = "我昨天练了 mace，5kg 100 次"
+
+    transport = httpx.ASGITransport(app=api_module.app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        headers=api_auth_headers,
+    ) as client:
+        response = await client.post(
+            "/chat", json={"user_id": "test-user", "message": new_message}
+        )
+
+    assert response.status_code == 200
+    body = response.json()["response"]
+    assert api_module.PENDING_WRITE_CANCELLED_NOTE in body
+    assert "已记录训练" in body
+    # Expiry short-circuits reply classification entirely.
+    assert classifier.calls == []
+    assert len(agent.actions) == 2
+    assert agent.actions[0].resume == {
+        "interrupt-123": {"cancelled": True, "feedback": "approval_expired"}
+    }
+    fresh_action = agent.actions[1]
+    assert isinstance(fresh_action, dict)
+    assert isinstance(fresh_action["messages"][0], HumanMessage)
+    assert fresh_action["messages"][0].content == new_message
+
+
+@pytest.mark.asyncio
+async def test_chat_cancels_pending_write_when_reply_starts_new_topic(
+    monkeypatch, api_auth_headers
+):
+    """Breaks if an on-topic-switch reply is swallowed by the meal approval."""
+
+    monkeypatch.setattr(api_module, "CallbackHandler", lambda **kwargs: object())
+    agent = FakeFreshInterruptAgent()
+    api_module.app.state.agent = agent
+    api_module.app.state.llm_config = object()
+    classifier = FakePendingReplyClassifier("new_request")
+    api_module.app.state.pending_reply_classifier = classifier
+    api_module.user_sessions.clear()
+    new_message = "我昨天练了 mace，5kg 100 次"
+    sink = InMemorySink()
+
+    transport = httpx.ASGITransport(app=api_module.app, raise_app_exceptions=False)
+    with observation_sink(sink):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+            headers=api_auth_headers,
+        ) as client:
+            response = await client.post(
+                "/chat", json={"user_id": "test-user", "message": new_message}
+            )
+
+    assert response.status_code == 200
+    body = response.json()["response"]
+    assert api_module.PENDING_WRITE_CANCELLED_NOTE in body
+    assert "已记录训练" in body
+    assert classifier.calls == [
+        (
+            new_message,
+            [
+                {
+                    "name": "log_meal",
+                    "args": {"items": "香蕉、煎饼"},
+                    "id": "tool-123",
+                }
+            ],
+        )
+    ]
+    classified = next(
+        observation
+        for observation in sink.observations
+        if observation.name == "hitl.reply_classified"
+    )
+    assert classified.attributes == {"hitl.reply.kind": "new_request"}
+    assert agent.actions[0].resume == {
+        "interrupt-123": {
+            "cancelled": True,
+            "feedback": "superseded_by_new_request",
+        }
+    }
+    fresh_action = agent.actions[1]
+    assert isinstance(fresh_action, dict)
+    assert fresh_action["messages"][0].content == new_message
+
+
+@pytest.mark.asyncio
+async def test_chat_cancel_retries_once_when_cancel_run_reinterrupts(
+    monkeypatch, api_auth_headers
+):
+    """Breaks if a re-interrupt during cancellation dangles the pending write."""
+
+    monkeypatch.setattr(api_module, "CallbackHandler", lambda **kwargs: object())
+    agent = FakeReroutingCancelAgent()
+    api_module.app.state.agent = agent
+    api_module.app.state.llm_config = object()
+    api_module.app.state.pending_reply_classifier = FakePendingReplyClassifier(
+        "approval_reply"
+    )
+    api_module.user_sessions.clear()
+    sink = InMemorySink()
+
+    transport = httpx.ASGITransport(app=api_module.app, raise_app_exceptions=False)
+    with observation_sink(sink):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+            headers=api_auth_headers,
+        ) as client:
+            response = await client.post(
+                "/chat",
+                json={"user_id": "test-user", "message": "我昨天练了 mace，5kg 100 次"},
+            )
+
+    assert response.status_code == 200
+    body = response.json()["response"]
+    assert api_module.PENDING_WRITE_CANCELLED_NOTE in body
+    assert "已记录训练" in body
+    # Cancel attempt, cancel retry, then the fresh routed message.
+    assert len(agent.actions) == 3
+    assert [type(action).__name__ for action in agent.actions] == [
+        "Command",
+        "Command",
+        "dict",
+    ]
+    assert any(
+        observation.name == "hitl.stale_cancel_retry"
+        for observation in sink.observations
+    )
 
 
 @pytest.mark.asyncio
@@ -982,6 +1217,11 @@ class _StructuredMemoryModel:
         return _StructuredMemoryRunnable()
 
 
+class _UnusedStructuredModel:
+    def with_structured_output(self, schema):
+        return object()
+
+
 class _UnusedSubgraph:
     async def ainvoke(self, state):
         raise AssertionError(f"unexpected specialist invocation: {state!r}")
@@ -1008,6 +1248,10 @@ def _patch_api_lifespan_dependencies(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         "agents.memory.agent.create_chat_model", lambda config: _StructuredMemoryModel()
+    )
+    monkeypatch.setattr(
+        "tools.safe_execution.create_chat_model",
+        lambda config: _UnusedStructuredModel(),
     )
     unused = _UnusedSubgraph()
     monkeypatch.setattr(

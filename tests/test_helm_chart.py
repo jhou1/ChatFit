@@ -1,5 +1,9 @@
+import json
+import os
 import shutil
 import subprocess
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +63,183 @@ def _resource(
         ]
     assert len(matches) == 1, (kind, component, matches)
     return matches[0]
+
+
+class _FakeKubeApiHandler(BaseHTTPRequestHandler):
+    """Answer the discovery endpoints helm consults for a client dry run.
+
+    helm only renders install notes client-side when it can build a Kubernetes
+    client; helm v3 additionally resolves REST mappings and probes for existing
+    resources. Unknown resource lookups answer with a Kubernetes-style 404 so
+    helm treats every chart object as new.
+    """
+
+    DISCOVERY_PAYLOADS: dict[str, dict[str, Any]] = {
+        "/version": {
+            "major": "1",
+            "minor": "31",
+            "gitVersion": "v1.31.0",
+            "gitCommit": "offline",
+            "gitTreeState": "clean",
+            "buildDate": "2026-01-01T00:00:00Z",
+            "goVersion": "go1.22",
+            "compiler": "gc",
+            "platform": "linux/amd64",
+        },
+        "/api": {
+            "kind": "APIVersions",
+            "versions": ["v1"],
+            "serverAddressByClientCIDRs": [
+                {"clientCIDR": "0.0.0.0/0", "serverAddress": "127.0.0.1"}
+            ],
+        },
+        "/api/v1": {
+            "kind": "APIResourceList",
+            "groupVersion": "v1",
+            "resources": [
+                {
+                    "name": name,
+                    "singularName": singular,
+                    "namespaced": True,
+                    "kind": kind,
+                    "verbs": ["create"],
+                }
+                for name, singular, kind in (
+                    ("configmaps", "configmap", "ConfigMap"),
+                    ("services", "service", "Service"),
+                    ("serviceaccounts", "serviceaccount", "ServiceAccount"),
+                    (
+                        "persistentvolumeclaims",
+                        "persistentvolumeclaim",
+                        "PersistentVolumeClaim",
+                    ),
+                    ("pods", "pod", "Pod"),
+                    ("secrets", "secret", "Secret"),
+                )
+            ],
+        },
+        "/apis": {
+            "kind": "APIGroupList",
+            "apiVersion": "v1",
+            "groups": [
+                {
+                    "name": "apps",
+                    "versions": [{"groupVersion": "apps/v1", "version": "v1"}],
+                    "preferredVersion": {"groupVersion": "apps/v1", "version": "v1"},
+                }
+            ],
+        },
+        "/apis/apps/v1": {
+            "kind": "APIResourceList",
+            "apiVersion": "v1",
+            "groupVersion": "apps/v1",
+            "resources": [
+                {
+                    "name": "deployments",
+                    "singularName": "deployment",
+                    "namespaced": True,
+                    "kind": "Deployment",
+                    "verbs": ["create"],
+                }
+            ],
+        },
+    }
+    NOT_FOUND = {
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": "the server could not find the requested resource",
+        "reason": "NotFound",
+        "code": 404,
+    }
+
+    def _send(self, status_code: int, payload: dict) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:  # noqa: N802 - http.server API
+        path = self.path.split("?", 1)[0]
+        if path in self.DISCOVERY_PAYLOADS:
+            self._send(200, self.DISCOVERY_PAYLOADS[path])
+        else:
+            self._send(404, self.NOT_FOUND)
+
+    def log_message(self, *args: Any) -> None:
+        del args
+
+
+def _start_fake_kube_api() -> ThreadingHTTPServer:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeKubeApiHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+@pytest.fixture
+def offline_helm_install(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """Keep helm install --dry-run=client renderable on machines without a cluster.
+
+    A machine that already has a kubeconfig keeps it; otherwise a loopback
+    server answers the Kubernetes discovery endpoints, and the test is skipped
+    if the installed helm still refuses to render offline.
+    """
+
+    configured = os.environ.get("KUBECONFIG")
+    if configured:
+        candidates = [Path(part).expanduser() for part in configured.split(":") if part]
+    else:
+        candidates = [Path.home() / ".kube" / "config"]
+    if any(candidate.is_file() for candidate in candidates):
+        yield
+        return
+
+    server = _start_fake_kube_api()
+    try:
+        kubeconfig = tmp_path / "offline-kubeconfig"
+        kubeconfig.write_text(
+            (
+                "apiVersion: v1\n"
+                "kind: Config\n"
+                "clusters:\n"
+                "- cluster:\n"
+                f"    server: http://127.0.0.1:{server.server_address[1]}\n"
+                "  name: offline\n"
+                "contexts:\n"
+                "- context:\n"
+                "    cluster: offline\n"
+                "    user: offline\n"
+                "  name: offline\n"
+                "current-context: offline\n"
+                "users:\n"
+                "- name: offline\n"
+                "  user: {}\n"
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("KUBECONFIG", str(kubeconfig))
+        probe = _helm(
+            "install",
+            RELEASE,
+            str(CHART),
+            "--namespace",
+            "chatfit",
+            "--dry-run=client",
+            "--disable-openapi-validation",
+            *REQUIRED_SET_ARGS,
+        )
+        if probe.returncode != 0:
+            pytest.skip(
+                "helm install --dry-run=client cannot render offline: "
+                f"{probe.stderr.strip()}"
+            )
+        yield
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 @pytest.mark.parametrize(
@@ -195,7 +376,9 @@ def test_api_is_an_exclusive_single_writer_with_internal_service() -> None:
     assert pod_spec["serviceAccountName"] == "contract-chatfit"
 
 
-def test_api_service_name_reserves_its_suffix_at_the_dns_label_boundary() -> None:
+def test_api_service_name_reserves_its_suffix_at_the_dns_label_boundary(
+    offline_helm_install,
+) -> None:
     fullname = "a" * 63
     resources = _render("--set-string", f"fullnameOverride={fullname}")
     service = _resource(resources, "Service", "api")
@@ -227,6 +410,7 @@ def test_api_service_name_reserves_its_suffix_at_the_dns_label_boundary() -> Non
         "--namespace",
         "chatfit",
         "--dry-run=client",
+        "--disable-openapi-validation",
         *REQUIRED_SET_ARGS,
         "--set-string",
         f"fullnameOverride={fullname}",
@@ -297,7 +481,9 @@ def test_empty_dir_storage_preserves_mount_contract_without_a_claim() -> None:
     }
 
 
-def test_empty_dir_install_notes_warn_about_data_deletion() -> None:
+def test_empty_dir_install_notes_warn_about_data_deletion(
+    offline_helm_install,
+) -> None:
     install = _helm(
         "install",
         RELEASE,
@@ -305,6 +491,7 @@ def test_empty_dir_install_notes_warn_about_data_deletion() -> None:
         "--namespace",
         "chatfit",
         "--dry-run=client",
+        "--disable-openapi-validation",
         *REQUIRED_SET_ARGS,
         "--set-string",
         "persistence.type=emptyDir",
@@ -322,7 +509,9 @@ def test_empty_dir_install_notes_warn_about_data_deletion() -> None:
     )
 
 
-def test_default_install_notes_keep_persistent_volume_claim_inspection() -> None:
+def test_default_install_notes_keep_persistent_volume_claim_inspection(
+    offline_helm_install,
+) -> None:
     install = _helm(
         "install",
         RELEASE,
@@ -330,6 +519,7 @@ def test_default_install_notes_keep_persistent_volume_claim_inspection() -> None
         "--namespace",
         "chatfit",
         "--dry-run=client",
+        "--disable-openapi-validation",
         *REQUIRED_SET_ARGS,
     )
 
