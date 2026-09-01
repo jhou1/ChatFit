@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -17,6 +18,45 @@ REQUIRED_SET_ARGS = (
     "--set",
     "existingSecret=chatfit-secrets",
 )
+
+# helm install --dry-run=client renders fully offline, but only when some
+# kubeconfig file exists; without one helm aborts before rendering. The
+# server below is never contacted by a client dry run.
+MINIMAL_OFFLINE_KUBECONFIG = """\
+apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: http://127.0.0.1:18080
+  name: offline
+contexts:
+- context:
+    cluster: offline
+    user: offline
+  name: offline
+current-context: offline
+users:
+- name: offline
+  user: {}
+"""
+
+
+@pytest.fixture(autouse=True)
+def offline_helm_kubeconfig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """Keep helm install --dry-run=client renderable on machines without a cluster."""
+
+    configured = os.environ.get("KUBECONFIG")
+    if configured:
+        candidates = [Path(part).expanduser() for part in configured.split(":") if part]
+    else:
+        candidates = [Path.home() / ".kube" / "config"]
+    if any(candidate.is_file() for candidate in candidates):
+        yield
+        return
+    fake_kubeconfig = tmp_path / "offline-kubeconfig"
+    fake_kubeconfig.write_text(MINIMAL_OFFLINE_KUBECONFIG, encoding="utf-8")
+    monkeypatch.setenv("KUBECONFIG", str(fake_kubeconfig))
+    yield
 
 
 def _helm(*args: str) -> subprocess.CompletedProcess[str]:
