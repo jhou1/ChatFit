@@ -66,7 +66,9 @@ flowchart LR
 | Context Governance | 压缩过长的短期对话历史；不负责长期记忆的增删改 |
 | Langfuse | 可选的运行轨迹、评分与生产质量观测 |
 
-更完整的设计参见 [系统架构](docs/architecture.md)。
+更完整的设计参见 [系统架构](docs/architecture.md)；交互式架构图见
+[docs/diagrams/chatfit-architecture.html](docs/diagrams/chatfit-architecture.html)
+（由 [archify](https://github.com/tt-a1i/archify) 生成，浏览器直接打开）。
 
 ## 快速开始
 
@@ -309,7 +311,9 @@ Langfuse 或 Telegram 服务。质量规范参见 [质量与验证](docs/quality
 
 ## EKS / Helm 部署
 
-在现有 Amazon EKS 集群上使用 ECR 镜像、EBS 持久卷和 Helm 部署 ChatFit 的完整操作说明，
+ChatFit 提供官方 Helm Chart，支持两种存储模式：`persistence.type=pvc`（EBS 持久卷，
+适合 EKS 等长期集群）和实验性 `persistence.type=emptyDir`（适合本地 Kind 冒烟测试）。
+在现有 Amazon EKS 集群上使用 ECR 镜像和 Helm 部署的完整操作说明，
 请参见 [部署指南](deploy/helm/chatfit/README.md)。
 
 ## Agent Evaluation (Agent 能力评测)
