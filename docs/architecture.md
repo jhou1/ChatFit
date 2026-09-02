@@ -4,6 +4,13 @@ ChatFit uses FastAPI and a LangGraph multi-agent graph. Training/meal business
 records, conversation checkpoints, and durable user memory have separate
 persistence roles and must resolve to distinct SQLite files.
 
+An interactive, self-contained architecture diagram (built with
+[archify](https://github.com/tt-a1i/archify)) is available at
+[docs/diagrams/chatfit-architecture.html](diagrams/chatfit-architecture.html).
+Its typed JSON source is
+[docs/diagrams/chatfit.architecture.json](diagrams/chatfit.architecture.json).
+The static overview below remains the canonical reference.
+
 ```mermaid
 flowchart TD
     User((Telegram user)) --> Bot[Telegram Bot]
