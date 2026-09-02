@@ -1,0 +1,934 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "ChatFit Architecture",
+    "subtitle": "Telegram fitness multi-agent on FastAPI + LangGraph",
+    "output": "chatfit-architecture.html",
+    "repository": {
+      "url": "https://github.com/jhou1/ChatFit",
+      "revision": "6984ebc9dcba0698e5c7fed47489871e1deeb1fc"
+    },
+    "views": [
+      {
+        "id": "chat-request",
+        "label": "Chat request",
+        "focus": [
+          "user",
+          "bot",
+          "api",
+          "load",
+          "gov",
+          "selector",
+          "training",
+          "meal",
+          "insights",
+          "chatter",
+          "memory_agent",
+          "refresh"
+        ],
+        "note": "One Telegram turn end-to-end: auth, routing, one specialist branch, single finalized response."
+      },
+      {
+        "id": "memory-lifecycle",
+        "label": "Memory lifecycle",
+        "focus": [
+          "memorydb",
+          "load",
+          "memory_agent",
+          "refresh"
+        ],
+        "note": "Fresh read on every request; only the Memory Agent mutates via explicit commands; refresh_memories performs the single final write."
+      },
+      {
+        "id": "persistence",
+        "label": "Persistence",
+        "focus": [
+          "checkpoint",
+          "memorydb",
+          "bizdb",
+          "chroma"
+        ],
+        "note": "Four separate persistence roles: thread checkpoints, durable user memory, business records, recipe vectors."
+      },
+      {
+        "id": "cross-cutting",
+        "label": "Cross-cutting",
+        "focus": [
+          "eval",
+          "langfuse",
+          "bot",
+          "api"
+        ],
+        "note": "Evaluation runs per-case isolated databases; Langfuse receives optional masked traces; JobQueue drives the 21:00 proactive review."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "Telegram User",
+      "pos": [
+        40,
+        150
+      ],
+      "size": [
+        120,
+        52
+      ]
+    },
+    {
+      "id": "bot",
+      "type": "frontend",
+      "label": "Telegram Bot",
+      "sublabel": "JobQueue 21:00 CST",
+      "brand": "telegram",
+      "pos": [
+        210,
+        147
+      ],
+      "size": [
+        145,
+        58
+      ],
+      "sources": [
+        {
+          "path": "bot.py"
+        }
+      ]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "FastAPI",
+      "sublabel": "/chat /clear /proactive-review",
+      "tag": "Bearer CHATFIT_API_TOKEN",
+      "brand": "fastapi",
+      "pos": [
+        420,
+        145
+      ],
+      "size": [
+        165,
+        62
+      ],
+      "sources": [
+        {
+          "path": "api.py"
+        }
+      ]
+    },
+    {
+      "id": "load",
+      "type": "backend",
+      "label": "load_memories",
+      "sublabel": "fresh read",
+      "pos": [
+        620,
+        64
+      ],
+      "size": [
+        150,
+        48
+      ],
+      "sources": [
+        {
+          "path": "agents/roles/supervisor.py",
+          "line": 446
+        }
+      ]
+    },
+    {
+      "id": "gov",
+      "type": "backend",
+      "label": "context_governance",
+      "sublabel": "summary compression",
+      "pos": [
+        850,
+        64
+      ],
+      "size": [
+        150,
+        48
+      ],
+      "sources": [
+        {
+          "path": "agents/roles/supervisor.py",
+          "line": 447
+        }
+      ]
+    },
+    {
+      "id": "selector",
+      "type": "backend",
+      "label": "assistant_selector",
+      "sublabel": "probabilistic router",
+      "pos": [
+        1080,
+        64
+      ],
+      "size": [
+        150,
+        48
+      ],
+      "sources": [
+        {
+          "path": "agents/roles/supervisor.py",
+          "line": 448
+        }
+      ]
+    },
+    {
+      "id": "training",
+      "type": "backend",
+      "label": "Training Agent",
+      "sublabel": "sessions · sets",
+      "pos": [
+        700,
+        170
+      ],
+      "size": [
+        155,
+        52
+      ],
+      "sources": [
+        {
+          "path": "agents/roles/training.py"
+        }
+      ]
+    },
+    {
+      "id": "meal",
+      "type": "backend",
+      "label": "Meal Agent",
+      "sublabel": "food logging",
+      "pos": [
+        877,
+        170
+      ],
+      "size": [
+        155,
+        52
+      ],
+      "sources": [
+        {
+          "path": "agents/roles/meal.py"
+        }
+      ]
+    },
+    {
+      "id": "insights",
+      "type": "backend",
+      "label": "Insights Agent",
+      "sublabel": "summaries",
+      "pos": [
+        1054,
+        170
+      ],
+      "size": [
+        155,
+        52
+      ],
+      "sources": [
+        {
+          "path": "agents/roles/insights.py"
+        }
+      ]
+    },
+    {
+      "id": "chatter",
+      "type": "backend",
+      "label": "Chatter Agent",
+      "sublabel": "general chat",
+      "pos": [
+        1231,
+        170
+      ],
+      "size": [
+        155,
+        52
+      ]
+    },
+    {
+      "id": "memory_agent",
+      "type": "backend",
+      "label": "Memory Agent",
+      "sublabel": "remember / update / forget",
+      "pos": [
+        1408,
+        170
+      ],
+      "size": [
+        155,
+        52
+      ],
+      "sources": [
+        {
+          "path": "agents/memory/agent.py"
+        }
+      ]
+    },
+    {
+      "id": "refresh",
+      "type": "backend",
+      "label": "refresh_memories",
+      "sublabel": "single final write",
+      "pos": [
+        985,
+        290
+      ],
+      "size": [
+        155,
+        46
+      ],
+      "sources": [
+        {
+          "path": "agents/roles/supervisor.py",
+          "line": 461
+        }
+      ]
+    },
+    {
+      "id": "checkpoint",
+      "type": "database",
+      "label": "checkpointer.db",
+      "sublabel": "thread state · interrupts",
+      "brand": "sqlite",
+      "pos": [
+        1610,
+        64
+      ],
+      "size": [
+        165,
+        58
+      ],
+      "sources": [
+        {
+          "path": "agents/checkpointing.py"
+        }
+      ]
+    },
+    {
+      "id": "memorydb",
+      "type": "database",
+      "label": "user-memory.db",
+      "sublabel": "durable explicit memory",
+      "brand": "sqlite",
+      "pos": [
+        620,
+        440
+      ],
+      "size": [
+        165,
+        58
+      ],
+      "sources": [
+        {
+          "path": "agents/memory/store.py"
+        }
+      ]
+    },
+    {
+      "id": "bizdb",
+      "type": "database",
+      "label": "iron.db",
+      "sublabel": "~/.iron business records",
+      "brand": "sqlite",
+      "pos": [
+        850,
+        440
+      ],
+      "size": [
+        160,
+        58
+      ]
+    },
+    {
+      "id": "chroma",
+      "type": "database",
+      "label": "Chroma",
+      "sublabel": "recipe vector index",
+      "pos": [
+        1050,
+        440
+      ],
+      "size": [
+        150,
+        52
+      ],
+      "sources": [
+        {
+          "path": "agents/rag.py"
+        }
+      ]
+    },
+    {
+      "id": "langfuse",
+      "type": "external",
+      "label": "Langfuse",
+      "sublabel": "masked traces · optional",
+      "pos": [
+        425,
+        300
+      ],
+      "size": [
+        145,
+        52
+      ],
+      "sources": [
+        {
+          "path": "agents/observability.py"
+        }
+      ]
+    },
+    {
+      "id": "eval",
+      "type": "external",
+      "label": "Evaluation Runner",
+      "sublabel": "per-case isolated DBs",
+      "pos": [
+        40,
+        440
+      ],
+      "size": [
+        165,
+        58
+      ],
+      "sources": [
+        {
+          "path": "evaluation/runner.py"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "LangGraph request · one turn",
+      "wraps": [
+        "load",
+        "gov",
+        "selector",
+        "training",
+        "meal",
+        "insights",
+        "chatter",
+        "memory_agent",
+        "refresh"
+      ],
+      "pad": 24
+    }
+  ],
+  "connections": [
+    {
+      "id": "user-to-bot",
+      "from": "user",
+      "to": "bot",
+      "label": "message"
+    },
+    {
+      "id": "bot-to-api",
+      "from": "bot",
+      "to": "api",
+      "label": "Bearer · /chat /clear",
+      "variant": "emphasis",
+      "labelAt": [
+        388,
+        132
+      ]
+    },
+    {
+      "id": "proactive",
+      "from": "bot",
+      "to": "api",
+      "label": "daily 21:00 /proactive-review",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "top",
+      "via": [
+        [
+          282.5,
+          109
+        ],
+        [
+          502.5,
+          109
+        ]
+      ],
+      "labelAt": [
+        392,
+        97
+      ]
+    },
+    {
+      "id": "api-to-graph",
+      "from": "api",
+      "to": "load",
+      "label": "thread_id + user_id",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          600,
+          176
+        ],
+        [
+          600,
+          88
+        ]
+      ],
+      "labelAt": [
+        555,
+        122
+      ]
+    },
+    {
+      "id": "load-to-gov",
+      "from": "load",
+      "to": "gov"
+    },
+    {
+      "id": "gov-to-selector",
+      "from": "gov",
+      "to": "selector"
+    },
+    {
+      "id": "route-training",
+      "from": "selector",
+      "to": "training",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [
+        [
+          1155,
+          140
+        ],
+        [
+          777.5,
+          140
+        ]
+      ]
+    },
+    {
+      "id": "route-meal",
+      "from": "selector",
+      "to": "meal",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [
+        [
+          1155,
+          140
+        ],
+        [
+          954.5,
+          140
+        ]
+      ]
+    },
+    {
+      "id": "route-insights",
+      "from": "selector",
+      "to": "insights",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [
+        [
+          1155,
+          140
+        ],
+        [
+          1131.5,
+          140
+        ]
+      ]
+    },
+    {
+      "id": "route-chatter",
+      "from": "selector",
+      "to": "chatter",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [
+        [
+          1155,
+          140
+        ],
+        [
+          1308.5,
+          140
+        ]
+      ]
+    },
+    {
+      "id": "route-memory",
+      "from": "selector",
+      "to": "memory_agent",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [
+        [
+          1155,
+          140
+        ],
+        [
+          1485.5,
+          140
+        ]
+      ]
+    },
+    {
+      "id": "training-to-refresh",
+      "from": "training",
+      "to": "refresh",
+      "fromSide": "bottom",
+      "toSide": "left",
+      "via": [
+        [
+          777.5,
+          313
+        ]
+      ]
+    },
+    {
+      "id": "meal-to-refresh",
+      "from": "meal",
+      "to": "refresh",
+      "fromSide": "bottom",
+      "toSide": "left",
+      "via": [
+        [
+          954.5,
+          313
+        ]
+      ]
+    },
+    {
+      "id": "insights-to-refresh",
+      "from": "insights",
+      "to": "refresh",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [
+        [
+          1131.5,
+          262
+        ],
+        [
+          1062.5,
+          262
+        ]
+      ]
+    },
+    {
+      "id": "chatter-to-refresh",
+      "from": "chatter",
+      "to": "refresh",
+      "fromSide": "bottom",
+      "toSide": "right",
+      "via": [
+        [
+          1308.5,
+          313
+        ]
+      ]
+    },
+    {
+      "id": "memory-to-refresh",
+      "from": "memory_agent",
+      "to": "refresh",
+      "fromSide": "bottom",
+      "toSide": "right",
+      "via": [
+        [
+          1485.5,
+          313
+        ]
+      ]
+    },
+    {
+      "id": "memory-fresh-read",
+      "from": "memorydb",
+      "to": "load",
+      "label": "fresh read",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "via": [
+        [
+          702.5,
+          400
+        ],
+        [
+          660,
+          400
+        ],
+        [
+          660,
+          130
+        ],
+        [
+          695,
+          130
+        ]
+      ],
+      "labelAt": [
+        660,
+        410
+      ]
+    },
+    {
+      "id": "training-to-bizdb",
+      "from": "training",
+      "to": "bizdb",
+      "label": "sessions · sets",
+      "toSide": "left",
+      "via": [
+        [
+          800,
+          196
+        ],
+        [
+          800,
+          469
+        ],
+        [
+          850,
+          469
+        ]
+      ],
+      "labelAt": [
+        838,
+        418
+      ]
+    },
+    {
+      "id": "meal-to-bizdb",
+      "from": "meal",
+      "to": "bizdb",
+      "label": "meals",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [
+        [
+          954.5,
+          410
+        ],
+        [
+          930,
+          410
+        ]
+      ],
+      "labelAt": [
+        900,
+        336
+      ]
+    },
+    {
+      "id": "meal-to-chroma",
+      "from": "meal",
+      "to": "chroma",
+      "label": "recipe RAG",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [
+        [
+          954.5,
+          352
+        ],
+        [
+          1125,
+          352
+        ]
+      ],
+      "labelAt": [
+        910,
+        300
+      ]
+    },
+    {
+      "id": "insights-to-bizdb",
+      "from": "insights",
+      "to": "bizdb",
+      "label": "reads history",
+      "fromSide": "right",
+      "toSide": "bottom",
+      "via": [
+        [
+          1218,
+          196
+        ],
+        [
+          1218,
+          530
+        ],
+        [
+          930,
+          530
+        ]
+      ],
+      "labelAt": [
+        1150,
+        518
+      ]
+    },
+    {
+      "id": "refresh-write",
+      "from": "refresh",
+      "to": "memorydb",
+      "label": "single final write",
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "via": [
+        [
+          1062.5,
+          368
+        ],
+        [
+          1035,
+          368
+        ],
+        [
+          1035,
+          560
+        ],
+        [
+          702.5,
+          560
+        ]
+      ],
+      "labelAt": [
+        868,
+        548
+      ]
+    },
+    {
+      "id": "memory-mutate",
+      "from": "memory_agent",
+      "to": "memorydb",
+      "label": "remember · update · forget",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          1572,
+          196
+        ],
+        [
+          1572,
+          575
+        ],
+        [
+          560,
+          575
+        ],
+        [
+          560,
+          469
+        ]
+      ],
+      "labelAt": [
+        1160,
+        594
+      ]
+    },
+    {
+      "id": "checkpoints",
+      "from": "load",
+      "to": "checkpoint",
+      "label": "checkpoints · interrupts",
+      "fromSide": "top",
+      "toSide": "top",
+      "via": [
+        [
+          695,
+          20
+        ],
+        [
+          1692.5,
+          20
+        ]
+      ],
+      "labelAt": [
+        1350,
+        52
+      ]
+    },
+    {
+      "id": "eval-runs",
+      "from": "eval",
+      "to": "load",
+      "label": "case runs · case_id",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          400,
+          469
+        ],
+        [
+          400,
+          88
+        ]
+      ],
+      "labelAt": [
+        300,
+        456
+      ]
+    },
+    {
+      "id": "traces",
+      "from": "api",
+      "to": "langfuse",
+      "label": "masked traces",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [
+        [
+          502.5,
+          250
+        ],
+        [
+          497.5,
+          250
+        ]
+      ],
+      "labelAt": [
+        548,
+        252
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Identity & state",
+      "items": [
+        "API auth (Bearer token) happens before any user_id may select a thread or memory owner",
+        "/clear rotates thread_id only — durable memory ownership is a stable hashed owner key",
+        "Four state layers: thread summary, checkpoint, business data, durable memory"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Durable memory contract",
+      "items": [
+        "Only explicit commands (记住 / 记下来 / 更新 / 忘掉) authorize a mutation",
+        "Specialists fresh-read memory for their own prompts; no competing state snapshots",
+        "refresh_memories performs the single final write after every branch, interrupt resume included"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Cross-cutting systems",
+      "items": [
+        "Evaluation: one business DB + one memory DB per case, case_id as thread and user identity",
+        "Observability: one trace_id per request; Langfuse receives optional masked traces",
+        "Proactive review: JobQueue calls /proactive-review daily at 21:00 Asia/Shanghai"
+      ]
+    }
+  ]
+}
