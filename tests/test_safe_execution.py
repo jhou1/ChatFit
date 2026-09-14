@@ -577,6 +577,7 @@ async def test_resumed_hitl_emits_resolved_revision_without_raw_reply(mock_inter
 @pytest.mark.parametrize(
     ("reply", "model_intent"),
     [
+        ("OK", "approve"),
         ("是的，请保存", "approve"),
         ("确认吧，按刚才的数据保存", "approve"),
         ("当然，就这样保存吧", "approve"),
@@ -609,41 +610,7 @@ async def test_approval_resolver_uses_structured_lm_semantics_for_every_reply(
     assert decision == ApprovalDecision(intent=model_intent, feedback=reply)
     assert captured["schema"] is ApprovalIntentModel
     assert reply in captured["messages"][1].content
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "reply",
-    [
-        "OK",
-        "ok.",
-        "Okay!",
-        "好的",
-        "可以的。",
-        "没问题！",
-        "确认。",
-    ],
-)
-@patch("tools.safe_execution._execute_llm_query_safely")
-@patch("tools.safe_execution.create_chat_model")
-async def test_approval_resolver_approves_high_confidence_pure_ack_without_llm(
-    mock_create_chat_model, mock_execute, reply
-):
-    """Breaks if a plain 'OK' is treated as unclear and blocks the write."""
-
-    decision = await ApprovalResolver(Mock()).resolve(
-        reply,
-        [
-            {
-                "name": "log_training_session",
-                "args": {"weight": 16.0},
-                "id": "pending-training",
-            }
-        ],
-    )
-
-    assert decision == ApprovalDecision(intent="approve", feedback=reply)
-    mock_execute.assert_not_awaited()
+    assert "OK" in captured["messages"][0].content
 
 
 @pytest.mark.asyncio
@@ -651,6 +618,7 @@ async def test_approval_resolver_approves_high_confidence_pure_ack_without_llm(
 @pytest.mark.parametrize(
     ("reply", "expected_intent"),
     [
+        ("OK", "approve"),
         ("是的", "approve"),
         ("确认吧，按刚才的数据保存", "approve"),
         ("当然，就这样保存吧", "approve"),
@@ -1086,6 +1054,8 @@ async def test_cancelled_hitl_emits_stale_cancelled_without_execution(mock_inter
 @pytest.mark.parametrize(
     ("reply", "expected_kind"),
     [
+        ("OK", "approval_reply"),
+        ("好的", "approval_reply"),
         ("是的，就这样保存", "approval_reply"),
         ("保存，但重量改成 14kg", "approval_reply"),
         ("先别保存", "approval_reply"),
@@ -1121,66 +1091,7 @@ async def test_pending_reply_classifier_uses_structured_lm_semantics(
     assert captured["schema"] is PendingReplyKind
     assert reply in captured["messages"][1].content
     assert "log_meal" in captured["messages"][1].content
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "reply",
-    [
-        "OK",
-        "ok.",
-        "Okay!",
-        "好的",
-        "可以的。",
-        "没问题！",
-        "确认。",
-    ],
-)
-@patch("tools.safe_execution._execute_llm_query_safely")
-@patch("tools.safe_execution.create_chat_model")
-async def test_pending_reply_classifier_treats_high_confidence_pure_ack_as_reply(
-    mock_create_chat_model, mock_execute, reply
-):
-    """Breaks if plain acknowledgements are discarded as unrelated small talk."""
-
-    classifier = PendingReplyClassifier(Mock())
-
-    kind = await classifier.classify(
-        reply, [{"name": "log_meal", "args": {"items": "香蕉"}, "id": "meal-1"}]
-    )
-
-    assert kind == "approval_reply"
-    mock_execute.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "reply",
-    [
-        "OK？",
-        "OK，但重量改成 14kg",
-        "OK，先别保存",
-        "好的，备注肩膀不舒服",
-    ],
-)
-@patch("tools.safe_execution._execute_llm_query_safely")
-@patch("tools.safe_execution.create_chat_model")
-async def test_pending_reply_classifier_still_uses_semantics_for_non_pure_ack(
-    mock_create_chat_model, mock_execute, reply
-):
-    """Breaks if the fast path approves modified or declined writes."""
-
-    mock_execute.return_value = {
-        "messages": PendingReplyKind(kind="approval_reply").model_dump()
-    }
-    classifier = PendingReplyClassifier(Mock())
-
-    kind = await classifier.classify(
-        reply, [{"name": "log_meal", "args": {"items": "香蕉"}, "id": "meal-1"}]
-    )
-
-    assert kind == "approval_reply"
-    mock_execute.assert_awaited_once()
+    assert "standalone acknowledgement" in captured["messages"][0].content
 
 
 @pytest.mark.asyncio
