@@ -577,8 +577,9 @@ async def test_resumed_hitl_emits_resolved_revision_without_raw_reply(mock_inter
 @pytest.mark.parametrize(
     ("reply", "model_intent"),
     [
-        ("是的", "approve"),
-        ("确认保存", "approve"),
+        ("OK", "approve"),
+        ("是的，请保存", "approve"),
+        ("确认吧，按刚才的数据保存", "approve"),
         ("当然，就这样保存吧", "approve"),
         ("是的，但重量改成 14kg", "revise"),
         ("先别保存", "reject"),
@@ -609,6 +610,7 @@ async def test_approval_resolver_uses_structured_lm_semantics_for_every_reply(
     assert decision == ApprovalDecision(intent=model_intent, feedback=reply)
     assert captured["schema"] is ApprovalIntentModel
     assert reply in captured["messages"][1].content
+    assert "OK" in captured["messages"][0].content
 
 
 @pytest.mark.asyncio
@@ -616,8 +618,9 @@ async def test_approval_resolver_uses_structured_lm_semantics_for_every_reply(
 @pytest.mark.parametrize(
     ("reply", "expected_intent"),
     [
+        ("OK", "approve"),
         ("是的", "approve"),
-        ("确认保存", "approve"),
+        ("确认吧，按刚才的数据保存", "approve"),
         ("当然，就这样保存吧", "approve"),
         ("是的，但重量改成 14kg", "revise"),
         ("先别保存", "reject"),
@@ -664,7 +667,7 @@ async def test_live_google_approval_resolver_understands_reply_semantics(
         "对，但重量是 14kg",
         "好的，同时备注肩膀不舒服",
         "确认？",
-        "保存...",
+        "请保存这份记录",
     ],
 )
 @patch("tools.safe_execution._execute_llm_query_safely")
@@ -682,7 +685,9 @@ async def test_approval_resolver_sends_reply_to_classifier(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reply", ["确认保存", "是的", "当然，就这样保存吧"])
+@pytest.mark.parametrize(
+    "reply", ["是的，就这样保存", "当然，就这样保存吧", "确认吧，按刚才的数据保存"]
+)
 @patch("tools.safe_execution.interrupt")
 @patch("tools.safe_execution._execute_single_tool_safely")
 @patch("tools.safe_execution._execute_llm_query_safely")
@@ -1049,7 +1054,9 @@ async def test_cancelled_hitl_emits_stale_cancelled_without_execution(mock_inter
 @pytest.mark.parametrize(
     ("reply", "expected_kind"),
     [
-        ("确认保存", "approval_reply"),
+        ("OK", "approval_reply"),
+        ("好的", "approval_reply"),
+        ("是的，就这样保存", "approval_reply"),
         ("保存，但重量改成 14kg", "approval_reply"),
         ("先别保存", "approval_reply"),
         ("我昨天练了 mace，5kg 100 次", "new_request"),
@@ -1084,6 +1091,7 @@ async def test_pending_reply_classifier_uses_structured_lm_semantics(
     assert captured["schema"] is PendingReplyKind
     assert reply in captured["messages"][1].content
     assert "log_meal" in captured["messages"][1].content
+    assert "standalone acknowledgement" in captured["messages"][0].content
 
 
 @pytest.mark.asyncio
