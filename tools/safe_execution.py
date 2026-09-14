@@ -1,5 +1,6 @@
 import asyncio
 import json
+import unicodedata
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Protocol, Sequence
@@ -28,6 +29,47 @@ TRUNCATE_WARNINGS = "\n[OUTPUT TRUNCATED - the tool returned more data than can 
 HITL_TIMEOUT_SECONDS = 300.0  # 5 minutes for human-in-the-loop timeout
 HITL_TOOL_CALLS = ["log_training_session", "log_meal"]
 
+# A small high-confidence fast path for standalone acknowledgements. It protects
+# short, culture-common replies such as "OK" from being mistaken for small talk
+# by the LLM route; anything longer or modified still goes through semantics.
+PURE_APPROVAL_PHRASES = frozenset(
+    {
+        "ok",
+        "okay",
+        "yes",
+        "yeah",
+        "yep",
+        "yup",
+        "sure",
+        "confirm",
+        "confirmed",
+        "approve",
+        "approved",
+        "sounds good",
+        "looks good",
+        "go ahead",
+        "please do",
+        "save",
+        "save it",
+        "好",
+        "好的",
+        "好啊",
+        "好呀",
+        "行",
+        "行的",
+        "可以",
+        "可以的",
+        "没问题",
+        "确认",
+        "确认保存",
+        "同意",
+        "保存",
+        "保存吧",
+        "就这样保存",
+        "就这样保存吧",
+    }
+)
+
 
 class ApprovalDecision(BaseModel):
     intent: Literal["approve", "revise", "reject"]
@@ -44,6 +86,22 @@ class ApprovalIntentModel(BaseModel):
     intent: Literal["approve", "revise", "reject"]
 
 
+def _is_pure_approval_reply(user_message: str) -> bool:
+    """Return true only for a standalone acknowledgement with no new data."""
+
+    normalized = unicodedata.normalize("NFKC", user_message).casefold().strip()
+    if "?" in normalized or "？" in normalized:
+        return False
+    normalized = " ".join(
+        "".join(
+            character
+            for character in normalized
+            if character.isalnum() or character.isspace()
+        ).split()
+    )
+    return normalized in PURE_APPROVAL_PHRASES
+
+
 class ApprovalResolver:
     def __init__(self, llm_config: LLMConfig):
         chat_model = create_chat_model(llm_config)
@@ -52,6 +110,8 @@ class ApprovalResolver:
     async def resolve(
         self, user_message: str, pending_tool_calls: list[dict]
     ) -> ApprovalDecision:
+        if _is_pure_approval_reply(user_message):
+            return ApprovalDecision(intent="approve", feedback=user_message)
         instruction = (
             "Semantically classify a reply to a pending database-write approval. "
             "Judge the reply's meaning rather than matching exact words. Choose "
@@ -89,16 +149,20 @@ class PendingReplyClassifier:
         self.llm = chat_model.with_structured_output(PendingReplyKind)
 
     async def classify(self, user_message: str, pending_tool_calls: list[dict]) -> str:
+        if _is_pure_approval_reply(user_message):
+            return "approval_reply"
         instruction = (
             "The assistant has asked the user to approve pending database writes. "
             "Classify the user's latest message. Choose approval_reply when the "
             "message responds to that approval request in any way: accepting it "
             "(e.g. 是的, 确认保存, sounds good), declining or postponing it (e.g. 取消, "
             "先别保存), or correcting and supplementing the pending data (e.g. 保存，"
-            "但重量改成 14kg). Choose new_request when the message introduces an "
-            "unrelated new topic or request (a workout, a meal, a question, small "
-            "talk) and does not address the pending approval at all. When in doubt, "
-            "choose approval_reply."
+            "但重量改成 14kg). Treat a standalone acknowledgement such as OK, "
+            "okay, or 好 as approval_reply rather than small talk. Choose "
+            "new_request when the message introduces an unrelated new topic or "
+            "request (a workout, a meal, a question, small talk) and does not "
+            "address the pending approval at all. When in doubt, choose "
+            "approval_reply."
         )
         context = json.dumps(pending_tool_calls, ensure_ascii=False, default=str)
         classifier_messages = [
