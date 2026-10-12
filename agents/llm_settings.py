@@ -51,14 +51,14 @@ def resolve_llm_config_from_env(
         api_key = _required_value(values, "GLM_API_KEY")
     model_name = _required_value(values, "LLM_MODEL")
 
-    missing = []
-    if base_url is None:
-        missing.append("LLM_API_BASE_URL")
-    if api_key is None:
-        missing.append("LLM_API_KEY (or GLM_API_KEY)")
-    if model_name is None:
-        missing.append("LLM_MODEL")
-    if missing:
+    if base_url is None or api_key is None or model_name is None:
+        missing = []
+        if base_url is None:
+            missing.append("LLM_API_BASE_URL")
+        if api_key is None:
+            missing.append("LLM_API_KEY (or GLM_API_KEY)")
+        if model_name is None:
+            missing.append("LLM_MODEL")
         names = ", ".join(missing)
         raise ValueError(f"{names} must be set and non-empty")
 

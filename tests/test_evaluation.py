@@ -594,6 +594,49 @@ async def test_llm_judge_scores_real_supplied_input_and_output():
 
 
 @pytest.mark.asyncio
+async def test_llm_judge_uses_shared_platform_agnostic_configuration(monkeypatch):
+    class FakeJudge:
+        async def ainvoke(self, messages):
+            del messages
+            return AIMessage(
+                content='{"evaluations": [{"dimension": "Tone", "evidence": "Supportive", "score": 5, "weight": 1.0}], "overall_weighted_score": 5.0}'
+            )
+
+    captured = {}
+
+    def fake_create_chat_model(config):
+        captured["config"] = config
+        return FakeJudge()
+
+    for name in ("LLM_API_BASE_URL", "LLM_API_KEY", "GLM_API_KEY", "LLM_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("LLM_API_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("GLM_API_KEY", "glm-key")
+    monkeypatch.setenv("LLM_MODEL", "glm-4.5")
+    monkeypatch.setattr("scripts.llm_judge.create_chat_model", fake_create_chat_model)
+
+    result = await evaluate_trace(
+        "trace-123",
+        "I completed my workout",
+        "Your session was saved.",
+        [
+            {
+                "dimension_name": "Tone",
+                "criteria_description": "d",
+                "evidence_requirement": "e",
+                "weight": 1.0,
+            }
+        ],
+    )
+
+    assert result.overall_weighted_score == 5.0
+    assert captured["config"].provider == "openai_compatible"
+    assert captured["config"].base_url == "https://api.example.com/v1"
+    assert captured["config"].model_name == "glm-4.5"
+    assert captured["config"].api_key == "glm-key"
+
+
+@pytest.mark.asyncio
 async def test_llm_judge_logs_score_export_failure_without_request_content(
     caplog: pytest.LogCaptureFixture,
 ):

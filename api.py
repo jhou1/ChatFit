@@ -18,6 +18,7 @@ from langgraph.types import Command
 
 from agents.checkpointing import ObservedAsyncSqliteSaver
 from agents.llm_factory import LLMConfig, create_chat_model
+from agents.llm_settings import resolve_llm_config_from_env
 from agents.memory.agent import LLMMemoryInterpreter
 from agents.memory.config import (
     require_distinct_sqlite_files,
@@ -203,18 +204,7 @@ async def startup_event(fastapi_app: FastAPI):
     langfuse_client = create_langfuse_client()
     fastapi_app.state.langfuse_client = langfuse_client
 
-    llm_proxy = os.environ.get("LLM_PROXY", None)
-    kwargs = {}
-    if llm_proxy:
-        kwargs["client_args"] = {"proxy": llm_proxy}
-
-    llm_config = LLMConfig(
-        provider="google",
-        model_name="gemini-3.5-flash",
-        temperature=0.5,
-        max_tokens=8192,
-        kwargs=kwargs,
-    )
+    llm_config = resolve_llm_config_from_env()
 
     db_path = str(business_db)
 

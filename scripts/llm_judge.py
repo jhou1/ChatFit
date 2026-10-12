@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from agents.llm_factory import LLMConfig, create_chat_model
+from agents.llm_factory import create_chat_model
+from agents.llm_settings import resolve_llm_config_from_env
 from agents.utils import extract_text
 
 logger = logging.getLogger(__name__)
@@ -97,8 +98,8 @@ async def evaluate_trace(
         raise ValueError("Rubrics cannot be empty")
 
     if judge_llm is None:
-        llm_config = LLMConfig(
-            provider="google", model_name="gemini-3.5-flash", temperature=0.0
+        llm_config = resolve_llm_config_from_env().model_copy(
+            update={"temperature": 0.0}
         )
         judge_llm = create_chat_model(llm_config)
 
