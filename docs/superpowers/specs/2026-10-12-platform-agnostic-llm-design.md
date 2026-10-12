@@ -19,4 +19,3 @@ Voice transcription and photo OCR remain Gemini-specific. Their provider boundar
 ## Compatibility and Deployment
 
 Existing programmatic `LLMConfig` uses remain valid. Runtime deployments must migrate from a chat-only `GOOGLE_API_KEY` to the three canonical chat variables (or canonical endpoint/model plus `GLM_API_KEY`). Compose, `.env.example`, README guidance, and Helm API deployment configuration expose those variables. The Bot continues to receive `GOOGLE_API_KEY` for Gemini media parsing.
-
