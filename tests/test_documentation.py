@@ -221,12 +221,37 @@ def test_readme_host_curl_passes_configured_bearer_token(shell, tmp_path) -> Non
     assert "Authorization: Bearer readme-secret" in command_log
 
 
-def test_env_example_documents_generic_chat_llm_and_gemini_media() -> None:
+def test_env_example_documents_generic_chat_and_optional_media_apis() -> None:
     example = (README.parent / ".env.example").read_text(encoding="utf-8")
 
     for name in ("LLM_API_BASE_URL", "LLM_API_KEY", "GLM_API_KEY", "LLM_MODEL"):
         assert name in example
-    assert "GOOGLE_API_KEY" in example
+    for name in (
+        "VOICE_API_BASE_URL",
+        "VOICE_API_KEY",
+        "VOICE_API_MODEL",
+        "OCR_API_BASE_URL",
+        "OCR_API_KEY",
+        "OCR_API_MODEL",
+    ):
+        assert name in example
+    assert "GOOGLE_API_KEY" not in example
+
+
+def test_readme_documents_independent_optional_media_apis() -> None:
+    readme = README.read_text(encoding="utf-8")
+
+    for name in (
+        "VOICE_API_BASE_URL",
+        "VOICE_API_KEY",
+        "VOICE_API_MODEL",
+        "OCR_API_BASE_URL",
+        "OCR_API_KEY",
+        "OCR_API_MODEL",
+    ):
+        assert name in readme
+    assert "GOOGLE_API_KEY" not in readme
+    assert "未配置时会禁用对应的语音或图片输入" in readme
 
 
 @pytest.mark.parametrize("shell", INTERACTIVE_SHELLS, ids=lambda path: Path(path).name)

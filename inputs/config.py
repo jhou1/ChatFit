@@ -16,9 +16,6 @@ class MediaSettings:
     media_parse_concurrency: int = 4
     provider_timeout_seconds: float = 45.0
     provider_max_retries: int = 2
-    speech_provider: str = "gemini"
-    image_provider: str = "gemini"
-    gemini_media_model: str = ""
     ephemeral_directory: Path = default_ephemeral_directory()
 
     @classmethod
@@ -36,9 +33,6 @@ class MediaSettings:
                 os.getenv("MEDIA_PROVIDER_TIMEOUT_SECONDS", "45.0")
             ),
             provider_max_retries=int(os.getenv("MEDIA_PROVIDER_MAX_RETRIES", "2")),
-            speech_provider=os.getenv("SPEECH_PROVIDER", "gemini"),
-            image_provider=os.getenv("IMAGE_PROVIDER", "gemini"),
-            gemini_media_model=os.getenv("GEMINI_MEDIA_MODEL", ""),
             ephemeral_directory=Path(
                 os.getenv(
                     "MEDIA_EPHEMERAL_DIRECTORY", str(default_ephemeral_directory())
