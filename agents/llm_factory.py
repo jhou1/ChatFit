@@ -9,7 +9,7 @@ from langchain_anthropic import ChatAnthropic
 
 
 class LLMConfig(BaseModel):
-    provider: Literal["openai", "google", "anthropic", "local"]
+    provider: Literal["openai", "openai_compatible", "google", "anthropic", "local"]
     base_url: Optional[str] = None
     model_name: str
     api_key: Optional[str] = None
@@ -20,6 +20,7 @@ class LLMConfig(BaseModel):
 
 provider_classes = {
     "openai": ChatOpenAI,
+    "openai_compatible": ChatOpenAI,
     "google": ChatGoogleGenerativeAI,
     "anthropic": ChatAnthropic,
     "local": ChatOpenAI,

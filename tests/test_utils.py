@@ -68,6 +68,17 @@ def test_create_local_chat_client():
     assert getattr(model, "openai_api_base", None) == "http://localhost:11434/v1"
 
 
+def test_create_openai_compatible_chat_client():
+    llm_config = LLMConfig(
+        provider="openai_compatible",
+        base_url="https://api.example.com/v1",
+        api_key="api",
+        model_name="glm-4.5",
+    )
+    model = create_chat_model(llm_config)
+    assert getattr(model, "openai_api_base", None) == "https://api.example.com/v1"
+
+
 def test_create_unsupported_chat_client():
     import pytest
     from pydantic import ValidationError
