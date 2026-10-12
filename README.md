@@ -21,7 +21,7 @@ ChatFit 是一个基于自然语言交互的个人训练与饮食助手。用户
 - 待确认期间收到与审批无关的新消息（例如新训练或饮食描述）时，配置的 LM 会先分类该消息：确认是无关的新请求后，取消待写入并将新消息作为全新输入重新路由，不会再被上一次确认吞掉。
 - 长对话自动压缩历史上下文，保留重要训练和饮食信息
 - 支持用户显式记住、更新和忘掉长期偏好；目标不明确时先澄清，不会猜测后写入
-- 支持 Google、OpenAI、Anthropic 以及 OpenAI-compatible 本地模型
+- 聊天 Agent 默认接入任意 OpenAI-compatible API；语音转写和图片 OCR 继续使用 Gemini
 - 可选接入 Langfuse 进行 Agent 链路追踪和质量评估
 - 使用脱敏的结构化 trace 重建 Agent、LLM、工具、HITL 和 checkpoint 执行路径
 
@@ -76,7 +76,8 @@ flowchart LR
 
 - Docker Compose 或 Podman Compose
 - 一个由 [BotFather](https://t.me/BotFather) 创建的 Telegram Bot Token
-- Google Gemini API Key（当前 API 默认使用 Google Provider）
+- 一个支持 tool calling 与结构化输出的 OpenAI-compatible Chat API
+- Google Gemini API Key（Telegram Bot 的语音转写与图片 OCR provider）
 - API 与 Bot 共享的独立随机 `CHATFIT_API_TOKEN`
 - 可选：本地 SOCKS5 代理和 Langfuse 账号
 
@@ -89,10 +90,16 @@ cp .env.example .env
 编辑 `.env`，至少设置：
 
 ```dotenv
+LLM_API_BASE_URL=https://your-openai-compatible-endpoint/v1
+LLM_API_KEY=your-chat-api-key
+LLM_MODEL=glm-4.5
 GOOGLE_API_KEY=your-google-api-key
 TELEGRAM_BOT_TOKEN=your-telegram-bot-token
 CHATFIT_API_TOKEN=replace-with-an-independent-random-secret
 ```
+
+`LLM_API_KEY` 是聊天模型的推荐变量；`GLM_API_KEY` 可作为 GLM 部署的兼容别名。
+语音转写与图片 OCR 仍使用 `GOOGLE_API_KEY`，与聊天模型凭据分开配置。
 
 Compose 会通过 `env_file` 把 `.env` 注入 API 与 Bot 容器。编辑 `.env` 不会让直接在
 宿主机启动的 `api.py` 自动加载这些变量；宿主机命令需要先 `source`/`export`，或使用
@@ -102,6 +109,11 @@ Compose 会通过 `env_file` 把 `.env` 注入 API 与 Bot 容器。编辑 `.env
 
 | 变量 | 说明 |
 | --- | --- |
+| `LLM_API_BASE_URL` | 必填；OpenAI-compatible Chat API 的 base URL |
+| `LLM_API_KEY` | 必填；聊天 API key。为空时可由 `GLM_API_KEY` 提供 |
+| `LLM_MODEL` | 必填；聊天模型名称 |
+| `LLM_TEMPERATURE` | 可选；聊天模型温度，默认 `0.5` |
+| `LLM_MAX_TOKENS` | 可选；聊天模型最大输出 token，默认 `8192` |
 | `TELEGRAM_PROXY` | Telegram Bot 使用的 SOCKS5 代理 |
 | `LLM_PROXY` | LLM 请求使用的代理 |
 | `LANGFUSE_HOST` | Langfuse 服务地址 |
@@ -274,8 +286,11 @@ uv sync --dev
 set -a
 source .env
 set +a
-if [ -z "${GOOGLE_API_KEY:-}" ] || [ -z "${CHATFIT_API_TOKEN:-}" ]; then
-  echo "GOOGLE_API_KEY and CHATFIT_API_TOKEN must both be set in .env." >&2
+if [ -z "${LLM_API_BASE_URL:-}" ] ||
+  { [ -z "${LLM_API_KEY:-}" ] && [ -z "${GLM_API_KEY:-}" ]; } ||
+  [ -z "${LLM_MODEL:-}" ] ||
+  [ -z "${CHATFIT_API_TOKEN:-}" ]; then
+  echo "LLM_API_BASE_URL, LLM_API_KEY (or GLM_API_KEY), LLM_MODEL, and CHATFIT_API_TOKEN must all be set in .env." >&2
 else
   mkdir -p runtime-data
   export CHECKPOINTER_DB_PATH=./runtime-data/checkpointer.db
@@ -455,7 +470,6 @@ ChatFit/
 
 ## Roadmap
 
-- 将 LLM Provider 和模型选择完全配置化
 - 增加容器健康检查与生产就绪探针
 - 支持更多消息入口，例如微信
 - 扩展训练、营养和恢复指标

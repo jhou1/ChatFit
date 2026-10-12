@@ -7,6 +7,8 @@ metadata:
     {{- include "chatfit.labels" . | nindent 4 }}
 data:
   TZ: {{ .Values.config.timezone | quote }}
+  LLM_API_BASE_URL: {{ .Values.config.llmApiBaseUrl | quote }}
+  LLM_MODEL: {{ .Values.config.llmModel | quote }}
   PROACTIVE_REVIEWS_ENABLED: {{ .Values.config.proactiveReviewsEnabled | quote }}
   TELEGRAM_CHAT_ID: {{ .Values.config.telegramChatId | quote }}
   VOICE_MAX_DURATION_SECONDS: {{ .Values.config.voiceMaxDurationSeconds | quote }}

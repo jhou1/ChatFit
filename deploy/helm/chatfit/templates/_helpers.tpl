@@ -59,6 +59,8 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "chatfit.validateValues" -}}
 {{- $_ := include "chatfit.image" . -}}
 {{- $_ := required "existingSecret is required" .Values.existingSecret -}}
+{{- $_ := required "config.llmApiBaseUrl is required" .Values.config.llmApiBaseUrl -}}
+{{- $_ := required "config.llmModel is required" .Values.config.llmModel -}}
 {{- $persistenceType := .Values.persistence.type -}}
 {{- if not (or (eq $persistenceType "pvc") (eq $persistenceType "emptyDir")) -}}
 {{- fail "persistence.type must be one of: pvc, emptyDir" -}}

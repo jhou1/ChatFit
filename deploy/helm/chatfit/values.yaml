@@ -19,6 +19,8 @@ persistence:
   keep: true
 config:
   timezone: Asia/Shanghai
+  llmApiBaseUrl: ""
+  llmModel: ""
   proactiveReviewsEnabled: false
   telegramChatId: ""
   voiceMaxDurationSeconds: 180
@@ -34,6 +36,7 @@ config:
   langfuseHost: https://cloud.langfuse.com
   langfuseCaptureContent: false
 secretKeys:
+  llmApiKey: LLM_API_KEY
   googleApiKey: GOOGLE_API_KEY
   telegramBotToken: TELEGRAM_BOT_TOKEN
   chatfitApiToken: CHATFIT_API_TOKEN

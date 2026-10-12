@@ -70,6 +70,16 @@ uses the fixed owner `local-cli`. Evaluation uses `case_id` for both thread and
 user identity inside a case, while every case gets its own temporary business
 and memory database files.
 
+## Model-provider boundary
+
+Chat agents use the OpenAI-compatible runtime selected by
+`LLM_API_BASE_URL`, `LLM_API_KEY` (or the GLM compatibility alias
+`GLM_API_KEY`), and `LLM_MODEL`. API, CLI, and LLM-judge startup share one
+resolver so the same provider configuration cannot drift between entry points.
+The endpoint must support tool calling and structured output. Gemini remains
+the explicit provider for Telegram voice transcription and photo OCR; those
+media paths do not inherit the chat-model endpoint.
+
 ## Four state layers
 
 | Layer | Stored in | Purpose | Lifetime and clear behavior |

@@ -56,7 +56,8 @@ def _run_interactively(
     command_log = working_dir / "commands.log"
     env = os.environ.copy()
     env.pop("CHATFIT_API_TOKEN", None)
-    env.pop("GOOGLE_API_KEY", None)
+    for name in ("LLM_API_BASE_URL", "LLM_API_KEY", "GLM_API_KEY", "LLM_MODEL"):
+        env.pop(name, None)
     env.update(
         {
             "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
@@ -113,6 +114,8 @@ def _run_helm_readme_install_block(
             "IMAGE_REPOSITORY": "chatfit",
             "IMAGE_URI": "123456789012.dkr.ecr.us-east-1.amazonaws.com/chatfit",
             "IMAGE_TAG": "documentation-test",
+            "LLM_API_BASE_URL": "https://api.example.com/v1",
+            "LLM_MODEL": "glm-4.5",
         }
     )
     result = subprocess.run(
@@ -149,6 +152,8 @@ def test_helm_readme_persistent_mode_installs_with_pvc(tmp_path) -> None:
     assert "image.tag=documentation-test" in install
     assert "existingSecret=chatfit-secrets" in install
     assert "persistence.type=pvc" in install
+    assert "config.llmApiBaseUrl=https://api.example.com/v1" in install
+    assert "config.llmModel=glm-4.5" in install
     assert "image.pullPolicy=Never" not in install
 
 
@@ -167,6 +172,8 @@ def test_helm_readme_experimental_emptydir_installs_loaded_image(tmp_path) -> No
     assert "image.pullPolicy=Never" in install
     assert "existingSecret=chatfit-secrets" in install
     assert "persistence.type=emptyDir" in install
+    assert "config.llmApiBaseUrl=https://api.example.com/v1" in install
+    assert "config.llmModel=glm-4.5" in install
 
 
 @pytest.mark.parametrize("shell", INTERACTIVE_SHELLS, ids=lambda path: Path(path).name)
@@ -214,25 +221,47 @@ def test_readme_host_curl_passes_configured_bearer_token(shell, tmp_path) -> Non
     assert "Authorization: Bearer readme-secret" in command_log
 
 
+def test_env_example_documents_generic_chat_llm_and_gemini_media() -> None:
+    example = (README.parent / ".env.example").read_text(encoding="utf-8")
+
+    for name in ("LLM_API_BASE_URL", "LLM_API_KEY", "GLM_API_KEY", "LLM_MODEL"):
+        assert name in example
+    assert "GOOGLE_API_KEY" in example
+
+
 @pytest.mark.parametrize("shell", INTERACTIVE_SHELLS, ids=lambda path: Path(path).name)
 @pytest.mark.parametrize(
     "dotenv, missing_name",
     (
         pytest.param(
-            "CHATFIT_API_TOKEN=api-secret\n", "GOOGLE_API_KEY", id="google-omitted"
+            "CHATFIT_API_TOKEN=api-secret\n",
+            "LLM_API_BASE_URL",
+            id="llm-base-url-omitted",
         ),
         pytest.param(
-            "GOOGLE_API_KEY=\nCHATFIT_API_TOKEN=api-secret\n",
-            "GOOGLE_API_KEY",
-            id="google-empty",
+            "LLM_API_BASE_URL=\nLLM_API_KEY=llm-secret\nLLM_MODEL=glm-4.5\nCHATFIT_API_TOKEN=api-secret\n",
+            "LLM_API_BASE_URL",
+            id="llm-base-url-empty",
         ),
         pytest.param(
-            "GOOGLE_API_KEY=google-secret\n", "CHATFIT_API_TOKEN", id="api-omitted"
+            "LLM_API_BASE_URL=https://api.example.com/v1\nLLM_MODEL=glm-4.5\nCHATFIT_API_TOKEN=api-secret\n",
+            "LLM_API_KEY",
+            id="llm-keys-omitted",
         ),
         pytest.param(
-            "GOOGLE_API_KEY=google-secret\nCHATFIT_API_TOKEN=\n",
+            "LLM_API_BASE_URL=https://api.example.com/v1\nLLM_API_KEY=llm-secret\nCHATFIT_API_TOKEN=api-secret\n",
+            "LLM_MODEL",
+            id="llm-model-omitted",
+        ),
+        pytest.param(
+            "LLM_API_BASE_URL=https://api.example.com/v1\nLLM_API_KEY=llm-secret\nLLM_MODEL=glm-4.5\n",
             "CHATFIT_API_TOKEN",
-            id="api-empty",
+            id="api-token-omitted",
+        ),
+        pytest.param(
+            "LLM_API_BASE_URL=https://api.example.com/v1\nLLM_API_KEY=llm-secret\nLLM_MODEL=glm-4.5\nCHATFIT_API_TOKEN=\n",
+            "CHATFIT_API_TOKEN",
+            id="api-token-empty",
         ),
     ),
 )
@@ -249,7 +278,10 @@ def test_readme_local_uvicorn_skips_startup_when_a_secret_is_empty(
         dotenv=dotenv,
     )
 
-    error_message = "GOOGLE_API_KEY and CHATFIT_API_TOKEN must both be set in .env."
+    error_message = (
+        "LLM_API_BASE_URL, LLM_API_KEY (or GLM_API_KEY), LLM_MODEL, and "
+        "CHATFIT_API_TOKEN must all be set in .env."
+    )
     assert error_message in _emitted_lines(result)
     assert missing_name in error_message
     assert "uv run uvicorn api:app --reload" not in command_log
@@ -266,12 +298,16 @@ def test_readme_local_uvicorn_uses_host_paths_when_secrets_are_set(
         shell,
         uvicorn_block,
         working_dir=tmp_path,
-        dotenv="GOOGLE_API_KEY=google-secret\nCHATFIT_API_TOKEN=api-secret\n",
+        dotenv=(
+            "LLM_API_BASE_URL=https://api.example.com/v1\n"
+            "LLM_API_KEY=llm-secret\nLLM_MODEL=glm-4.5\n"
+            "CHATFIT_API_TOKEN=api-secret\n"
+        ),
     )
 
     assert (
-        "GOOGLE_API_KEY and CHATFIT_API_TOKEN must both be set in .env."
-        not in _emitted_lines(result)
+        "LLM_API_BASE_URL, LLM_API_KEY (or GLM_API_KEY), LLM_MODEL, and "
+        "CHATFIT_API_TOKEN must all be set in .env." not in _emitted_lines(result)
     )
     assert "uv run uvicorn api:app --reload" in command_log
     assert "CHECKPOINTER_DB_PATH=./runtime-data/checkpointer.db" in command_log
