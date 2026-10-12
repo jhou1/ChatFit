@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from inputs.media_providers import (
+    MediaChatClient,
     MediaProviderConfig,
     OpenAICompatibleMediaClient,
 )
@@ -34,7 +35,7 @@ class PhotoTextExtractor(Protocol):
 
 @dataclass(frozen=True)
 class OpenAICompatiblePhotoTextExtractor:
-    client: OpenAICompatibleMediaClient
+    client: MediaChatClient
 
     async def extract_text(
         self, image_bytes: bytes, mime_type: str

@@ -4,11 +4,16 @@ from collections.abc import Sequence
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+class MediaChatClient(Protocol):
+    async def chat(self, content: Sequence[dict[str, Any]]) -> str:
+        """Send multimodal content and return provider text."""
 
 
 @dataclass(frozen=True)

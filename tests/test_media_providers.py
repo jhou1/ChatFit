@@ -11,14 +11,18 @@ from inputs.media_providers import (
 )
 
 
-def test_media_provider_config_is_absent_when_no_values_are_supplied(monkeypatch):
+def test_media_provider_config_is_absent_when_no_values_are_supplied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     for name in ("VOICE_API_BASE_URL", "VOICE_API_KEY", "VOICE_API_MODEL"):
         monkeypatch.delenv(name, raising=False)
 
     assert MediaProviderConfig.from_env("VOICE_") is None
 
 
-def test_media_provider_config_reads_complete_group(monkeypatch):
+def test_media_provider_config_reads_complete_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("VOICE_API_BASE_URL", " https://api.example.com/v1 ")
     monkeypatch.setenv("VOICE_API_KEY", " voice-key ")
     monkeypatch.setenv("VOICE_API_MODEL", " voice-model ")
@@ -33,8 +37,8 @@ def test_media_provider_config_reads_complete_group(monkeypatch):
 
 
 def test_partial_media_provider_config_disables_provider_without_secret(
-    monkeypatch, caplog
-):
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     monkeypatch.setenv("OCR_API_BASE_URL", "https://api.example.com/v1")
     monkeypatch.setenv("OCR_API_KEY", "secret-value")
     monkeypatch.delenv("OCR_API_MODEL", raising=False)
@@ -64,12 +68,12 @@ def test_partial_media_provider_config_disables_provider_without_secret(
 )
 def test_chat_completions_url_accepts_root_or_complete_endpoint(
     base_url: str, expected: str
-):
+) -> None:
     assert chat_completions_url(base_url) == expected
 
 
 @pytest.mark.asyncio
-async def test_media_client_posts_openai_compatible_payload():
+async def test_media_client_posts_openai_compatible_payload() -> None:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -106,7 +110,7 @@ async def test_media_client_posts_openai_compatible_payload():
 
 
 @pytest.mark.asyncio
-async def test_media_client_joins_multipart_text_response():
+async def test_media_client_joins_multipart_text_response() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         del request
         return httpx.Response(
@@ -139,7 +143,7 @@ async def test_media_client_joins_multipart_text_response():
 
 
 @pytest.mark.asyncio
-async def test_media_client_raises_for_http_error():
+async def test_media_client_raises_for_http_error() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         del request
         return httpx.Response(503, json={"error": "provider unavailable"})
@@ -158,7 +162,7 @@ async def test_media_client_raises_for_http_error():
 
 
 @pytest.mark.asyncio
-async def test_media_client_rejects_empty_response():
+async def test_media_client_rejects_empty_response() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         del request
         return httpx.Response(200, json={"choices": []})

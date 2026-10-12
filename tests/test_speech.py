@@ -1,4 +1,6 @@
 import base64
+from collections.abc import Sequence
+from typing import Any
 
 import pytest
 
@@ -11,21 +13,25 @@ from inputs.speech import (
 class RecordingMediaClient:
     def __init__(self, text: str = "hello") -> None:
         self.text = text
-        self.content = None
+        self.content: list[dict[str, Any]] | None = None
 
-    async def chat(self, content):
-        self.content = content
+    async def chat(self, content: Sequence[dict[str, Any]]) -> str:
+        self.content = list(content)
         return self.text
 
 
-def test_speech_factory_disables_provider_when_configuration_is_absent(monkeypatch):
+def test_speech_factory_disables_provider_when_configuration_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     for name in ("VOICE_API_BASE_URL", "VOICE_API_KEY", "VOICE_API_MODEL"):
         monkeypatch.delenv(name, raising=False)
 
     assert build_speech_transcriber_from_env() is None
 
 
-def test_speech_factory_disables_partial_configuration(monkeypatch):
+def test_speech_factory_disables_partial_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("VOICE_API_BASE_URL", "https://api.example.com/v1")
     monkeypatch.setenv("VOICE_API_MODEL", "voice-model")
     monkeypatch.delenv("VOICE_API_KEY", raising=False)
@@ -33,7 +39,9 @@ def test_speech_factory_disables_partial_configuration(monkeypatch):
     assert build_speech_transcriber_from_env() is None
 
 
-def test_speech_factory_creates_generic_provider(monkeypatch):
+def test_speech_factory_creates_generic_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("VOICE_API_BASE_URL", "https://api.example.com/v1")
     monkeypatch.setenv("VOICE_API_KEY", "voice-key")
     monkeypatch.setenv("VOICE_API_MODEL", "voice-model")
@@ -44,12 +52,13 @@ def test_speech_factory_creates_generic_provider(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_speech_transcriber_sends_base64_ogg_audio():
+async def test_speech_transcriber_sends_base64_ogg_audio() -> None:
     client = RecordingMediaClient()
     transcriber = OpenAICompatibleSpeechTranscriber(client)
 
     result = await transcriber.transcribe(b"audio-bytes", "audio/ogg")
 
+    assert client.content is not None
     assert result == "hello"
     assert client.content[0]["type"] == "text"
     assert client.content[0]["text"] == (
@@ -77,10 +86,11 @@ async def test_speech_transcriber_sends_base64_ogg_audio():
 @pytest.mark.asyncio
 async def test_speech_transcriber_maps_common_mime_types(
     mime_type: str, audio_format: str
-):
+) -> None:
     client = RecordingMediaClient()
     transcriber = OpenAICompatibleSpeechTranscriber(client)
 
     await transcriber.transcribe(b"audio", mime_type)
 
+    assert client.content is not None
     assert client.content[1]["input_audio"]["format"] == audio_format

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from inputs.media_providers import (
+    MediaChatClient,
     MediaProviderConfig,
     OpenAICompatibleMediaClient,
 )
@@ -21,7 +22,7 @@ class SpeechTranscriber(Protocol):
 
 @dataclass(frozen=True)
 class OpenAICompatibleSpeechTranscriber:
-    client: OpenAICompatibleMediaClient
+    client: MediaChatClient
 
     async def transcribe(self, audio_bytes: bytes, mime_type: str) -> str:
         content: list[dict[str, Any]] = [
