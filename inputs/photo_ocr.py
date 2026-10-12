@@ -1,7 +1,7 @@
 import base64
 import os
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 from inputs.media_providers import (
     MediaProviderConfig,
@@ -40,7 +40,7 @@ class OpenAICompatiblePhotoTextExtractor:
         self, image_bytes: bytes, mime_type: str
     ) -> PhotoTextExtractionResult:
         encoded_image = base64.b64encode(image_bytes).decode("ascii")
-        content = [
+        content: list[dict[str, Any]] = [
             {"type": "text", "text": PHOTO_OCR_PROMPT},
             {
                 "type": "image_url",

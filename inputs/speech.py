@@ -1,7 +1,7 @@
 import base64
 import os
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from inputs.media_providers import (
     MediaProviderConfig,
@@ -24,7 +24,7 @@ class OpenAICompatibleSpeechTranscriber:
     client: OpenAICompatibleMediaClient
 
     async def transcribe(self, audio_bytes: bytes, mime_type: str) -> str:
-        content = [
+        content: list[dict[str, Any]] = [
             {"type": "text", "text": SPEECH_TRANSCRIPTION_PROMPT},
             {
                 "type": "input_audio",
