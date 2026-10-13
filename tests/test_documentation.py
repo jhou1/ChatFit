@@ -116,6 +116,8 @@ def _run_helm_readme_install_block(
             "IMAGE_TAG": "documentation-test",
             "LLM_API_BASE_URL": "https://api.example.com/v1",
             "LLM_MODEL": "glm-4.5",
+            "EMBEDDING_API_BASE_URL": "https://embeddings.example.com/v1",
+            "EMBEDDING_API_MODEL": "embedding-model",
         }
     )
     result = subprocess.run(
@@ -227,6 +229,12 @@ def test_env_example_documents_generic_chat_and_optional_media_apis() -> None:
     for name in ("LLM_API_BASE_URL", "LLM_API_KEY", "GLM_API_KEY", "LLM_MODEL"):
         assert name in example
     for name in (
+        "EMBEDDING_API_BASE_URL",
+        "EMBEDDING_API_KEY",
+        "EMBEDDING_API_MODEL",
+    ):
+        assert name in example
+    for name in (
         "VOICE_API_BASE_URL",
         "VOICE_API_KEY",
         "VOICE_API_MODEL",
@@ -252,6 +260,15 @@ def test_readme_documents_independent_optional_media_apis() -> None:
         assert name in readme
     assert "GOOGLE_API_KEY" not in readme
     assert "未配置时会禁用对应的语音或图片输入" in readme
+
+
+def test_readme_documents_required_openai_compatible_embeddings() -> None:
+    readme = README.read_text(encoding="utf-8")
+
+    assert "EMBEDDING_API_BASE_URL" in readme
+    assert "EMBEDDING_API_KEY" in readme
+    assert "EMBEDDING_API_MODEL" in readme
+    assert "切换 embedding provider 后需要重建" in readme
 
 
 def test_multimodal_architecture_marks_generic_media_update() -> None:
@@ -303,6 +320,21 @@ def test_chat_llm_spec_marks_media_section_superseded() -> None:
         ),
         pytest.param(
             "LLM_API_BASE_URL=https://api.example.com/v1\nLLM_API_KEY=llm-secret\nLLM_MODEL=glm-4.5\n",
+            "EMBEDDING_API_BASE_URL",
+            id="embedding-base-url-omitted",
+        ),
+        pytest.param(
+            "LLM_API_BASE_URL=https://api.example.com/v1\nLLM_API_KEY=llm-secret\nLLM_MODEL=glm-4.5\nEMBEDDING_API_MODEL=embedding-model\n",
+            "EMBEDDING_API_KEY",
+            id="embedding-key-omitted",
+        ),
+        pytest.param(
+            "LLM_API_BASE_URL=https://api.example.com/v1\nLLM_API_KEY=llm-secret\nLLM_MODEL=glm-4.5\nEMBEDDING_API_KEY=embedding-secret\n",
+            "EMBEDDING_API_MODEL",
+            id="embedding-model-omitted",
+        ),
+        pytest.param(
+            "LLM_API_BASE_URL=https://api.example.com/v1\nLLM_API_KEY=llm-secret\nLLM_MODEL=glm-4.5\nEMBEDDING_API_BASE_URL=https://embeddings.example.com/v1\nEMBEDDING_API_KEY=embedding-secret\nEMBEDDING_API_MODEL=embedding-model\n",
             "CHATFIT_API_TOKEN",
             id="api-token-omitted",
         ),
@@ -327,7 +359,9 @@ def test_readme_local_uvicorn_skips_startup_when_a_secret_is_empty(
     )
 
     error_message = (
-        "LLM_API_BASE_URL, LLM_API_KEY (or GLM_API_KEY), LLM_MODEL, and "
+        "LLM_API_BASE_URL, LLM_API_KEY (or GLM_API_KEY), LLM_MODEL, "
+        "EMBEDDING_API_BASE_URL, EMBEDDING_API_KEY, EMBEDDING_API_MODEL, "
+        "and "
         "CHATFIT_API_TOKEN must all be set in .env."
     )
     assert error_message in _emitted_lines(result)
@@ -349,12 +383,17 @@ def test_readme_local_uvicorn_uses_host_paths_when_secrets_are_set(
         dotenv=(
             "LLM_API_BASE_URL=https://api.example.com/v1\n"
             "LLM_API_KEY=llm-secret\nLLM_MODEL=glm-4.5\n"
+            "EMBEDDING_API_BASE_URL=https://embeddings.example.com/v1\n"
+            "EMBEDDING_API_KEY=embedding-secret\n"
+            "EMBEDDING_API_MODEL=embedding-model\n"
             "CHATFIT_API_TOKEN=api-secret\n"
         ),
     )
 
     assert (
-        "LLM_API_BASE_URL, LLM_API_KEY (or GLM_API_KEY), LLM_MODEL, and "
+        "LLM_API_BASE_URL, LLM_API_KEY (or GLM_API_KEY), LLM_MODEL, "
+        "EMBEDDING_API_BASE_URL, EMBEDDING_API_KEY, EMBEDDING_API_MODEL, "
+        "and "
         "CHATFIT_API_TOKEN must all be set in .env." not in _emitted_lines(result)
     )
     assert "uv run uvicorn api:app --reload" in command_log

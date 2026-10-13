@@ -81,6 +81,10 @@ transcription and photo OCR have independent optional OpenAI-compatible media
 providers configured through `VOICE_API_*` and `OCR_API_*`. Missing media
 configuration disables only that input modality; text chat and Bot startup
 remain available.
+Recipe RAG has a separate required embedding provider configured through
+`EMBEDDING_API_BASE_URL`, `EMBEDDING_API_KEY`, and `EMBEDDING_API_MODEL`.
+Changing embedding providers changes the vector space, so an existing Chroma
+index must be rebuilt or relocated.
 
 ## Four state layers
 

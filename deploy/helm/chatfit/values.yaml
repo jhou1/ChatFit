@@ -21,6 +21,8 @@ config:
   timezone: Asia/Shanghai
   llmApiBaseUrl: ""
   llmModel: ""
+  embeddingApiBaseUrl: ""
+  embeddingApiModel: ""
   voiceApiBaseUrl: ""
   voiceApiModel: ""
   ocrApiBaseUrl: ""
@@ -38,6 +40,7 @@ config:
   langfuseCaptureContent: false
 secretKeys:
   llmApiKey: LLM_API_KEY
+  embeddingApiKey: EMBEDDING_API_KEY
   voiceApiKey: VOICE_API_KEY
   ocrApiKey: OCR_API_KEY
   telegramBotToken: TELEGRAM_BOT_TOKEN

@@ -24,6 +24,10 @@ REQUIRED_SET_ARGS = (
     "config.llmApiBaseUrl=https://api.example.com/v1",
     "--set",
     "config.llmModel=glm-4.5",
+    "--set",
+    "config.embeddingApiBaseUrl=https://embeddings.example.com/v1",
+    "--set",
+    "config.embeddingApiModel=embedding-model",
 )
 
 
@@ -323,6 +327,10 @@ def test_foundation_resources_use_safe_defaults() -> None:
     assert config["data"]["IMAGE_MAX_PIXELS"] == "20000000"
     assert config["data"]["LLM_API_BASE_URL"] == "https://api.example.com/v1"
     assert config["data"]["LLM_MODEL"] == "glm-4.5"
+    assert (
+        config["data"]["EMBEDDING_API_BASE_URL"] == "https://embeddings.example.com/v1"
+    )
+    assert config["data"]["EMBEDDING_API_MODEL"] == "embedding-model"
     assert config["data"]["VOICE_API_BASE_URL"] == ""
     assert config["data"]["VOICE_API_MODEL"] == ""
     assert config["data"]["OCR_API_BASE_URL"] == ""
@@ -330,6 +338,7 @@ def test_foundation_resources_use_safe_defaults() -> None:
     assert not (
         {
             "LLM_API_KEY",
+            "EMBEDDING_API_KEY",
             "VOICE_API_KEY",
             "OCR_API_KEY",
             "TELEGRAM_BOT_TOKEN",
@@ -557,7 +566,7 @@ def test_api_uses_distinct_databases_explicit_secret_refs_and_security_defaults(
 
     assert env["CHECKPOINTER_DB_PATH"]["value"] == "/app/data/checkpointer.db"
     assert env["USER_MEMORY_DB_PATH"]["value"] == "/app/data/user-memory.db"
-    for name in ("LLM_API_KEY", "CHATFIT_API_TOKEN"):
+    for name in ("LLM_API_KEY", "EMBEDDING_API_KEY", "CHATFIT_API_TOKEN"):
         assert env[name]["valueFrom"]["secretKeyRef"]["name"] == "chatfit-secrets"
         assert env[name]["valueFrom"]["secretKeyRef"].get("optional") is not True
     for name in (

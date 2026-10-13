@@ -26,7 +26,7 @@ resources. Run all commands from the repository root.
 ## Create the namespace and required Secret
 
 The chart deliberately consumes an existing Secret rather than managing
-credentials. Export the three required credentials before creating it. Voice
+credentials. Export the four required credentials before creating it. Voice
 and OCR API keys are optional; when their complete configuration is absent, the
 Bot still starts and text chat works. Chat and media endpoints/models are
 non-secret values and are passed as Helm config:
@@ -35,6 +35,9 @@ non-secret values and are passed as Helm config:
 export LLM_API_KEY="replace-with-your-openai-compatible-api-key"
 export LLM_API_BASE_URL="https://your-openai-compatible-endpoint/v1"
 export LLM_MODEL="glm-4.5"
+export EMBEDDING_API_KEY="replace-with-your-embedding-api-key"
+export EMBEDDING_API_BASE_URL="https://your-embedding-endpoint/v1"
+export EMBEDDING_API_MODEL="your-embedding-model"
 export VOICE_API_KEY=""
 export OCR_API_KEY=""
 export VOICE_API_BASE_URL=""
@@ -51,10 +54,14 @@ kubectl create namespace chatfit
   : "${LLM_API_KEY:?LLM_API_KEY must be non-empty}"
   : "${LLM_API_BASE_URL:?LLM_API_BASE_URL must be non-empty}"
   : "${LLM_MODEL:?LLM_MODEL must be non-empty}"
+  : "${EMBEDDING_API_KEY:?EMBEDDING_API_KEY must be non-empty}"
+  : "${EMBEDDING_API_BASE_URL:?EMBEDDING_API_BASE_URL must be non-empty}"
+  : "${EMBEDDING_API_MODEL:?EMBEDDING_API_MODEL must be non-empty}"
   : "${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN must be non-empty}"
   : "${CHATFIT_API_TOKEN:?CHATFIT_API_TOKEN must be non-empty}"
   kubectl -n chatfit create secret generic chatfit-secrets \
     --from-literal=LLM_API_KEY="${LLM_API_KEY}" \
+    --from-literal=EMBEDDING_API_KEY="${EMBEDDING_API_KEY}" \
     --from-literal=VOICE_API_KEY="${VOICE_API_KEY}" \
     --from-literal=OCR_API_KEY="${OCR_API_KEY}" \
     --from-literal=TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}" \
@@ -113,6 +120,8 @@ helm install chatfit deploy/helm/chatfit \
   --set-string existingSecret=chatfit-secrets \
   --set-string config.llmApiBaseUrl="${LLM_API_BASE_URL}" \
   --set-string config.llmModel="${LLM_MODEL}" \
+  --set-string config.embeddingApiBaseUrl="${EMBEDDING_API_BASE_URL}" \
+  --set-string config.embeddingApiModel="${EMBEDDING_API_MODEL}" \
   --set-string persistence.type=pvc \
   --set-string persistence.size=20Gi \
   --wait --timeout 10m
@@ -128,6 +137,8 @@ helm lint deploy/helm/chatfit \
   --set-string existingSecret=chatfit-secrets \
   --set-string config.llmApiBaseUrl="${LLM_API_BASE_URL}" \
   --set-string config.llmModel="${LLM_MODEL}" \
+  --set-string config.embeddingApiBaseUrl="${EMBEDDING_API_BASE_URL}" \
+  --set-string config.embeddingApiModel="${EMBEDDING_API_MODEL}" \
   --set-string persistence.type=pvc
 ```
 
@@ -163,6 +174,8 @@ helm install chatfit deploy/helm/chatfit \
   --set-string existingSecret=chatfit-secrets \
   --set-string config.llmApiBaseUrl="${LLM_API_BASE_URL}" \
   --set-string config.llmModel="${LLM_MODEL}" \
+  --set-string config.embeddingApiBaseUrl="${EMBEDDING_API_BASE_URL}" \
+  --set-string config.embeddingApiModel="${EMBEDDING_API_MODEL}" \
   --set-string persistence.type=emptyDir \
   --wait --timeout 10m
 helm test chatfit --namespace chatfit
@@ -224,6 +237,8 @@ helm upgrade chatfit deploy/helm/chatfit \
   --set-string existingSecret=chatfit-secrets \
   --set-string config.llmApiBaseUrl="${LLM_API_BASE_URL}" \
   --set-string config.llmModel="${LLM_MODEL}" \
+  --set-string config.embeddingApiBaseUrl="${EMBEDDING_API_BASE_URL}" \
+  --set-string config.embeddingApiModel="${EMBEDDING_API_MODEL}" \
   --set-string persistence.type=pvc \
   --wait --timeout 10m
 helm test chatfit --namespace chatfit
@@ -246,6 +261,8 @@ helm upgrade chatfit deploy/helm/chatfit \
   --set-string existingSecret=chatfit-secrets \
   --set-string config.llmApiBaseUrl="${LLM_API_BASE_URL}" \
   --set-string config.llmModel="${LLM_MODEL}" \
+  --set-string config.embeddingApiBaseUrl="${EMBEDDING_API_BASE_URL}" \
+  --set-string config.embeddingApiModel="${EMBEDDING_API_MODEL}" \
   --set-string persistence.type=emptyDir \
   --wait --timeout 10m
 helm test chatfit --namespace chatfit
@@ -294,8 +311,9 @@ configure `imagePullSecrets` in the override file.
 ### `CreateContainerConfigError`
 
 This normally means `chatfit-secrets` is absent or is missing one of
-`LLM_API_KEY`, `TELEGRAM_BOT_TOKEN`, or `CHATFIT_API_TOKEN`. Missing optional
-`VOICE_API_KEY` or `OCR_API_KEY` values disable only media input.
+`LLM_API_KEY`, `EMBEDDING_API_KEY`, `TELEGRAM_BOT_TOKEN`, or
+`CHATFIT_API_TOKEN`. Missing optional `VOICE_API_KEY` or `OCR_API_KEY` values
+disable only media input.
 Inspect events
 and the Secret key names (not their values), then create or repair the Secret
 and rerun `helm upgrade`:
@@ -314,10 +332,10 @@ logs. A Secret key can exist while its value is still empty:
 kubectl logs deployment/chatfit-chatfit-api --namespace chatfit --previous
 kubectl logs deployment/chatfit-chatfit-bot --namespace chatfit --previous
 kubectl get secret chatfit-secrets --namespace chatfit \
-  -o go-template='LLM_API_KEY={{len (index .data "LLM_API_KEY")}}{{"\n"}}CHATFIT_API_TOKEN={{len (index .data "CHATFIT_API_TOKEN")}}{{"\n"}}'
+  -o go-template='LLM_API_KEY={{len (index .data "LLM_API_KEY")}}{{"\n"}}EMBEDDING_API_KEY={{len (index .data "EMBEDDING_API_KEY")}}{{"\n"}}CHATFIT_API_TOKEN={{len (index .data "CHATFIT_API_TOKEN")}}{{"\n"}}'
 ```
 
-`LLM_API_KEY=0` or `CHATFIT_API_TOKEN=0` means the stored value is empty. Repair the existing
+`LLM_API_KEY=0`, `EMBEDDING_API_KEY=0`, or `CHATFIT_API_TOKEN=0` means the stored value is empty. Repair the existing
 Secret using your approved secret-management workflow, then restart both
 Deployments. Increasing the Helm timeout does not make an invalid credential
 configuration healthy.
