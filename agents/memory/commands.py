@@ -59,9 +59,10 @@ def _target_variants(operation: MemoryOperation, target: str) -> tuple[str, ...]
 
 
 def _remember_payload(value: str) -> str | None:
-    if value.strip() in _REFERENTIAL_REMEMBER_PAYLOADS:
+    payload = value.strip(_TARGET_EDGE_CHARACTERS)
+    if payload in _REFERENTIAL_REMEMBER_PAYLOADS:
         return None
-    return value or None
+    return payload or None
 
 
 def parse_memory_command(user_message: str) -> MemoryCommand | None:

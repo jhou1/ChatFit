@@ -202,7 +202,15 @@ class MemoryAgent:
             pending=pending,
         )
         if pending is None and decision.intent not in (operation, "clarify"):
-            return MemoryAgentResult(response="无法确认这条记忆操作，请重新明确说明。")
+            if operation == "remember" and decision.intent == "update":
+                # The explicit remember grammar authorizes this operation. If
+                # the model recognizes an existing target as an update, keep
+                # the remember flow so the store can clarify that conflict.
+                decision = decision.model_copy(update={"intent": "remember"})
+            else:
+                return MemoryAgentResult(
+                    response="无法确认这条记忆操作，请重新明确说明。"
+                )
         if pending is not None:
             clarification_content = decision.content
             if not self._pending_reply_matches_scope(

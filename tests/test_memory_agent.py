@@ -704,6 +704,51 @@ async def test_conflicting_remember_waits_for_update_confirmation(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_remember_command_with_update_classification_asks_conflict(tmp_path):
+    memory_db = tmp_path / "user-memory.db"
+    store = UserMemoryStore(memory_db)
+    owner = owner_key_for("user-a")
+    store.remember(
+        owner,
+        NewUserMemory(
+            memory_type=MemoryType.TRAINING_TEMPLATE,
+            canonical_key="213",
+            display_name="壶铃213",
+            content="旧模板内容",
+            aliases=("壶铃213",),
+        ),
+    )
+    agent = MemoryAgent(
+        store=store,
+        interpreter=DeterministicInterpreter(
+            MemoryMutationDecision(
+                intent="update",
+                memory_type=MemoryType.TRAINING_TEMPLATE,
+                canonical_key="213",
+                display_name="壶铃213",
+                content="模型改写的新模板内容",
+                aliases=("壶铃213",),
+                target_query="壶铃213",
+            )
+        ),
+    )
+
+    result = await agent.handle(
+        user_id="user-a",
+        user_message="记住，新的模板内容",
+        pending=None,
+    )
+
+    stored = store.list_memories(owner)
+    assert len(stored) == 1
+    assert (stored[0].version, stored[0].content) == (1, "旧模板内容")
+    assert result.pending is not None
+    assert result.pending.requires_confirmation is True
+    assert "无法确认这条记忆操作" not in result.response
+    assert "更新" in result.response
+
+
+@pytest.mark.asyncio
 async def test_forget_physically_deletes_exact_memory_and_aliases(tmp_path):
     memory_db = tmp_path / "user-memory.db"
     store = UserMemoryStore(memory_db)
