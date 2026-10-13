@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Protocol, Sequence
@@ -21,12 +22,25 @@ from agents.observability import (
 
 MAX_RETRIES = 3
 MAX_TOOL_TOKENS = 5000
-LLM_TIMEOUT_SECONDS = 30.0
+DEFAULT_LLM_TIMEOUT_SECONDS = 120.0
 MIN_TOOL_EXECUTION_TOKENS = 50
 MAX_OUTPUT_TOKENS = 500
 TRUNCATE_WARNINGS = "\n[OUTPUT TRUNCATED - the tool returned more data than can be processed. Please ask a more specific question]"
 HITL_TIMEOUT_SECONDS = 300.0  # 5 minutes for human-in-the-loop timeout
 HITL_TOOL_CALLS = ["log_training_session", "log_meal"]
+
+
+def _llm_timeout_seconds() -> float:
+    raw_value = os.getenv("LLM_TIMEOUT_SECONDS", "").strip()
+    if not raw_value:
+        return DEFAULT_LLM_TIMEOUT_SECONDS
+    try:
+        timeout = float(raw_value)
+    except ValueError as error:
+        raise ValueError("LLM_TIMEOUT_SECONDS must be a number") from error
+    if timeout <= 0:
+        raise ValueError("LLM_TIMEOUT_SECONDS must be greater than zero")
+    return timeout
 
 
 class ApprovalDecision(BaseModel):
@@ -47,7 +61,9 @@ class ApprovalIntentModel(BaseModel):
 class ApprovalResolver:
     def __init__(self, llm_config: LLMConfig):
         chat_model = create_chat_model(llm_config)
-        self.llm = chat_model.with_structured_output(ApprovalIntentModel)
+        self.llm = chat_model.with_structured_output(
+            ApprovalIntentModel, method="function_calling"
+        )
 
     async def resolve(
         self, user_message: str, pending_tool_calls: list[dict]
@@ -87,7 +103,9 @@ class PendingReplyClassifier:
 
     def __init__(self, llm_config: LLMConfig):
         chat_model = create_chat_model(llm_config)
-        self.llm = chat_model.with_structured_output(PendingReplyKind)
+        self.llm = chat_model.with_structured_output(
+            PendingReplyKind, method="function_calling"
+        )
 
     async def classify(self, user_message: str, pending_tool_calls: list[dict]) -> str:
         instruction = (
@@ -257,6 +275,7 @@ async def _execute_single_tool_safely(
 
 
 async def _execute_llm_query_safely(llm_with_tools, messages) -> dict:
+    llm_timeout_seconds = _llm_timeout_seconds()
     model_name = getattr(llm_with_tools, "model_name", None)
     if not isinstance(model_name, str):
         model_name = getattr(llm_with_tools, "model", None)
@@ -267,13 +286,13 @@ async def _execute_llm_query_safely(llm_with_tools, messages) -> dict:
             "llm.class": type(llm_with_tools).__name__,
             "llm.model": model_attribute,
             "llm.message_count": len(messages),
-            "llm.timeout_seconds": LLM_TIMEOUT_SECONDS,
+            "llm.timeout_seconds": llm_timeout_seconds,
         },
     ):
         for attempt in range(MAX_RETRIES):
             try:
                 emit_event("llm.attempt", {"llm.attempt": attempt + 1})
-                async with asyncio.timeout(LLM_TIMEOUT_SECONDS):
+                async with asyncio.timeout(llm_timeout_seconds):
                     response = await llm_with_tools.ainvoke(messages)
                     usage = getattr(response, "usage_metadata", None)
                     usage_attributes = (

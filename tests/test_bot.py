@@ -269,6 +269,11 @@ class SlowSuccessfulAsyncClient(FakeAsyncClient):
 class RecordingChatFitApiClient:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.constructor_kwargs: dict[str, Any] = {}
+
+    def record_constructor(self, **kwargs: Any) -> "RecordingChatFitApiClient":
+        self.constructor_kwargs = kwargs
+        return self
 
     async def __aenter__(self) -> "RecordingChatFitApiClient":
         return self
@@ -355,6 +360,20 @@ async def test_chatfit_backend_helpers_send_required_bearer_credential(
             "headers": {"Authorization": f"Bearer {token}"},
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_chat_backend_helper_uses_configured_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    client = RecordingChatFitApiClient()
+    monkeypatch.setenv("CHATFIT_API_TOKEN", "independent-service-secret")
+    monkeypatch.setenv("API_TIMEOUT_SECONDS", "300")
+    monkeypatch.setattr(bot.httpx, "AsyncClient", client.record_constructor)
+
+    await bot.post_message_to_api("123", "hello")
+
+    assert client.constructor_kwargs == {"timeout": 300.0, "proxy": None}
 
 
 @pytest.mark.asyncio

@@ -76,11 +76,15 @@ Chat agents use the OpenAI-compatible runtime selected by
 `LLM_API_BASE_URL`, `LLM_API_KEY` (or the GLM compatibility alias
 `GLM_API_KEY`), and `LLM_MODEL`. API, CLI, and LLM-judge startup share one
 resolver so the same provider configuration cannot drift between entry points.
-The endpoint must support tool calling and structured output. Telegram voice
-transcription and photo OCR have independent optional OpenAI-compatible media
-providers configured through `VOICE_API_*` and `OCR_API_*`. Missing media
-configuration disables only that input modality; text chat and Bot startup
-remain available.
+The endpoint must support tool calling and structured output. Each LLM
+invocation applies a safety timeout controlled by the optional
+`LLM_TIMEOUT_SECONDS` setting; the default is 120 seconds. The Bot's complete
+chat request to the API is bounded separately by `API_TIMEOUT_SECONDS`, which
+defaults to 240 seconds and must exceed expected end-to-end graph latency.
+Telegram voice transcription and photo OCR have independent optional
+OpenAI-compatible media providers configured through `VOICE_API_*` and
+`OCR_API_*`. Missing media configuration disables only that input modality;
+text chat and Bot startup remain available.
 Recipe RAG has a separate required embedding provider configured through
 `EMBEDDING_API_BASE_URL`, `EMBEDDING_API_KEY`, and `EMBEDDING_API_MODEL`.
 Changing embedding providers changes the vector space, so an existing Chroma

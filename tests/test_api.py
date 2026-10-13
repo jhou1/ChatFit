@@ -1236,7 +1236,7 @@ class _StructuredMemoryModel:
 
 
 class _UnusedStructuredModel:
-    def with_structured_output(self, schema):
+    def with_structured_output(self, schema, *, method=None):
         return object()
 
 
@@ -1412,7 +1412,7 @@ async def test_api_startup_uses_platform_agnostic_llm_configuration(
     assert config.api_key == "glm-key"
     assert config.temperature == 0.2
     assert config.max_tokens == 4096
-    assert config.kwargs == {"client_args": {"proxy": "socks5://127.0.0.1:8990"}}
+    assert config.kwargs == {"openai_proxy": "socks5://127.0.0.1:8990"}
 
 
 @pytest.mark.asyncio

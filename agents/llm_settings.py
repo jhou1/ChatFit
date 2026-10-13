@@ -62,10 +62,10 @@ def resolve_llm_config_from_env(
         names = ", ".join(missing)
         raise ValueError(f"{names} must be set and non-empty")
 
-    kwargs: dict[str, dict[str, str]] = {}
+    kwargs: dict[str, str] = {}
     proxy = values.get("LLM_PROXY", "").strip()
     if proxy:
-        kwargs["client_args"] = {"proxy": proxy}
+        kwargs["openai_proxy"] = proxy
 
     return LLMConfig(
         provider="openai_compatible",

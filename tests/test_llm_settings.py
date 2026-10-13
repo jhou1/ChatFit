@@ -1,5 +1,6 @@
 import pytest
 
+from agents.llm_factory import create_chat_model
 from agents.llm_settings import resolve_llm_config_from_env
 
 
@@ -110,7 +111,7 @@ def test_rejects_invalid_optional_numeric_values(name, value):
         )
 
 
-def test_adds_llm_proxy_to_client_args():
+def test_adds_llm_proxy_to_openai_client_not_request_body():
     config = resolve_llm_config_from_env(
         {
             "LLM_API_BASE_URL": "https://api.example.com/v1",
@@ -120,4 +121,8 @@ def test_adds_llm_proxy_to_client_args():
         }
     )
 
-    assert config.kwargs == {"client_args": {"proxy": "socks5://127.0.0.1:8990"}}
+    assert config.kwargs == {"openai_proxy": "socks5://127.0.0.1:8990"}
+
+    model = create_chat_model(config)
+    assert model.openai_proxy == "socks5://127.0.0.1:8990"
+    assert model.model_kwargs == {}

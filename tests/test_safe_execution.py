@@ -2,6 +2,7 @@ from tools.safe_execution import SafeToolNode
 import asyncio
 import os
 import pytest
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, AsyncMock, patch
 
@@ -217,6 +218,30 @@ async def test_execute_llm_query_safely_success(mock_sleep):
     assert result["messages"].content == "LLM Success"
     mock_llm.ainvoke.assert_called_once()
     mock_sleep.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("tools.safe_execution.asyncio.timeout")
+@patch("asyncio.sleep", new_callable=AsyncMock)
+async def test_execute_llm_query_safely_uses_configured_timeout(
+    mock_sleep, mock_timeout, monkeypatch
+):
+    observed_timeouts = []
+
+    @asynccontextmanager
+    async def record_timeout(seconds):
+        observed_timeouts.append(seconds)
+        yield
+
+    mock_timeout.side_effect = record_timeout
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "45")
+    mock_llm = AsyncMock()
+    mock_llm.ainvoke.return_value = AIMessage(content="LLM Success")
+
+    result = await _execute_llm_query_safely(mock_llm, [])
+
+    assert result["messages"].content == "LLM Success"
+    assert observed_timeouts == [45]
 
 
 @pytest.mark.asyncio
@@ -596,8 +621,9 @@ async def test_approval_resolver_uses_structured_lm_semantics_for_every_reply(
             return ApprovalIntentModel(intent=model_intent)
 
     class FakeChatModel:
-        def with_structured_output(self, schema):
+        def with_structured_output(self, schema, *, method=None):
             captured["schema"] = schema
+            captured["method"] = method
             return FakeStructuredRunnable()
 
     monkeypatch.setattr(
@@ -609,6 +635,7 @@ async def test_approval_resolver_uses_structured_lm_semantics_for_every_reply(
 
     assert decision == ApprovalDecision(intent=model_intent, feedback=reply)
     assert captured["schema"] is ApprovalIntentModel
+    assert captured["method"] == "function_calling"
     assert reply in captured["messages"][1].content
     assert "OK" in captured["messages"][0].content
 
@@ -710,7 +737,7 @@ async def test_semantic_lm_approval_executes_original_pending_write_once(
     result = await node({"messages": [AIMessage(content="", tool_calls=[pending])]})
 
     mock_create_chat_model.return_value.with_structured_output.assert_called_once_with(
-        ApprovalIntentModel
+        ApprovalIntentModel, method="function_calling"
     )
     mock_llm_query.assert_awaited_once()
     mock_tool_execute.assert_awaited_once()
@@ -1074,8 +1101,9 @@ async def test_pending_reply_classifier_uses_structured_lm_semantics(
             return PendingReplyKind(kind=expected_kind)
 
     class FakeChatModel:
-        def with_structured_output(self, schema):
+        def with_structured_output(self, schema, *, method=None):
             captured["schema"] = schema
+            captured["method"] = method
             return FakeStructuredRunnable()
 
     monkeypatch.setattr(
@@ -1089,6 +1117,7 @@ async def test_pending_reply_classifier_uses_structured_lm_semantics(
 
     assert kind == expected_kind
     assert captured["schema"] is PendingReplyKind
+    assert captured["method"] == "function_calling"
     assert reply in captured["messages"][1].content
     assert "log_meal" in captured["messages"][1].content
     assert "standalone acknowledgement" in captured["messages"][0].content

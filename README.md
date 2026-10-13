@@ -119,6 +119,8 @@ Compose 会通过 `env_file` 把 `.env` 注入 API 与 Bot 容器。编辑 `.env
 | `LLM_MODEL` | 必填；聊天模型名称 |
 | `LLM_TEMPERATURE` | 可选；聊天模型温度，默认 `0.5` |
 | `LLM_MAX_TOKENS` | 可选；聊天模型最大输出 token，默认 `8192` |
+| `LLM_TIMEOUT_SECONDS` | 可选；单次 LLM 请求超时秒数，默认 `120` |
+| `API_TIMEOUT_SECONDS` | 可选；Bot 调用 API 的整次聊天请求超时秒数，默认 `240` |
 | `EMBEDDING_API_BASE_URL` | 必填；Embedding API 的 base URL 或 `/embeddings` endpoint |
 | `EMBEDDING_API_KEY` | 必填；Embedding API key |
 | `EMBEDDING_API_MODEL` | 必填；Embedding 模型名称 |
@@ -129,7 +131,7 @@ Compose 会通过 `env_file` 把 `.env` 注入 API 与 Bot 容器。编辑 `.env
 | `OCR_API_KEY` | 可选；图片 OCR API key |
 | `OCR_API_MODEL` | 可选；图片 OCR 模型 |
 | `TELEGRAM_PROXY` | Telegram Bot 使用的 SOCKS5 代理 |
-| `LLM_PROXY` | LLM 请求使用的代理 |
+| `LLM_PROXY` | LLM 请求使用的 SOCKS5 代理；容器内常用 `host.docker.internal`，主机进程常用 `127.0.0.1` |
 | `LANGFUSE_HOST` | Langfuse 服务地址 |
 | `LANGFUSE_PUBLIC_KEY` | Langfuse Public Key |
 | `LANGFUSE_SECRET_KEY` | Langfuse Secret Key |

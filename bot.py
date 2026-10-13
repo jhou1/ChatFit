@@ -112,6 +112,20 @@ PROACTIVE_REVIEW_CONNECT_TIMEOUT_SECONDS = 10.0
 TELEGRAM_BOOTSTRAP_RETRIES = 5
 TELEGRAM_CONNECT_TIMEOUT_SECONDS = 30.0
 TELEGRAM_READ_TIMEOUT_SECONDS = 30.0
+DEFAULT_CHAT_API_TIMEOUT_SECONDS = 240.0
+
+
+def get_chat_api_timeout_seconds() -> float:
+    raw_value = os.environ.get("API_TIMEOUT_SECONDS", "").strip()
+    if not raw_value:
+        return DEFAULT_CHAT_API_TIMEOUT_SECONDS
+    try:
+        timeout = float(raw_value)
+    except ValueError as error:
+        raise ValueError("API_TIMEOUT_SECONDS must be a number") from error
+    if timeout <= 0:
+        raise ValueError("API_TIMEOUT_SECONDS must be greater than zero")
+    return timeout
 
 
 @dataclass(frozen=True)
@@ -267,7 +281,9 @@ def select_largest_photo(photo_sizes: Sequence[Any]) -> Any:
 
 async def post_message_to_api(user_id: str, message: str) -> str:
     headers = get_chatfit_api_headers()
-    async with httpx.AsyncClient(timeout=120.0, proxy=None) as client:
+    async with httpx.AsyncClient(
+        timeout=get_chat_api_timeout_seconds(), proxy=None
+    ) as client:
         response = await client.post(
             API_URL,
             json={"user_id": user_id, "message": message},
