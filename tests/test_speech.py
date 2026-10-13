@@ -51,6 +51,28 @@ def test_speech_factory_creates_generic_provider(
     assert isinstance(transcriber, OpenAICompatibleSpeechTranscriber)
 
 
+def test_speech_factory_passes_provider_limits(monkeypatch):
+    captured = {}
+
+    class RecordingClient:
+        def __init__(self, config, *, timeout, max_retries) -> None:
+            captured["config"] = config
+            captured["timeout"] = timeout
+            captured["max_retries"] = max_retries
+
+    monkeypatch.setenv("VOICE_API_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("VOICE_API_KEY", "voice-key")
+    monkeypatch.setenv("VOICE_API_MODEL", "voice-model")
+    monkeypatch.setenv("MEDIA_PROVIDER_TIMEOUT_SECONDS", "12.5")
+    monkeypatch.setenv("MEDIA_PROVIDER_MAX_RETRIES", "3")
+    monkeypatch.setattr("inputs.speech.OpenAICompatibleMediaClient", RecordingClient)
+
+    build_speech_transcriber_from_env()
+
+    assert captured["timeout"] == 12.5
+    assert captured["max_retries"] == 3
+
+
 @pytest.mark.asyncio
 async def test_speech_transcriber_sends_base64_ogg_audio() -> None:
     client = RecordingMediaClient()

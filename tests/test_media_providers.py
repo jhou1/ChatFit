@@ -162,6 +162,81 @@ async def test_media_client_raises_for_http_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_media_client_retries_transient_http_error() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(503, json={"error": "provider unavailable"})
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "recovered"}}]},
+        )
+
+    client = OpenAICompatibleMediaClient(
+        MediaProviderConfig(
+            base_url="https://api.example.com/v1",
+            api_key="key",
+            model="model",
+        ),
+        max_retries=2,
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert await client.chat([{"type": "text", "text": "prompt"}]) == "recovered"
+    assert len(requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_media_client_exhausts_configured_retries() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(429, json={"error": "rate limited"})
+
+    client = OpenAICompatibleMediaClient(
+        MediaProviderConfig(
+            base_url="https://api.example.com/v1",
+            api_key="key",
+            model="model",
+        ),
+        max_retries=2,
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.chat([{"type": "text", "text": "prompt"}])
+
+    assert len(requests) == 3
+
+
+@pytest.mark.asyncio
+async def test_media_client_does_not_retry_client_error() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(400, json={"error": "invalid request"})
+
+    client = OpenAICompatibleMediaClient(
+        MediaProviderConfig(
+            base_url="https://api.example.com/v1",
+            api_key="key",
+            model="model",
+        ),
+        max_retries=2,
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.chat([{"type": "text", "text": "prompt"}])
+
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
 async def test_media_client_rejects_empty_response() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         del request

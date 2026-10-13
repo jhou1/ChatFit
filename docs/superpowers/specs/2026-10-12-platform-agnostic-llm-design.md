@@ -14,6 +14,8 @@ The configured endpoint must support OpenAI-compatible chat requests, tool calli
 
 A shared resolver converts environment values into the existing `LLMConfig`. The resolver returns an `openai_compatible` configuration implemented by `ChatOpenAI`. API startup, local CLI startup, and the LLM judge use that resolver rather than independently hardcoding Google Gemini. Native Google, Anthropic, OpenAI, and local providers remain available for explicit programmatic configurations, but they are no longer the default runtime path.
 
+> Media provider section superseded by `2026-10-12-platform-agnostic-media-input-design.md`: voice and OCR are now generic optional OpenAI-compatible providers.
+
 Voice transcription and photo OCR remain Gemini-specific. Their provider boundary can be made generic in a later change; conflating chat-model compatibility with multimodal media APIs would overstate what this change supports.
 
 ## Compatibility and Deployment

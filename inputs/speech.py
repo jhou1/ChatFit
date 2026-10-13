@@ -53,6 +53,11 @@ def build_speech_transcriber_from_env() -> SpeechTranscriber | None:
     if config is None:
         return None
     timeout = float(os.getenv("MEDIA_PROVIDER_TIMEOUT_SECONDS", "45.0"))
+    max_retries = int(os.getenv("MEDIA_PROVIDER_MAX_RETRIES", "2"))
     return OpenAICompatibleSpeechTranscriber(
-        client=OpenAICompatibleMediaClient(config, timeout=timeout)
+        client=OpenAICompatibleMediaClient(
+            config,
+            timeout=timeout,
+            max_retries=max_retries,
+        )
     )

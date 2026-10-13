@@ -254,6 +254,29 @@ def test_readme_documents_independent_optional_media_apis() -> None:
     assert "未配置时会禁用对应的语音或图片输入" in readme
 
 
+def test_multimodal_architecture_marks_generic_media_update() -> None:
+    architecture = (
+        README.parent / "docs" / "multimodal-input-architecture.md"
+    ).read_text(encoding="utf-8")
+
+    assert "2026-10-13 implementation update" in architecture
+    assert "VOICE_API_BASE_URL" in architecture
+    assert "OCR_API_BASE_URL" in architecture
+
+
+def test_chat_llm_spec_marks_media_section_superseded() -> None:
+    spec = (
+        README.parent
+        / "docs"
+        / "superpowers"
+        / "specs"
+        / "2026-10-12-platform-agnostic-llm-design.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Media provider section superseded" in spec
+    assert "2026-10-12-platform-agnostic-media-input-design.md" in spec
+
+
 @pytest.mark.parametrize("shell", INTERACTIVE_SHELLS, ids=lambda path: Path(path).name)
 @pytest.mark.parametrize(
     "dotenv, missing_name",

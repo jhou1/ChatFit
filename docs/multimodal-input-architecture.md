@@ -1,5 +1,10 @@
 # ChatFit Multimodal Input Architecture
 
+> 2026-10-13 implementation update: voice and photo providers are independent
+optional OpenAI-compatible APIs configured with `VOICE_API_*` and `OCR_API_*`.
+Missing or incomplete media settings disable only that input modality; they do
+not prevent Bot startup or text chat.
+
 ## 1. Purpose
 
 This document defines how ChatFit accepts and understands three Telegram input
@@ -49,8 +54,9 @@ tools remain the business execution path.
 6. When input is uncertain, the reply shows only the relevant transcript or
    image-extraction fragment needed for clarification.
 7. Cloud media understanding Providers are replaceable.
-8. The first Provider implementation uses Gemini because the deployment already
-   has access to economical Gemini tokens.
+8. Each media modality is configured independently through its own
+   OpenAI-compatible endpoint, key, and model. Gemini is one compatible
+   deployment choice, not a required provider.
 9. Raw media is never durably persisted locally or in cloud object storage.
 10. Processing may use bounded memory or an OS temporary file during the active
     request. Normal exit paths release it; a cleanup failure fails closed and
@@ -318,19 +324,22 @@ without changing the orchestrator.
 Provider selection is configuration-driven:
 
 ```text
-MEDIA_SPEECH_PROVIDER=gemini
-MEDIA_IMAGE_PROVIDER=gemini
-GEMINI_MEDIA_MODEL=<deployment-selected-gemini-model>
+VOICE_API_BASE_URL=<openai-compatible-base-url>
+VOICE_API_KEY=<voice-provider-key>
+VOICE_API_MODEL=<deployment-selected-voice-model>
+OCR_API_BASE_URL=<openai-compatible-base-url>
+OCR_API_KEY=<ocr-provider-key>
+OCR_API_MODEL=<deployment-selected-ocr-model>
 MEDIA_PROVIDER_TIMEOUT_SECONDS=45
 MEDIA_PROVIDER_MAX_RETRIES=2
 ```
 
-The model name is a deployment default, not a domain constant. Tests replace
-the registry with Fake Providers. A future deployment may configure, for
-example, Gemini for images and a different speech Provider without changing
-the orchestrator or Agent. Startup validates that the configured Provider is
-registered. A live contract test must also prove that the configured Gemini
-model accepts the required inline modality before that model is promoted.
+Each model name is a deployment default, not a domain constant. Tests replace
+the providers with fakes. A deployment may configure one compatible endpoint
+for voice and a different compatible endpoint for OCR without changing
+the orchestrator or Agent. Missing or incomplete configuration disables that
+modality instead of failing Bot startup. A live contract test must also prove
+that the configured model accepts the required inline modality before that model is promoted.
 
 ### 6.6 Gemini adapters
 

@@ -1,6 +1,7 @@
 """Configuration and HTTP support for optional media-provider APIs."""
 
 from collections.abc import Sequence
+import asyncio
 import logging
 import os
 from dataclasses import dataclass
@@ -72,10 +73,14 @@ class OpenAICompatibleMediaClient:
         config: MediaProviderConfig,
         *,
         timeout: float = 45.0,
+        max_retries: int = 2,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        if max_retries < 0:
+            raise ValueError("max_retries must be greater than or equal to zero")
         self._config = config
         self._timeout = timeout
+        self._max_retries = max_retries
         self._transport = transport
 
     async def chat(self, content: Sequence[dict[str, Any]]) -> str:
@@ -88,12 +93,24 @@ class OpenAICompatibleMediaClient:
             timeout=self._timeout,
             transport=self._transport,
         ) as client:
-            response = await client.post(
-                chat_completions_url(self._config.base_url),
-                json=payload,
-                headers={"Authorization": f"Bearer {self._config.api_key}"},
-            )
-            response.raise_for_status()
+            for attempt in range(self._max_retries + 1):
+                try:
+                    response = await client.post(
+                        chat_completions_url(self._config.base_url),
+                        json=payload,
+                        headers={"Authorization": f"Bearer {self._config.api_key}"},
+                    )
+                    response.raise_for_status()
+                    break
+                except httpx.HTTPStatusError as error:
+                    if attempt == self._max_retries or not _is_transient_status(
+                        error.response.status_code
+                    ):
+                        raise
+                except httpx.TransportError:
+                    if attempt == self._max_retries:
+                        raise
+                await asyncio.sleep(min(0.25 * (2**attempt), 2.0))
 
         data = response.json()
         choices = data.get("choices") if isinstance(data, dict) else None
@@ -104,3 +121,7 @@ class OpenAICompatibleMediaClient:
         if not text:
             raise ValueError("Media provider returned no text")
         return text
+
+
+def _is_transient_status(status_code: int) -> bool:
+    return status_code in {408, 429} or status_code >= 500
