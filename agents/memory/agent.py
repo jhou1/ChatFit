@@ -57,7 +57,9 @@ class LLMMemoryInterpreter:
 
     def __init__(self, llm_config: LLMConfig) -> None:
         chat_model = create_chat_model(llm_config)
-        self._runnable = chat_model.with_structured_output(MemoryMutationDecision)
+        self._runnable = chat_model.with_structured_output(
+            MemoryMutationDecision, method="function_calling"
+        )
 
     async def interpret(
         self,
