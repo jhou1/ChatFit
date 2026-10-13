@@ -15,4 +15,3 @@ The base URL may point to an API root ending in `/v1` or directly to `/chat/comp
 The Bot always registers voice and photo handlers. If a provider is disabled, its handler replies with a short instruction to type the message instead and does not download media or call the backend. A configured provider receives only the media bytes, MIME type, and a constrained transcription/OCR prompt. Backend chat behavior remains unchanged.
 
 This change intentionally removes the default Google Gemini media path from deployment documentation and Helm. Users can still select a Gemini-compatible OpenAI endpoint by supplying its URL, key, and model through the generic variables.
-
