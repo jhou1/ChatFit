@@ -49,6 +49,22 @@ def api_auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {TEST_CHATFIT_API_TOKEN}"}
 
 
+def _configure_generic_llm_environment(monkeypatch):
+    for name in (
+        "LLM_API_BASE_URL",
+        "LLM_API_KEY",
+        "GLM_API_KEY",
+        "LLM_MODEL",
+        "LLM_TEMPERATURE",
+        "LLM_MAX_TOKENS",
+        "LLM_PROXY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("LLM_API_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("LLM_API_KEY", "unit-test-key")
+    monkeypatch.setenv("LLM_MODEL", "unit-test-model")
+
+
 @pytest.fixture
 def temp_db_path(tmp_path):
     db_path = tmp_path / "proactive_review.db"
@@ -1097,6 +1113,7 @@ async def test_main_rejects_business_and_memory_database_collision_before_setup(
     """Breaks if CLI user memory can be mixed into the business database."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("USER_MEMORY_DB_PATH", str(tmp_path / "chatfit.db"))
+    _configure_generic_llm_environment(monkeypatch)
     monkeypatch.setattr(
         main_module,
         "get_or_create_vector_store",
@@ -1123,6 +1140,7 @@ async def test_main_rejects_sqlite_file_uri_before_setup(
     """Breaks if CLI constructs dependencies from an unsupported SQLite URI."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("USER_MEMORY_DB_PATH", memory_path)
+    _configure_generic_llm_environment(monkeypatch)
     monkeypatch.setattr(
         main_module,
         "get_or_create_vector_store",
@@ -1228,6 +1246,7 @@ class _UnusedSubgraph:
 
 
 def _patch_api_lifespan_dependencies(monkeypatch, tmp_path):
+    _configure_generic_llm_environment(monkeypatch)
     business_path = tmp_path / "business.db"
     checkpointer_path = tmp_path / "checkpointer.db"
     memory_path = tmp_path / "user-memory.db"
@@ -1362,6 +1381,41 @@ async def test_memory_survives_full_api_restart_new_thread_and_stays_user_isolat
 
 
 @pytest.mark.asyncio
+async def test_api_startup_uses_platform_agnostic_llm_configuration(
+    monkeypatch, tmp_path
+):
+    """Breaks if API startup reverts to a provider-specific chat model default."""
+    _patch_api_lifespan_dependencies(monkeypatch, tmp_path)
+    for name in (
+        "LLM_API_BASE_URL",
+        "LLM_API_KEY",
+        "GLM_API_KEY",
+        "LLM_MODEL",
+        "LLM_TEMPERATURE",
+        "LLM_MAX_TOKENS",
+        "LLM_PROXY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("LLM_API_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("GLM_API_KEY", "glm-key")
+    monkeypatch.setenv("LLM_MODEL", "glm-4.5")
+    monkeypatch.setenv("LLM_TEMPERATURE", "0.2")
+    monkeypatch.setenv("LLM_MAX_TOKENS", "4096")
+    monkeypatch.setenv("LLM_PROXY", "socks5://127.0.0.1:8990")
+
+    async with api_module.app.router.lifespan_context(api_module.app):
+        config = api_module.app.state.llm_config
+
+    assert config.provider == "openai_compatible"
+    assert config.base_url == "https://api.example.com/v1"
+    assert config.model_name == "glm-4.5"
+    assert config.api_key == "glm-key"
+    assert config.temperature == 0.2
+    assert config.max_tokens == 4096
+    assert config.kwargs == {"client_args": {"proxy": "socks5://127.0.0.1:8990"}}
+
+
+@pytest.mark.asyncio
 async def test_main_uses_configured_memory_store_and_local_cli_owner(
     monkeypatch, tmp_path, capsys
 ):
@@ -1369,6 +1423,11 @@ async def test_main_uses_configured_memory_store_and_local_cli_owner(
     monkeypatch.chdir(tmp_path)
     memory_path = tmp_path / "runtime-data" / "cli-user-memory.db"
     monkeypatch.setenv("USER_MEMORY_DB_PATH", str(memory_path))
+    for name in ("LLM_API_BASE_URL", "LLM_API_KEY", "GLM_API_KEY", "LLM_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("LLM_API_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("GLM_API_KEY", "glm-key")
+    monkeypatch.setenv("LLM_MODEL", "glm-4.5")
     monkeypatch.setattr(
         main_module, "get_or_create_vector_store", lambda *args: object()
     )
@@ -1391,7 +1450,8 @@ async def test_main_uses_configured_memory_store_and_local_cli_owner(
                 }
             }
 
-    def graph_factory(*args, **kwargs):
+    def graph_factory(llm_config, *args, **kwargs):
+        captured["llm_config"] = llm_config
         captured["graph_kwargs"] = kwargs
         return RecordingCliGraph()
 
@@ -1401,6 +1461,10 @@ async def test_main_uses_configured_memory_store_and_local_cli_owner(
 
     store = captured["graph_kwargs"]["memory_store"]
     assert isinstance(store, UserMemoryStore)
+    assert captured["llm_config"].provider == "openai_compatible"
+    assert captured["llm_config"].base_url == "https://api.example.com/v1"
+    assert captured["llm_config"].model_name == "glm-4.5"
+    assert captured["llm_config"].api_key == "glm-key"
     assert store.db_path == memory_path
     assert captured["config"]["configurable"]["user_id"] == "local-cli"
     assert captured["config"]["configurable"]["thread_id"]

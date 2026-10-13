@@ -103,10 +103,15 @@ class FakeTelegramRequest(BaseRequest):
         if "/file/bot" in url and url.endswith("photos/photo-file-id.jpg"):
             self.calls.append({"method": "downloadFile", "parameters": {}})
             return 200, synthetic_jpeg_bytes()
+        if "/file/bot" in url and url.endswith("voice/voice-file-id.ogg"):
+            self.calls.append({"method": "downloadFile", "parameters": {}})
+            return 200, synthetic_ogg_bytes()
 
         telegram_method = url.rsplit("/", maxsplit=1)[-1]
         parameters = request_data.parameters if request_data else {}
         self.calls.append({"method": telegram_method, "parameters": parameters})
+        requested_file_id = parameters.get("file_id", "photo-file-id")
+        voice_file = requested_file_id == "voice-file-id"
 
         payloads: dict[str, Any] = {
             "getMe": {
@@ -116,10 +121,20 @@ class FakeTelegramRequest(BaseRequest):
                 "username": "chatfit_test_bot",
             },
             "getFile": {
-                "file_id": parameters.get("file_id", "photo-file-id"),
-                "file_unique_id": "photo-unique-id",
-                "file_size": len(synthetic_jpeg_bytes()),
-                "file_path": "photos/photo-file-id.jpg",
+                "file_id": requested_file_id,
+                "file_unique_id": (
+                    "voice-unique-id" if voice_file else "photo-unique-id"
+                ),
+                "file_size": (
+                    len(synthetic_ogg_bytes())
+                    if voice_file
+                    else len(synthetic_jpeg_bytes())
+                ),
+                "file_path": (
+                    "voice/voice-file-id.ogg"
+                    if voice_file
+                    else "photos/photo-file-id.jpg"
+                ),
             },
             "sendChatAction": True,
             "sendMessage": {
@@ -156,6 +171,25 @@ def photo_update_payload() -> dict[str, Any]:
     }
 
 
+def voice_update_payload() -> dict[str, Any]:
+    return {
+        "update_id": 1002,
+        "message": {
+            "message_id": 2,
+            "date": 0,
+            "chat": {"id": 456, "type": "private"},
+            "from": {"id": 123, "is_bot": False, "first_name": "Tester"},
+            "voice": {
+                "duration": 7,
+                "mime_type": "audio/ogg",
+                "file_id": "voice-file-id",
+                "file_unique_id": "voice-unique-id",
+                "file_size": len(synthetic_ogg_bytes()),
+            },
+        },
+    }
+
+
 def unsupported_contact_update_payload() -> dict[str, Any]:
     return {
         "update_id": 1001,
@@ -176,6 +210,10 @@ def synthetic_jpeg_bytes() -> bytes:
     return buffer.getvalue()
 
 
+def synthetic_ogg_bytes() -> bytes:
+    return b"synthetic-ogg-audio"
+
+
 class FakePhotoTextExtractor:
     def __init__(self, text: str = "深蹲 5x5 100kg") -> None:
         self.calls: list[tuple[bytes, str]] = []
@@ -191,6 +229,16 @@ class FakePhotoTextExtractor:
 class FailingPhotoTextExtractor:
     async def extract_text(self, image_bytes: bytes, mime_type: str):
         raise RuntimeError("provider unavailable")
+
+
+class FakeSpeechTranscriber:
+    def __init__(self, text: str = "深蹲 5x5 100kg") -> None:
+        self.calls: list[tuple[bytes, str]] = []
+        self.text = text
+
+    async def transcribe(self, audio_bytes: bytes, mime_type: str) -> str:
+        self.calls.append((audio_bytes, mime_type))
+        return self.text
 
 
 class FakeAsyncClient:
@@ -869,6 +917,32 @@ def test_main_registers_photo_message_handler(monkeypatch):
     assert app.polling_kwargs == {"bootstrap_retries": 5}
 
 
+def test_main_starts_and_registers_media_handlers_without_media_providers(
+    monkeypatch,
+):
+    app = FakeApplication()
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("CHATFIT_API_TOKEN", "test-api-token")
+    monkeypatch.setenv("PROACTIVE_REVIEWS_ENABLED", "false")
+    monkeypatch.delenv("TELEGRAM_PROXY", raising=False)
+    monkeypatch.setattr(bot, "ApplicationBuilder", lambda: FakeApplicationBuilder(app))
+    monkeypatch.setattr(bot, "build_photo_text_extractor_from_env", lambda: None)
+    monkeypatch.setattr(bot, "build_speech_transcriber_from_env", lambda: None)
+
+    bot.main()
+
+    callbacks = [
+        handler.callback for handler in app.handlers if hasattr(handler, "callback")
+    ]
+    callback_names = [callback.__name__ for callback in callbacks]
+    assert "handle_voice" in callback_names
+    assert "handle_photo" in callback_names
+    assert app.bot_data["speech_transcriber"] is None
+    assert app.bot_data["photo_text_extractor"] is None
+    assert app.polling_started
+
+
 def test_main_registers_enabled_proactive_review_job(monkeypatch):
     app = FakeApplication()
 
@@ -980,6 +1054,83 @@ def test_telegram_proxy_configures_polling_request(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_disabled_voice_update_replies_without_downloading_or_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = FakeTelegramRequest()
+    backend_posts: list[dict[str, Any]] = []
+    patch_backend_post(monkeypatch, backend_posts)
+
+    application = bot.build_telegram_application(
+        "123:ABC",
+        request=request,
+        speech_transcriber=None,
+        photo_text_extractor=None,
+    )
+    await application.initialize()
+
+    try:
+        calls_after_initialize = len(request.calls)
+        update = Update.de_json(voice_update_payload(), application.bot)
+
+        await application.process_update(update)
+
+        assert backend_posts == []
+        update_calls = request.calls[calls_after_initialize:]
+        assert [call["method"] for call in update_calls] == [
+            "sendChatAction",
+            "sendMessage",
+        ]
+        assert update_calls[-1]["parameters"]["text"] == (
+            "Voice input is not configured. Please type your message instead."
+        )
+    finally:
+        await application.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_voice_update_transcribes_and_forwards_to_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = FakeTelegramRequest()
+    transcriber = FakeSpeechTranscriber()
+    backend_posts: list[dict[str, Any]] = []
+    patch_backend_post(monkeypatch, backend_posts)
+
+    application = bot.build_telegram_application(
+        "123:ABC", request=request, speech_transcriber=transcriber
+    )
+    await application.initialize()
+
+    try:
+        calls_after_initialize = len(request.calls)
+        update = Update.de_json(voice_update_payload(), application.bot)
+
+        await application.process_update(update)
+
+        assert transcriber.calls == [(synthetic_ogg_bytes(), "audio/ogg")]
+        assert backend_posts == [
+            {
+                "url": bot.API_URL,
+                "json": {
+                    "user_id": "123",
+                    "message": "深蹲 5x5 100kg",
+                },
+            }
+        ]
+        update_calls = request.calls[calls_after_initialize:]
+        assert [call["method"] for call in update_calls] == [
+            "sendChatAction",
+            "getFile",
+            "downloadFile",
+            "sendMessage",
+        ]
+        assert update_calls[-1]["parameters"]["text"] == "已记录深蹲"
+    finally:
+        await application.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_photo_update_extracts_text_and_forwards_to_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1024,6 +1175,41 @@ async def test_photo_update_extracts_text_and_forwards_to_backend(
         ]
         assert update_calls[-1]["parameters"]["chat_id"] == 456
         assert update_calls[-1]["parameters"]["text"] == "已记录深蹲"
+    finally:
+        await application.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_disabled_photo_update_replies_without_downloading_or_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = FakeTelegramRequest()
+    backend_posts: list[dict[str, Any]] = []
+    patch_backend_post(monkeypatch, backend_posts)
+
+    application = bot.build_telegram_application(
+        "123:ABC",
+        request=request,
+        speech_transcriber=None,
+        photo_text_extractor=None,
+    )
+    await application.initialize()
+
+    try:
+        calls_after_initialize = len(request.calls)
+        update = Update.de_json(photo_update_payload(), application.bot)
+
+        await application.process_update(update)
+
+        assert backend_posts == []
+        update_calls = request.calls[calls_after_initialize:]
+        assert [call["method"] for call in update_calls] == [
+            "sendChatAction",
+            "sendMessage",
+        ]
+        assert update_calls[-1]["parameters"]["text"] == (
+            "Photo input is not configured. Please type your message instead."
+        )
     finally:
         await application.shutdown()
 

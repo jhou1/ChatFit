@@ -24,6 +24,7 @@ from telegram.request import BaseRequest, HTTPXRequest
 from dotenv import load_dotenv
 
 from inputs.photo_ocr import PhotoTextExtractor, build_photo_text_extractor_from_env
+from inputs.speech import SpeechTranscriber, build_speech_transcriber_from_env
 from proactive_reviews import (
     WEEKLY_INSIGHTS_TIMEOUT_SECONDS,
     MAX_PROACTIVE_MESSAGE_LENGTH,
@@ -96,6 +97,12 @@ NO_TEXT_IN_PHOTO_REPLY = (
 )
 PHOTO_READ_FAILED_REPLY = (
     "我读取这张图片时遇到了问题。" "请重发一次，或者直接把训练或饮食内容打出来。"
+)
+VOICE_INPUT_UNAVAILABLE_REPLY = (
+    "Voice input is not configured. Please type your message instead."
+)
+PHOTO_INPUT_UNAVAILABLE_REPLY = (
+    "Photo input is not configured. Please type your message instead."
 )
 UNSUPPORTED_INPUT_REPLY = (
     "我现在只能处理文字、语音和图片消息。请把训练或饮食内容用这些方式发给我。"
@@ -357,42 +364,21 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"Network error while sending typing action: {ne}")
 
     try:
-        # Download voice file
-        voice_file = await context.bot.get_file(update.message.voice.file_id)
-
-        import tempfile
-        import os
-        from google import genai
-        from google.genai import types
-
-        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
-            tmp_path = tmp.name
-
-        await voice_file.download_to_drive(tmp_path)
-
-        # Transcribe voice using Gemini
-        api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
-        client = genai.Client(api_key=api_key)
-
-        with open(tmp_path, "rb") as f:
-            audio_bytes = f.read()
-
-        contents: Any = [
-            "Transcribe this voice message exactly as spoken in its original language. Do not add any extra commentary or text.",
-            types.Part.from_bytes(data=audio_bytes, mime_type="audio/ogg"),
-        ]
-        response = await client.aio.models.generate_content(
-            model="gemini-3.5-flash",
-            contents=contents,
-        )
-
-        user_message = (response.text or "").strip()
-        os.remove(tmp_path)
-
-        if not user_message:
-            bot_reply = "Could not transcribe the voice message."
+        transcriber = context.application.bot_data.get("speech_transcriber")
+        if transcriber is None:
+            bot_reply = VOICE_INPUT_UNAVAILABLE_REPLY
         else:
-            bot_reply = await post_message_to_api(user_id, user_message)
+            voice_file = await context.bot.get_file(update.message.voice.file_id)
+            audio_bytes = bytes(await voice_file.download_as_bytearray())
+            mime_type = update.message.voice.mime_type or "audio/ogg"
+            user_message = (
+                await transcriber.transcribe(audio_bytes, mime_type)
+            ).strip()
+
+            if not user_message:
+                bot_reply = "Could not transcribe the voice message."
+            else:
+                bot_reply = await post_message_to_api(user_id, user_message)
 
     except httpx.HTTPError as e:
         bot_reply = (
@@ -437,20 +423,20 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         extractor = context.application.bot_data.get("photo_text_extractor")
         if extractor is None:
-            raise RuntimeError("photo_text_extractor is not configured")
+            bot_reply = PHOTO_INPUT_UNAVAILABLE_REPLY
+        else:
+            selected_photo = select_largest_photo(update.message.photo)
+            photo_file = await context.bot.get_file(selected_photo.file_id)
+            image_bytes = bytes(await photo_file.download_as_bytearray())
+            extraction = await extractor.extract_text(image_bytes, "image/jpeg")
 
-        selected_photo = select_largest_photo(update.message.photo)
-        photo_file = await context.bot.get_file(selected_photo.file_id)
-        image_bytes = bytes(await photo_file.download_as_bytearray())
-        extraction = await extractor.extract_text(image_bytes, "image/jpeg")
+            if not extraction.text:
+                await update.message.reply_text(NO_TEXT_IN_PHOTO_REPLY)
+                return
 
-        if not extraction.text:
-            await update.message.reply_text(NO_TEXT_IN_PHOTO_REPLY)
-            return
-
-        bot_reply = await post_message_to_api(
-            user_id, build_ocr_agent_message(extraction.text)
-        )
+            bot_reply = await post_message_to_api(
+                user_id, build_ocr_agent_message(extraction.text)
+            )
 
     except httpx.HTTPError as e:
         bot_reply = (
@@ -490,6 +476,7 @@ def build_telegram_application(
     *,
     proxy_url: str | None = None,
     request: BaseRequest | None = None,
+    speech_transcriber: SpeechTranscriber | None = None,
     photo_text_extractor: PhotoTextExtractor | None = None,
     proactive_reviews_enabled: bool = False,
 ) -> Application[Any, Any, Any, Any, Any, Any]:
@@ -515,6 +502,7 @@ def build_telegram_application(
         builder = builder.request(telegram_request).get_updates_request(updates_request)
 
     app = builder.build()
+    app.bot_data["speech_transcriber"] = speech_transcriber
     app.bot_data["photo_text_extractor"] = photo_text_extractor
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clear", clear_context))
@@ -549,10 +537,12 @@ def main():
     print("Initializing Telegram Bot...")
 
     proxy_url = get_telegram_proxy_url()
+    speech_transcriber = build_speech_transcriber_from_env()
     photo_text_extractor = build_photo_text_extractor_from_env()
     app = build_telegram_application(
         token,
         proxy_url=proxy_url,
+        speech_transcriber=speech_transcriber,
         photo_text_extractor=photo_text_extractor,
         proactive_reviews_enabled=proactive_settings.enabled,
     )

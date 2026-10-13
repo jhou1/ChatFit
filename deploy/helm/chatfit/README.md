@@ -26,10 +26,21 @@ resources. Run all commands from the repository root.
 ## Create the namespace and required Secret
 
 The chart deliberately consumes an existing Secret rather than managing
-credentials. Export all three non-empty values before creating it:
+credentials. Export the three required credentials before creating it. Voice
+and OCR API keys are optional; when their complete configuration is absent, the
+Bot still starts and text chat works. Chat and media endpoints/models are
+non-secret values and are passed as Helm config:
 
 ```bash
-export GOOGLE_API_KEY="replace-with-google-api-key"
+export LLM_API_KEY="replace-with-your-openai-compatible-api-key"
+export LLM_API_BASE_URL="https://your-openai-compatible-endpoint/v1"
+export LLM_MODEL="glm-4.5"
+export VOICE_API_KEY=""
+export OCR_API_KEY=""
+export VOICE_API_BASE_URL=""
+export VOICE_API_MODEL=""
+export OCR_API_BASE_URL=""
+export OCR_API_MODEL=""
 export TELEGRAM_BOT_TOKEN="replace-with-telegram-bot-token"
 export CHATFIT_API_TOKEN="$(openssl rand -hex 32)"
 
@@ -37,11 +48,15 @@ kubectl create namespace chatfit
 
 (
   set -eu
-  : "${GOOGLE_API_KEY:?GOOGLE_API_KEY must be non-empty}"
+  : "${LLM_API_KEY:?LLM_API_KEY must be non-empty}"
+  : "${LLM_API_BASE_URL:?LLM_API_BASE_URL must be non-empty}"
+  : "${LLM_MODEL:?LLM_MODEL must be non-empty}"
   : "${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN must be non-empty}"
   : "${CHATFIT_API_TOKEN:?CHATFIT_API_TOKEN must be non-empty}"
   kubectl -n chatfit create secret generic chatfit-secrets \
-    --from-literal=GOOGLE_API_KEY="${GOOGLE_API_KEY}" \
+    --from-literal=LLM_API_KEY="${LLM_API_KEY}" \
+    --from-literal=VOICE_API_KEY="${VOICE_API_KEY}" \
+    --from-literal=OCR_API_KEY="${OCR_API_KEY}" \
     --from-literal=TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}" \
     --from-literal=CHATFIT_API_TOKEN="${CHATFIT_API_TOKEN}"
 )
@@ -52,6 +67,9 @@ empty `CHATFIT_API_TOKEN` makes both workloads crash and causes `helm install
 --wait` to time out. Do not put credential values in a Helm values file or in
 Git. If the namespace or Secret already exists, use your approved update
 workflow rather than expecting `kubectl create` to replace it.
+To enable media input, also set `config.voiceApiBaseUrl`, `config.voiceApiModel`,
+`config.ocrApiBaseUrl`, and `config.ocrApiModel` during install or upgrade.
+Each media group must have a non-empty URL, key, and model.
 
 ## Mode 1: persistent PVC storage (recommended)
 
@@ -93,6 +111,8 @@ helm install chatfit deploy/helm/chatfit \
   --set-string image.repository="${IMAGE_URI}" \
   --set-string image.tag="${IMAGE_TAG}" \
   --set-string existingSecret=chatfit-secrets \
+  --set-string config.llmApiBaseUrl="${LLM_API_BASE_URL}" \
+  --set-string config.llmModel="${LLM_MODEL}" \
   --set-string persistence.type=pvc \
   --set-string persistence.size=20Gi \
   --wait --timeout 10m
@@ -106,6 +126,8 @@ helm lint deploy/helm/chatfit \
   --set-string image.repository="${IMAGE_URI}" \
   --set-string image.tag="${IMAGE_TAG}" \
   --set-string existingSecret=chatfit-secrets \
+  --set-string config.llmApiBaseUrl="${LLM_API_BASE_URL}" \
+  --set-string config.llmModel="${LLM_MODEL}" \
   --set-string persistence.type=pvc
 ```
 
@@ -139,6 +161,8 @@ helm install chatfit deploy/helm/chatfit \
   --set-string image.tag="${IMAGE_TAG}" \
   --set-string image.pullPolicy=Never \
   --set-string existingSecret=chatfit-secrets \
+  --set-string config.llmApiBaseUrl="${LLM_API_BASE_URL}" \
+  --set-string config.llmModel="${LLM_MODEL}" \
   --set-string persistence.type=emptyDir \
   --wait --timeout 10m
 helm test chatfit --namespace chatfit
@@ -198,6 +222,8 @@ helm upgrade chatfit deploy/helm/chatfit \
   --set-string image.repository="${IMAGE_URI}" \
   --set-string image.tag="${IMAGE_TAG}" \
   --set-string existingSecret=chatfit-secrets \
+  --set-string config.llmApiBaseUrl="${LLM_API_BASE_URL}" \
+  --set-string config.llmModel="${LLM_MODEL}" \
   --set-string persistence.type=pvc \
   --wait --timeout 10m
 helm test chatfit --namespace chatfit
@@ -218,6 +244,8 @@ helm upgrade chatfit deploy/helm/chatfit \
   --set-string image.tag="${IMAGE_TAG}" \
   --set-string image.pullPolicy=Never \
   --set-string existingSecret=chatfit-secrets \
+  --set-string config.llmApiBaseUrl="${LLM_API_BASE_URL}" \
+  --set-string config.llmModel="${LLM_MODEL}" \
   --set-string persistence.type=emptyDir \
   --wait --timeout 10m
 helm test chatfit --namespace chatfit
@@ -266,7 +294,9 @@ configure `imagePullSecrets` in the override file.
 ### `CreateContainerConfigError`
 
 This normally means `chatfit-secrets` is absent or is missing one of
-`GOOGLE_API_KEY`, `TELEGRAM_BOT_TOKEN`, or `CHATFIT_API_TOKEN`. Inspect events
+`LLM_API_KEY`, `TELEGRAM_BOT_TOKEN`, or `CHATFIT_API_TOKEN`. Missing optional
+`VOICE_API_KEY` or `OCR_API_KEY` values disable only media input.
+Inspect events
 and the Secret key names (not their values), then create or repair the Secret
 and rerun `helm upgrade`:
 
@@ -284,10 +314,10 @@ logs. A Secret key can exist while its value is still empty:
 kubectl logs deployment/chatfit-chatfit-api --namespace chatfit --previous
 kubectl logs deployment/chatfit-chatfit-bot --namespace chatfit --previous
 kubectl get secret chatfit-secrets --namespace chatfit \
-  -o go-template='CHATFIT_API_TOKEN={{len (index .data "CHATFIT_API_TOKEN")}}{{"\n"}}'
+  -o go-template='LLM_API_KEY={{len (index .data "LLM_API_KEY")}}{{"\n"}}CHATFIT_API_TOKEN={{len (index .data "CHATFIT_API_TOKEN")}}{{"\n"}}'
 ```
 
-`CHATFIT_API_TOKEN=0` means the stored value is empty. Repair the existing
+`LLM_API_KEY=0` or `CHATFIT_API_TOKEN=0` means the stored value is empty. Repair the existing
 Secret using your approved secret-management workflow, then restart both
 Deployments. Increasing the Helm timeout does not make an invalid credential
 configuration healthy.

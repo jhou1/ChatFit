@@ -64,11 +64,11 @@ spec:
               value: /app/data/checkpointer.db
             - name: USER_MEMORY_DB_PATH
               value: /app/data/user-memory.db
-            - name: GOOGLE_API_KEY
+            - name: LLM_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ required "existingSecret is required" .Values.existingSecret }}
-                  key: {{ .Values.secretKeys.googleApiKey }}
+                  key: {{ .Values.secretKeys.llmApiKey }}
             - name: CHATFIT_API_TOKEN
               valueFrom:
                 secretKeyRef:

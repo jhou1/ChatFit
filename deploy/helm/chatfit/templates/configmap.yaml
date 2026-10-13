@@ -7,6 +7,12 @@ metadata:
     {{- include "chatfit.labels" . | nindent 4 }}
 data:
   TZ: {{ .Values.config.timezone | quote }}
+  LLM_API_BASE_URL: {{ .Values.config.llmApiBaseUrl | quote }}
+  LLM_MODEL: {{ .Values.config.llmModel | quote }}
+  VOICE_API_BASE_URL: {{ .Values.config.voiceApiBaseUrl | quote }}
+  VOICE_API_MODEL: {{ .Values.config.voiceApiModel | quote }}
+  OCR_API_BASE_URL: {{ .Values.config.ocrApiBaseUrl | quote }}
+  OCR_API_MODEL: {{ .Values.config.ocrApiModel | quote }}
   PROACTIVE_REVIEWS_ENABLED: {{ .Values.config.proactiveReviewsEnabled | quote }}
   TELEGRAM_CHAT_ID: {{ .Values.config.telegramChatId | quote }}
   VOICE_MAX_DURATION_SECONDS: {{ .Values.config.voiceMaxDurationSeconds | quote }}
@@ -16,8 +22,5 @@ data:
   MEDIA_PROVIDER_TIMEOUT_SECONDS: {{ .Values.config.mediaProviderTimeoutSeconds | quote }}
   MEDIA_PROVIDER_MAX_RETRIES: {{ .Values.config.mediaProviderMaxRetries | quote }}
   MEDIA_EPHEMERAL_DIRECTORY: {{ .Values.config.mediaEphemeralDirectory | quote }}
-  SPEECH_PROVIDER: {{ .Values.config.speechProvider | quote }}
-  IMAGE_PROVIDER: {{ .Values.config.imageProvider | quote }}
-  GEMINI_MEDIA_MODEL: {{ .Values.config.geminiMediaModel | quote }}
   LANGFUSE_HOST: {{ .Values.config.langfuseHost | quote }}
   LANGFUSE_CAPTURE_CONTENT: {{ .Values.config.langfuseCaptureContent | quote }}

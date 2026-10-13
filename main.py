@@ -11,7 +11,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.markdown import Markdown
 
-from agents.llm_factory import LLMConfig
+from agents.llm_settings import resolve_llm_config_from_env
 from agents.memory.agent import LLMMemoryInterpreter
 from agents.memory.config import (
     require_distinct_sqlite_files,
@@ -27,13 +27,7 @@ console = Console()
 
 
 async def main():
-    llm_config = LLMConfig(
-        provider="google",
-        model_name="gemini-3.5-flash",
-        temperature=0.5,
-        max_tokens=8192,
-        kwargs={"client_args": {"proxy": "socks5://127.0.0.1:8990"}},
-    )
+    llm_config = resolve_llm_config_from_env()
 
     business_db = resolve_sqlite_file_path(
         "chatfit.db", setting_name="CLI business database path"

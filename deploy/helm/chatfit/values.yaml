@@ -19,6 +19,12 @@ persistence:
   keep: true
 config:
   timezone: Asia/Shanghai
+  llmApiBaseUrl: ""
+  llmModel: ""
+  voiceApiBaseUrl: ""
+  voiceApiModel: ""
+  ocrApiBaseUrl: ""
+  ocrApiModel: ""
   proactiveReviewsEnabled: false
   telegramChatId: ""
   voiceMaxDurationSeconds: 180
@@ -28,13 +34,12 @@ config:
   mediaProviderTimeoutSeconds: 45.0
   mediaProviderMaxRetries: 2
   mediaEphemeralDirectory: /tmp/chatfit-media
-  speechProvider: gemini
-  imageProvider: gemini
-  geminiMediaModel: gemini-3.5-flash-lite
   langfuseHost: https://cloud.langfuse.com
   langfuseCaptureContent: false
 secretKeys:
-  googleApiKey: GOOGLE_API_KEY
+  llmApiKey: LLM_API_KEY
+  voiceApiKey: VOICE_API_KEY
+  ocrApiKey: OCR_API_KEY
   telegramBotToken: TELEGRAM_BOT_TOKEN
   chatfitApiToken: CHATFIT_API_TOKEN
   langfuseSecretKey: LANGFUSE_SECRET_KEY

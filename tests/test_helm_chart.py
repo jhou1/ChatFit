@@ -20,6 +20,10 @@ REQUIRED_SET_ARGS = (
     "image.tag=test-sha",
     "--set",
     "existingSecret=chatfit-secrets",
+    "--set",
+    "config.llmApiBaseUrl=https://api.example.com/v1",
+    "--set",
+    "config.llmModel=glm-4.5",
 )
 
 
@@ -317,8 +321,20 @@ def test_foundation_resources_use_safe_defaults() -> None:
     assert config["data"]["PROACTIVE_REVIEWS_ENABLED"] == "false"
     assert config["data"]["MEDIA_MAX_NORMALIZED_BYTES"] == "12582912"
     assert config["data"]["IMAGE_MAX_PIXELS"] == "20000000"
+    assert config["data"]["LLM_API_BASE_URL"] == "https://api.example.com/v1"
+    assert config["data"]["LLM_MODEL"] == "glm-4.5"
+    assert config["data"]["VOICE_API_BASE_URL"] == ""
+    assert config["data"]["VOICE_API_MODEL"] == ""
+    assert config["data"]["OCR_API_BASE_URL"] == ""
+    assert config["data"]["OCR_API_MODEL"] == ""
     assert not (
-        {"GOOGLE_API_KEY", "TELEGRAM_BOT_TOKEN", "CHATFIT_API_TOKEN"}
+        {
+            "LLM_API_KEY",
+            "VOICE_API_KEY",
+            "OCR_API_KEY",
+            "TELEGRAM_BOT_TOKEN",
+            "CHATFIT_API_TOKEN",
+        }
         & config["data"].keys()
     )
     assert claim["metadata"]["name"] == "contract-chatfit-data"
@@ -541,7 +557,7 @@ def test_api_uses_distinct_databases_explicit_secret_refs_and_security_defaults(
 
     assert env["CHECKPOINTER_DB_PATH"]["value"] == "/app/data/checkpointer.db"
     assert env["USER_MEMORY_DB_PATH"]["value"] == "/app/data/user-memory.db"
-    for name in ("GOOGLE_API_KEY", "CHATFIT_API_TOKEN"):
+    for name in ("LLM_API_KEY", "CHATFIT_API_TOKEN"):
         assert env[name]["valueFrom"]["secretKeyRef"]["name"] == "chatfit-secrets"
         assert env[name]["valueFrom"]["secretKeyRef"].get("optional") is not True
     for name in (
@@ -575,8 +591,12 @@ def test_bot_calls_only_the_internal_api_service() -> None:
     assert env["API_CLEAR_URL"]["value"] == f"{base}/clear"
     assert env["API_RESUME_URL"]["value"] == f"{base}/resume"
     assert env["API_PROACTIVE_REVIEW_URL"]["value"] == f"{base}/proactive-review"
-    for name in ("GOOGLE_API_KEY", "TELEGRAM_BOT_TOKEN", "CHATFIT_API_TOKEN"):
+    for name in ("TELEGRAM_BOT_TOKEN", "CHATFIT_API_TOKEN"):
         assert env[name]["valueFrom"]["secretKeyRef"]["name"] == "chatfit-secrets"
+    for name in ("VOICE_API_KEY", "OCR_API_KEY"):
+        assert env[name]["valueFrom"]["secretKeyRef"]["name"] == "chatfit-secrets"
+        assert env[name]["valueFrom"]["secretKeyRef"]["optional"] is True
+    assert "GOOGLE_API_KEY" not in env
     assert env["TELEGRAM_PROXY"]["valueFrom"]["secretKeyRef"]["optional"] is True
     assert bot["livenessProbe"]["exec"]["command"][0:2] == ["python", "-c"]
     assert bot["securityContext"]["capabilities"]["drop"] == ["ALL"]
