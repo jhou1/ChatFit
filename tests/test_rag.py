@@ -14,13 +14,14 @@ def test_existing_vector_store_uses_configured_embedding_builder(
         build_calls.append(True)
         return configured_model
 
+    def fake_chroma(**kwargs):
+        chroma_calls.append(kwargs)
+        return object()
+
     monkeypatch.setattr(
         "agents.rag.build_embedding_model_from_env", fake_build_embedding_model
     )
-    monkeypatch.setattr(
-        "agents.rag.Chroma",
-        lambda **kwargs: chroma_calls.append(kwargs) or object(),
-    )
+    monkeypatch.setattr("agents.rag.Chroma", fake_chroma)
 
     get_or_create_vector_store(str(tmp_path / "cookbook"), str(persist_directory))
 
