@@ -1230,7 +1230,7 @@ class _StructuredMemoryRunnable:
 
 
 class _StructuredMemoryModel:
-    def with_structured_output(self, schema):
+    def with_structured_output(self, schema, *, method=None):
         assert schema is MemoryMutationDecision
         return _StructuredMemoryRunnable()
 

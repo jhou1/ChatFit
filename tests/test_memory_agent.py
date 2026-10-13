@@ -1854,8 +1854,9 @@ async def test_llm_interpreter_uses_structured_output_and_exact_context(monkeypa
             }
 
     class FakeChatModel:
-        def with_structured_output(self, schema):
+        def with_structured_output(self, schema, *, method=None):
             captured["schema"] = schema
+            captured["method"] = method
             return FakeStructuredRunnable()
 
     config = LLMConfig(provider="local", model_name="fake-memory-model")
@@ -1883,6 +1884,7 @@ async def test_llm_interpreter_uses_structured_output_and_exact_context(monkeypa
     )
 
     assert captured["schema"] is MemoryMutationDecision
+    assert captured["method"] == "function_calling"
     assert captured["messages"] == [
         SystemMessage(
             content=(
