@@ -6,7 +6,7 @@ from langchain_core.prompts.prompt import PromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_chroma import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from agents.embedding_settings import build_embedding_model_from_env
 
 INSTRUCTION_FOR_ADVISING_MEALS = """
 You are an assistant, you will advise recipes using user's cookbook to satisfy their meal and nutrition preferences.
@@ -30,7 +30,7 @@ User's question/ingredients:
 def get_or_create_vector_store(
     docs_directory: str, persist_directory: str = "chroma.db"
 ):
-    embedding_model = GoogleGenerativeAIEmbeddings(model="gemini-embedding-2")
+    embedding_model = build_embedding_model_from_env()
 
     if os.path.exists(persist_directory):
         return Chroma(
@@ -52,8 +52,6 @@ def get_or_create_vector_store(
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=200)
     chunks = text_splitter.split_documents(documents)
 
-    # embed to vector store
-    embedding_model = GoogleGenerativeAIEmbeddings(model="gemini-embedding-2")
     vector_store = Chroma.from_documents(
         documents=chunks, embedding=embedding_model, persist_directory=persist_directory
     )

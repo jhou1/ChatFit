@@ -77,6 +77,7 @@ flowchart LR
 - Docker Compose 或 Podman Compose
 - 一个由 [BotFather](https://t.me/BotFather) 创建的 Telegram Bot Token
 - 一个支持 tool calling 与结构化输出的 OpenAI-compatible Chat API
+- 一个 OpenAI-compatible Embedding API（用于食谱 RAG）
 - API 与 Bot 共享的独立随机 `CHATFIT_API_TOKEN`
 - 可选：语音/OCR 多模态 API、本地 SOCKS5 代理和 Langfuse 账号
 
@@ -92,11 +93,16 @@ cp .env.example .env
 LLM_API_BASE_URL=https://your-openai-compatible-endpoint/v1
 LLM_API_KEY=your-chat-api-key
 LLM_MODEL=glm-4.5
+EMBEDDING_API_BASE_URL=https://your-embedding-endpoint/v1
+EMBEDDING_API_KEY=your-embedding-api-key
+EMBEDDING_API_MODEL=your-embedding-model
 TELEGRAM_BOT_TOKEN=your-telegram-bot-token
 CHATFIT_API_TOKEN=replace-with-an-independent-random-secret
 ```
 
 `LLM_API_KEY` 是聊天模型的推荐变量；`GLM_API_KEY` 可作为 GLM 部署的兼容别名。
+Embedding API 与聊天 API 分开配置。切换 embedding provider 后需要重建 `chroma.db`，
+因为不同模型生成的向量维度和语义空间可能不兼容。
 语音和 OCR 使用独立的 `VOICE_API_*` 与 `OCR_API_*` 配置；未配置时会禁用对应的语音或图片输入，
 但不会影响 Bot 启动和文字聊天。
 
@@ -113,6 +119,9 @@ Compose 会通过 `env_file` 把 `.env` 注入 API 与 Bot 容器。编辑 `.env
 | `LLM_MODEL` | 必填；聊天模型名称 |
 | `LLM_TEMPERATURE` | 可选；聊天模型温度，默认 `0.5` |
 | `LLM_MAX_TOKENS` | 可选；聊天模型最大输出 token，默认 `8192` |
+| `EMBEDDING_API_BASE_URL` | 必填；Embedding API 的 base URL 或 `/embeddings` endpoint |
+| `EMBEDDING_API_KEY` | 必填；Embedding API key |
+| `EMBEDDING_API_MODEL` | 必填；Embedding 模型名称 |
 | `VOICE_API_BASE_URL` | 可选；语音转写 API 的 base URL 或 `/chat/completions` endpoint |
 | `VOICE_API_KEY` | 可选；语音转写 API key |
 | `VOICE_API_MODEL` | 可选；语音转写模型 |
@@ -294,8 +303,11 @@ set +a
 if [ -z "${LLM_API_BASE_URL:-}" ] ||
   { [ -z "${LLM_API_KEY:-}" ] && [ -z "${GLM_API_KEY:-}" ]; } ||
   [ -z "${LLM_MODEL:-}" ] ||
+  [ -z "${EMBEDDING_API_BASE_URL:-}" ] ||
+  [ -z "${EMBEDDING_API_KEY:-}" ] ||
+  [ -z "${EMBEDDING_API_MODEL:-}" ] ||
   [ -z "${CHATFIT_API_TOKEN:-}" ]; then
-  echo "LLM_API_BASE_URL, LLM_API_KEY (or GLM_API_KEY), LLM_MODEL, and CHATFIT_API_TOKEN must all be set in .env." >&2
+  echo "LLM_API_BASE_URL, LLM_API_KEY (or GLM_API_KEY), LLM_MODEL, EMBEDDING_API_BASE_URL, EMBEDDING_API_KEY, EMBEDDING_API_MODEL, and CHATFIT_API_TOKEN must all be set in .env." >&2
 else
   mkdir -p runtime-data
   export CHECKPOINTER_DB_PATH=./runtime-data/checkpointer.db

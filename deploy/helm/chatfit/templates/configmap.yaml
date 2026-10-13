@@ -9,6 +9,8 @@ data:
   TZ: {{ .Values.config.timezone | quote }}
   LLM_API_BASE_URL: {{ .Values.config.llmApiBaseUrl | quote }}
   LLM_MODEL: {{ .Values.config.llmModel | quote }}
+  EMBEDDING_API_BASE_URL: {{ .Values.config.embeddingApiBaseUrl | quote }}
+  EMBEDDING_API_MODEL: {{ .Values.config.embeddingApiModel | quote }}
   VOICE_API_BASE_URL: {{ .Values.config.voiceApiBaseUrl | quote }}
   VOICE_API_MODEL: {{ .Values.config.voiceApiModel | quote }}
   OCR_API_BASE_URL: {{ .Values.config.ocrApiBaseUrl | quote }}

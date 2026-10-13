@@ -69,6 +69,11 @@ spec:
                 secretKeyRef:
                   name: {{ required "existingSecret is required" .Values.existingSecret }}
                   key: {{ .Values.secretKeys.llmApiKey }}
+            - name: EMBEDDING_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "existingSecret is required" .Values.existingSecret }}
+                  key: {{ .Values.secretKeys.embeddingApiKey }}
             - name: CHATFIT_API_TOKEN
               valueFrom:
                 secretKeyRef:
