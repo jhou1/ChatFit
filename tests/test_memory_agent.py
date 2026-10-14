@@ -704,6 +704,54 @@ async def test_conflicting_remember_waits_for_update_confirmation(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("confirmation", ("是", "更新", "确认更新"))
+async def test_conflicting_remember_bare_confirmation_commits_without_reinterpretation(
+    tmp_path, confirmation
+):
+    memory_db = tmp_path / "user-memory.db"
+    store = UserMemoryStore(memory_db)
+    owner = owner_key_for("user-a")
+    original = store.remember(
+        owner,
+        NewUserMemory(
+            memory_type=MemoryType.TRAINING_TEMPLATE,
+            canonical_key="213",
+            display_name="壶铃213",
+            content="旧模板内容",
+            aliases=("壶铃213",),
+        ),
+    ).memory
+    agent = MemoryAgent(
+        store=store,
+        # Only the initial remember interpretation is allowed. A call for the
+        # bare confirmation would mean the deterministic confirmation path is
+        # not short-circuiting the model.
+        interpreter=DeterministicInterpreter(_training_decision(content="新模板内容")),
+    )
+
+    conflict = await agent.handle(
+        user_id="user-a", user_message="记住新模板内容", pending=None
+    )
+
+    assert conflict.pending is not None
+    assert "拟更新为" in conflict.response
+    assert "新模板内容" in conflict.response
+
+    confirmed = await agent.handle(
+        user_id="user-a", user_message=confirmation, pending=conflict.pending
+    )
+
+    stored = store.list_memories(owner)
+    assert confirmed.pending is None
+    assert confirmed.mutation_committed is True
+    assert "已更新" in confirmed.response
+    assert [(memory.version, memory.content) for memory in stored] == [
+        (2, "新模板内容")
+    ]
+    assert stored[0].id == original.id
+
+
+@pytest.mark.asyncio
 async def test_remember_command_with_update_classification_asks_conflict(tmp_path):
     memory_db = tmp_path / "user-memory.db"
     store = UserMemoryStore(memory_db)

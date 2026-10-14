@@ -48,7 +48,7 @@ _CONFIRMATION_REPLIES = frozenset(
     ("确认", "确认执行", "确认更新", "确定", "是的", "继续")
 )
 _BARE_CONFIRMATION_REPLIES = _CONFIRMATION_REPLIES | frozenset(
-    ("再次确认", "是", "对", "yes")
+    ("再次确认", "是", "对", "yes", "更新")
 )
 
 
@@ -196,11 +196,29 @@ class MemoryAgent:
             memories = self._store.list_memories(owner_key)
         except Exception:
             return self._repository_failure()
-        decision = await self._interpreter.interpret(
-            user_message=user_message,
-            memories=memories,
-            pending=pending,
-        )
+        confirmation_pending: PendingMemoryAction | None = None
+        if (
+            pending is not None
+            and pending.requires_confirmation
+            and len(pending.candidate_ids) == 1
+            and pending.decision.content is not None
+            and bool(pending.decision.content.strip())
+        ):
+            confirmation_pending = pending
+        if confirmation_pending is not None and _is_bare_confirmation_reply(
+            user_message
+        ):
+            confirmed_complete_update = True
+            decision = confirmation_pending.decision.model_copy(
+                update={"intent": confirmation_pending.operation}
+            )
+        else:
+            confirmed_complete_update = False
+            decision = await self._interpreter.interpret(
+                user_message=user_message,
+                memories=memories,
+                pending=pending,
+            )
         if pending is None and decision.intent not in (operation, "clarify"):
             if operation == "remember" and decision.intent == "update":
                 # The explicit remember grammar authorizes this operation. If
@@ -211,7 +229,7 @@ class MemoryAgent:
                 return MemoryAgentResult(
                     response="无法确认这条记忆操作，请重新明确说明。"
                 )
-        if pending is not None:
+        if pending is not None and not confirmed_complete_update:
             clarification_content = decision.content
             if not self._pending_reply_matches_scope(
                 owner_key=owner_key,
@@ -256,11 +274,11 @@ class MemoryAgent:
                     decision = decision.model_copy(
                         update={"content": continuation_content}
                     )
-        elif operation == "update":
+        elif pending is None and operation == "update":
             decision = decision.model_copy(
                 update={"content": command.payload if command is not None else None}
             )
-        elif operation == "remember":
+        elif pending is None and operation == "remember":
             decision = decision.model_copy(
                 update={"content": command.payload if command is not None else None}
             )
@@ -363,7 +381,8 @@ class MemoryAgent:
             aliases=decision.aliases,
             target_query=decision.canonical_key,
             clarification_question=(
-                f"「{decision.display_name}」已有不同内容，要更新它吗？"
+                f"「{decision.display_name}」已有不同内容。拟更新为：\n\n"
+                f"{content}\n\n确认更新吗？"
             ),
         )
         pending_result = self._pending_result(
@@ -545,7 +564,7 @@ class MemoryAgent:
                     and (original_content is None or not original_content.strip())
                 )
                 if pending.requires_confirmation:
-                    if not _is_confirmation_reply(user_message):
+                    if not _is_bare_confirmation_reply(user_message):
                         return MemoryAgentResult(
                             response=pending.question, pending=pending
                         )
